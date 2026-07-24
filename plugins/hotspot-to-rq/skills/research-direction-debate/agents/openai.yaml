@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Direction & Experiment Evaluation"
+  short_description: "Choose directions or assess completed experiments"
+  default_prompt: "Use $research-direction-debate to assess my existing experiment direction before recommending the next step."

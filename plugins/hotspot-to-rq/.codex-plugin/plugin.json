@@ -1,0 +1,22 @@
+{
+  "name": "hotspot-to-rq",
+  "version": "0.4.0+codex.20260723161635",
+  "description": "Choose broad project directions or assess completed experiments through context-isolated Socratic debate and session validation.",
+  "author": {
+    "name": "PaperNotes Project"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hotspot to Research Question",
+    "shortDescription": "Choose directions or assess completed experiments.",
+    "longDescription": "Scans project evidence to present a broad direction map for selection, or audits an existing experimental direction through evidence inventory, result validation, external positioning, Socratic debate, and a continue/repair/pivot/stop decision.",
+    "developerName": "PaperNotes Project",
+    "category": "Productivity",
+    "capabilities": [
+      "Research",
+      "Interactive",
+      "Multi-agent"
+    ],
+    "defaultPrompt": "Evaluate my existing experiments before recommending whether to continue, repair, pivot, or stop."
+  }
+}
