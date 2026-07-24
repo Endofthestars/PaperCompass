@@ -8,6 +8,37 @@ PaperCompass 是一个 Codex 插件项目：它把本地论文笔记、趋势报
 - `.agents/plugins/marketplace.json`：仓库内的 Codex plugin marketplace 配置。
 - `scripts/`：同步上游 Paper-Notes、生成趋势报告与结构化热点数据的轻量脚本。
 
+## 安装 Codex 插件
+
+需要已安装并登录 Codex CLI。插件由此仓库的 marketplace（当前标识为 `personal`）提供。
+
+### 从 GitHub 安装
+
+```bash
+# 添加并固定到 main 分支的 marketplace
+codex plugin marketplace add Endofthestars/PaperCompass --ref main
+
+# 安装 Hotspot to Research Question 插件
+codex plugin add hotspot-to-rq@personal
+```
+
+安装后，在 Codex 对话中可通过 `$hotspot-to-rq:research-direction-debate` 调用研究方向辩论工作流。
+
+### 本地开发安装
+
+在本仓库根目录执行：
+
+```bash
+codex plugin marketplace add .
+codex plugin add hotspot-to-rq@personal
+```
+
+在推送新版本后，使用以下命令刷新 Git marketplace：
+
+```bash
+codex plugin marketplace upgrade personal
+```
+
 ## 数据工作流
 
 ```text
