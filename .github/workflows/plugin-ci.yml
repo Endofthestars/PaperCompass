@@ -38,7 +38,7 @@ jobs:
             codex-rs/skills/src/assets/samples/skill-creator
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 

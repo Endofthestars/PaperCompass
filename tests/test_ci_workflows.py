@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PINNED_CODEX_SHA = "61a44880a85d2fd0d8770908dea5733495e571c8"
+SETUP_PYTHON_ACTION = "actions/setup-python@v7"
 
 
 class CiWorkflowTests(unittest.TestCase):
@@ -16,6 +17,7 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn(f"ref: {PINNED_CODEX_SHA}", workflow)
         self.assertIn("CODEX_PLUGIN_VALIDATOR:", workflow)
         self.assertIn("CODEX_SKILL_VALIDATOR:", workflow)
+        self.assertIn(SETUP_PYTHON_ACTION, workflow)
         self.assertNotIn("continue-on-error", workflow)
 
     def test_scheduled_compatibility_ci_tracks_main_without_pr_trigger(self) -> None:
@@ -26,6 +28,7 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("repository: openai/codex", workflow)
         self.assertIn("ref: main", workflow)
+        self.assertIn(SETUP_PYTHON_ACTION, workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("continue-on-error", workflow)
 
