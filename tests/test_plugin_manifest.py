@@ -129,15 +129,19 @@ class ClaudeManifestTests(unittest.TestCase):
         self.assertTrue(manifest["description"])
         self.assertTrue(manifest["author"]["name"])
 
-    def test_manifest_relies_on_default_skill_discovery(self) -> None:
-        # Claude Code scans skills/ by default; declaring the same path again
-        # would be redundant, so the manifest must not override component paths.
-        # Hooks are the exception: declared explicitly so the enforcement layer
-        # cannot be lost to auto-discovery changes.
+    def test_manifest_relies_on_default_component_discovery(self) -> None:
+        # Claude Code auto-discovers skills/, agents/, and hooks/hooks.json.
+        # Re-declaring hooks in the manifest is not redundant but fatal: the
+        # runtime rejects the duplicate ("Duplicate hooks file detected") and
+        # the WHOLE plugin fails to load, while `plugin validate --strict`
+        # stays green. Reproduced live on claude 2.1.220 (BUGS.md P-01).
+        # workflows/ is the one path that must stay declared (see
+        # PluginWorkflowTests); a loaded plugin with it declared was verified
+        # alongside the P-01 fix.
         manifest = load_json(CLAUDE_MANIFEST)
-        for key in ("skills", "commands", "agents", "mcpServers"):
+        for key in ("skills", "commands", "agents", "mcpServers", "hooks"):
             self.assertNotIn(key, manifest)
-        self.assertEqual("./hooks/hooks.json", manifest["hooks"])
+        self.assertTrue((PLUGIN_ROOT / "hooks" / "hooks.json").is_file())
         self.assertTrue(SKILL_FILE.is_file())
 
 
@@ -260,24 +264,30 @@ class PluginWorkflowTests(unittest.TestCase):
 class SessionStateHookTests(unittest.TestCase):
     HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "validate-session-state.sh"
 
-    def run_hook(self, file_path: str) -> subprocess.CompletedProcess[str]:
-        payload = json.dumps(
-            {"tool_name": "Write", "tool_input": {"file_path": file_path}}
-        )
+    def run_hook_payload(self, payload: dict) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(PLUGIN_ROOT))
         return subprocess.run(
             [str(self.HOOK_SCRIPT)],
-            input=payload,
+            input=json.dumps(payload),
             capture_output=True,
             text=True,
             env=env,
             check=False,
         )
 
-    def test_hook_wiring_targets_write_and_edit(self) -> None:
+    def run_hook(self, file_path: str) -> subprocess.CompletedProcess[str]:
+        return self.run_hook_payload(
+            {"tool_name": "Write", "tool_input": {"file_path": file_path}}
+        )
+
+    def test_hook_wiring_targets_all_write_paths(self) -> None:
+        # Bash is matched too: shell-redirect writes bypassed the hook when
+        # only Write|Edit were matched, and on Codex file edits arrive as
+        # apply_patch (alias Edit|Write) with the patch text in
+        # tool_input.command instead of a file_path.
         config = load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
         entry = config["hooks"]["PostToolUse"][0]
-        self.assertEqual("Write|Edit", entry["matcher"])
+        self.assertEqual("Write|Edit|Bash", entry["matcher"])
         self.assertEqual(
             "${CLAUDE_PLUGIN_ROOT}/hooks/validate-session-state.sh",
             entry["hooks"][0]["command"],
@@ -301,6 +311,89 @@ class SessionStateHookTests(unittest.TestCase):
             result = self.run_hook(str(state_path))
         self.assertEqual(2, result.returncode)
         self.assertIn("Session validation failed", result.stderr)
+
+    def make_invalid_session(self, tmp: str) -> Path:
+        session_dir = Path(tmp) / "reports" / "research-direction" / "s1"
+        session_dir.mkdir(parents=True)
+        (session_dir / "session-state.json").write_text("{}", encoding="utf-8")
+        (session_dir / "direction-map.md").write_text("stub", encoding="utf-8")
+        return session_dir / "session-state.json"
+
+    def test_hook_catches_codex_apply_patch_writes(self) -> None:
+        # Codex delivers file edits as apply_patch with the patch text in
+        # tool_input.command and NO file_path; the hook must not go inert.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.make_invalid_session(tmp)
+            patch = (
+                "*** Begin Patch\n"
+                f"*** Update File: {state_path}\n"
+                "@@\n+{}\n"
+                "*** End Patch"
+            )
+            result = self.run_hook_payload(
+                {"tool_name": "apply_patch", "tool_input": {"command": patch}}
+            )
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("Session validation failed", result.stderr)
+
+    def test_hook_catches_bash_writes_mentioning_session_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.make_invalid_session(tmp)
+            command = f"printf '{{}}' > {state_path}"
+            result = self.run_hook_payload(
+                {"tool_name": "Bash", "tool_input": {"command": command}}
+            )
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("Session validation failed", result.stderr)
+
+    def test_hook_ignores_bash_commands_without_session_paths(self) -> None:
+        result = self.run_hook_payload(
+            {"tool_name": "Bash", "tool_input": {"command": "ls -la && git status"}}
+        )
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("", result.stderr)
+
+    def test_hook_fails_closed_when_validator_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.make_invalid_session(tmp)
+            payload = json.dumps(
+                {"tool_name": "Write", "tool_input": {"file_path": str(state_path)}}
+            )
+            env = dict(os.environ, CLAUDE_PLUGIN_ROOT="/nonexistent-plugin-root")
+            result = subprocess.run(
+                [str(self.HOOK_SCRIPT)],
+                input=payload,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+        self.assertEqual(2, result.returncode)
+        self.assertIn("misconfigured", result.stderr)
+
+
+class RuntimeLoadTests(unittest.TestCase):
+    # P-01 regression: `claude plugin validate --strict` and every shape test
+    # stayed green while the runtime refused to load the plugin outright
+    # (duplicate hooks declaration). Shape tests cannot see load failures, so
+    # when a local claude CLI has the plugin installed, ask the runtime.
+
+    def test_installed_plugin_reports_no_load_failure(self) -> None:
+        claude = shutil.which(os.environ.get("CLAUDE_CODE_BIN", "claude"))
+        if claude is None:
+            self.skipTest("claude CLI is not installed")
+        result = subprocess.run(
+            [claude, "plugin", "list"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            self.skipTest("claude plugin list is unavailable here")
+        if "hotspot-to-rq" not in result.stdout:
+            self.skipTest("hotspot-to-rq is not installed locally")
+        self.assertNotIn("failed to load", result.stdout, result.stdout)
 
 
 class SkillAgentYamlTests(unittest.TestCase):
