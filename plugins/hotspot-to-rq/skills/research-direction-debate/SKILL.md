@@ -1,6 +1,6 @@
 ---
 name: research-direction-debate
-description: Discover and narrow research directions from the current project through an early macro-direction choice, or evaluate an existing experimental direction through evidence validation and context-isolated Socratic debate. Use when Codex should scan repository reports or paper notes for hotspots, first offer broad research areas for user selection, assess completed experiments, validate results and reproducibility, search external evidence, compare candidate topics, decide whether to continue, repair, pivot, stop, or refine a research question with resumable, machine-validated artifacts.
+description: Discover and narrow research directions from the current project through an early macro-direction choice, or evaluate an existing experimental direction through evidence validation and context-isolated Socratic debate. Use when the agent should scan repository reports or paper notes for hotspots, first offer broad research areas for user selection, assess completed experiments, validate results and reproducibility, search external evidence, compare candidate topics, decide whether to continue, repair, pivot, stop, or refine a research question with resumable, machine-validated artifacts.
 ---
 
 # Research Direction Debate
@@ -32,6 +32,13 @@ instructions.
 Treat invocation of this skill as authorization to delegate bounded research roles
 to subagents. Use genuinely separate subagent work products when multi-agent tools
 are available. Do not merely write one response under several role labels.
+
+When the runtime exposes this plugin's bundled agent types, dispatch through the
+matching one: `mainline-controller` for the control lane, `search-verification`
+for the Search and Verification Specialist, and `research-role` for every other
+delegated role. Their tool boundaries enforce the isolation contracts in
+`references/agent-contracts.md`. Otherwise use the runtime's generic
+clean-context delegation tool with the same envelopes.
 
 Keep the main agent as orchestrator. It owns project inspection, state, external
 search transport, user communication, and final synthesis. Delegated roles must

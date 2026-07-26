@@ -22,8 +22,21 @@ if [[ -f "${plugin_validator}" && -f "${skill_validator}" ]]; then
 else
   echo "Skipping Codex-only plugin/skill validators (not installed in this environment)."
 fi
+claude_bin="${CLAUDE_CODE_BIN:-claude}"
+if [[ -n "${CLAUDE_CODE_BIN:-}" ]] && ! command -v "${claude_bin}" >/dev/null 2>&1; then
+  echo "Configured Claude Code binary is missing." >&2
+  exit 1
+fi
+if command -v "${claude_bin}" >/dev/null 2>&1; then
+  "${claude_bin}" plugin validate "${plugin_root}" --strict
+  "${claude_bin}" plugin validate "${repo_root}" --strict
+else
+  echo "Skipping Claude Code plugin/marketplace validation (claude CLI not installed)."
+fi
 "${python_bin}" -B "${skill_root}/scripts/validate_controller_decision.py" --help >/dev/null
 "${python_bin}" -B "${skill_root}/scripts/validate_session.py" --help >/dev/null
 "${python_bin}" -m json.tool "${plugin_root}/.codex-plugin/plugin.json" >/dev/null
+"${python_bin}" -m json.tool "${plugin_root}/.claude-plugin/plugin.json" >/dev/null
 "${python_bin}" -m json.tool "${repo_root}/.agents/plugins/marketplace.json" >/dev/null
+"${python_bin}" -m json.tool "${repo_root}/.claude-plugin/marketplace.json" >/dev/null
 git -C "${repo_root}" diff --check

@@ -50,3 +50,25 @@ jobs:
           CODEX_PLUGIN_VALIDATOR: ${{ github.workspace }}/.ci/openai-codex/codex-rs/skills/src/assets/samples/plugin-creator/scripts/validate_plugin.py
           CODEX_SKILL_VALIDATOR: ${{ github.workspace }}/.ci/openai-codex/codex-rs/skills/src/assets/samples/skill-creator/scripts/quick_validate.py
         run: bash scripts/test_plugin.sh
+
+  claude:
+    name: Validate Claude Code plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://code.claude.com/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Record Claude Code version
+        run: claude --version
+
+      - name: Validate plugin and marketplace
+        run: |
+          claude plugin validate plugins/hotspot-to-rq --strict
+          claude plugin validate . --strict

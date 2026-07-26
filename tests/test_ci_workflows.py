@@ -20,6 +20,12 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn(SETUP_PYTHON_ACTION, workflow)
         self.assertNotIn("continue-on-error", workflow)
 
+    def test_blocking_ci_validates_the_claude_code_plugin(self) -> None:
+        workflow = (WORKFLOWS / "plugin-ci.yml").read_text(encoding="utf-8")
+        self.assertIn("https://code.claude.com/install.sh", workflow)
+        self.assertIn("claude plugin validate plugins/hotspot-to-rq --strict", workflow)
+        self.assertIn("claude plugin validate . --strict", workflow)
+
     def test_scheduled_compatibility_ci_tracks_main_without_pr_trigger(self) -> None:
         workflow = (WORKFLOWS / "upstream-codex-compat.yml").read_text(
             encoding="utf-8"

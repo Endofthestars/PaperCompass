@@ -1,11 +1,12 @@
 # PaperCompass
 
-PaperCompass 是一个 Codex 插件项目：它把本地论文笔记、趋势报告和实验产物转化为可审计的研究方向选择与研究问题细化流程。
+PaperCompass 是一个研究插件项目：它把本地论文笔记、趋势报告和实验产物转化为可审计的研究方向选择与研究问题细化流程。同一份插件同时支持 Codex CLI 与 Claude Code 两种运行时。
 
 ## 内容
 
-- `plugins/hotspot-to-rq/`：**Hotspot to Research Question** 插件，支持从研究热点中发现方向，或评估已有实验应继续、修复、转向还是停止。
+- `plugins/hotspot-to-rq/`：**Hotspot to Research Question** 插件，支持从研究热点中发现方向，或评估已有实验应继续、修复、转向还是停止。双 manifest：`.codex-plugin/plugin.json`（Codex）与 `.claude-plugin/plugin.json`（Claude Code）。
 - `.agents/plugins/marketplace.json`：仓库内的 Codex plugin marketplace 配置。
+- `.claude-plugin/marketplace.json`：仓库内的 Claude Code plugin marketplace 配置。
 - `scripts/`：同步上游 Paper-Notes、生成趋势报告与结构化热点数据的轻量脚本。
 
 ## 安装 Codex 插件
@@ -51,6 +52,43 @@ codex plugin add hotspot-to-rq@personal
 
 刷新后新建 Codex 任务验证新版本。
 
+## 安装 Claude Code 插件
+
+需要已安装并登录 Claude Code（v2.x 及以上）。marketplace 标识同样是
+`personal`，与 Codex 侧保持一致。
+
+### 从 GitHub 安装
+
+在 Claude Code 会话中执行：
+
+```text
+/plugin marketplace add Endofthestars/PaperCompass
+/plugin install hotspot-to-rq@personal
+```
+
+### 本地开发安装
+
+在本仓库根目录打开 Claude Code，然后执行：
+
+```text
+/plugin marketplace add .
+/plugin install hotspot-to-rq@personal
+```
+
+安装后技能会注册为 `/hotspot-to-rq:research-direction-debate`。修改 plugin
+后运行 `/plugin marketplace update personal` 刷新，再新开会话验证。
+
+### 调用方式
+
+```text
+/hotspot-to-rq:research-direction-debate
+```
+
+或直接用自然语言描述研究方向选择/实验评估需求，Claude 会按技能描述自动
+路由。两种运行时共享同一份 SKILL.md、references、校验脚本与 vendored ARS
+角色提示；`.codex-plugin/` 与 `.claude-plugin/` 只是各自运行时的 manifest
+入口，版本号基线保持一致（Codex 侧附加 `+codex.<timestamp>` cachebuster）。
+
 ## Plugin 工作流
 
 ```text
@@ -76,6 +114,9 @@ Mainline Workflow Controller 是只读控制面，不是第二个主代理：它
 ```bash
 ./scripts/test_plugin.sh
 ```
+
+该脚本会运行单元测试与 Codex 校验器；当本机安装了 Claude Code CLI 时，
+还会对双 manifest 与 marketplace 运行 `claude plugin validate --strict`。
 
 端到端 smoke test：
 

@@ -1,0 +1,21 @@
+{
+  "name": "personal",
+  "owner": {
+    "name": "PaperNotes Project"
+  },
+  "description": "PaperCompass research plugins for Claude Code.",
+  "plugins": [
+    {
+      "name": "hotspot-to-rq",
+      "source": "./plugins/hotspot-to-rq",
+      "description": "Choose research directions or assess experiments through a mainline-controlled workflow with bundled Academic Research Suite roles.",
+      "category": "productivity",
+      "tags": [
+        "research",
+        "research-question",
+        "socratic-debate",
+        "multi-agent"
+      ]
+    }
+  ]
+}
