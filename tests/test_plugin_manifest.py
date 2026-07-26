@@ -27,6 +27,44 @@ def base_version(version: str) -> str:
 
 
 class CodexManifestTests(unittest.TestCase):
+    # Mirror of the upstream ingestion validator pinned in CI
+    # (openai/codex@61a44880, plugin-creator/scripts/validate_plugin.py).
+    # Unknown manifest fields are rejected upstream — `hooks`, `workflows`,
+    # and `agents` are Claude-only and must never migrate into this manifest.
+    UPSTREAM_MANIFEST_FIELDS = {
+        "id",
+        "name",
+        "version",
+        "description",
+        "skills",
+        "apps",
+        "mcpServers",
+        "interface",
+        "author",
+        "homepage",
+        "repository",
+        "license",
+        "keywords",
+    }
+    UPSTREAM_INTERFACE_FIELDS = {
+        "displayName",
+        "shortDescription",
+        "longDescription",
+        "developerName",
+        "category",
+        "capabilities",
+        "websiteURL",
+        "privacyPolicyURL",
+        "termsOfServiceURL",
+        "brandColor",
+        "composerIcon",
+        "logo",
+        "logoDark",
+        "screenshots",
+        "defaultPrompt",
+        "default_prompt",
+    }
+
     def test_manifest_declares_a_loadable_skill_and_interface(self) -> None:
         manifest = load_json(CODEX_MANIFEST)
         self.assertEqual("hotspot-to-rq", manifest["name"])
@@ -35,11 +73,51 @@ class CodexManifestTests(unittest.TestCase):
         self.assertTrue(SKILL_FILE.is_file())
 
         interface = manifest["interface"]
-        self.assertTrue(interface["displayName"])
-        self.assertTrue(interface["shortDescription"])
-        self.assertTrue(interface["longDescription"])
+        # Upstream requires all five of these as non-empty strings.
+        for field in (
+            "displayName",
+            "shortDescription",
+            "longDescription",
+            "developerName",
+            "category",
+        ):
+            self.assertTrue(interface[field].strip(), field)
         self.assertTrue(interface["defaultPrompt"])
         self.assertIn("Research", interface["capabilities"])
+
+    def test_manifest_uses_only_upstream_accepted_fields(self) -> None:
+        manifest = load_json(CODEX_MANIFEST)
+        self.assertLessEqual(set(manifest), self.UPSTREAM_MANIFEST_FIELDS)
+        self.assertLessEqual(
+            set(manifest["interface"]), self.UPSTREAM_INTERFACE_FIELDS
+        )
+
+    def test_default_prompts_are_short_starter_entries(self) -> None:
+        # Upstream spec: defaultPrompt is an array of at most 3 starter
+        # prompts; entries past 3 are ignored and each entry is truncated at
+        # 128 characters, so longer prompts would ship visibly broken UX.
+        prompts = load_json(CODEX_MANIFEST)["interface"]["defaultPrompt"]
+        self.assertIsInstance(prompts, list)
+        self.assertTrue(1 <= len(prompts) <= 3)
+        for prompt in prompts:
+            self.assertIsInstance(prompt, str)
+            self.assertTrue(prompt.strip())
+            self.assertLessEqual(len(prompt), 128)
+
+    def test_version_is_strict_semver_with_codex_cachebuster(self) -> None:
+        # update_plugin_cachebuster.py writes `<semver>+codex.<token>` where
+        # the token is sanitized to lowercase alphanumerics and hyphens. The
+        # semver core mirrors upstream SEMVER_RE: no leading zeros, and an
+        # optional prerelease that the cachebuster script preserves.
+        version = load_json(CODEX_MANIFEST)["version"]
+        number = r"(?:0|[1-9]\d*)"
+        prerelease_id = r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+        self.assertRegex(
+            version,
+            rf"^{number}\.{number}\.{number}"
+            rf"(?:-{prerelease_id}(?:\.{prerelease_id})*)?"
+            rf"\+codex\.[a-z0-9-]+$",
+        )
 
 
 class ClaudeManifestTests(unittest.TestCase):
@@ -76,6 +154,13 @@ class ManifestParityTests(unittest.TestCase):
         self.assertEqual(
             codex["interface"]["displayName"], claude["displayName"]
         )
+
+    def test_manifests_share_keywords_and_source_metadata(self) -> None:
+        codex = load_json(CODEX_MANIFEST)
+        claude = load_json(CLAUDE_MANIFEST)
+        self.assertEqual(codex["keywords"], claude["keywords"])
+        self.assertEqual(codex["homepage"], claude["homepage"])
+        self.assertEqual(codex["repository"], claude["repository"])
 
     def test_marketplaces_expose_the_same_plugin(self) -> None:
         codex = load_json(CODEX_MARKETPLACE)
@@ -210,9 +295,64 @@ class SessionStateHookTests(unittest.TestCase):
             session_dir.mkdir(parents=True)
             state_path = session_dir / "session-state.json"
             state_path.write_text("{}", encoding="utf-8")
+            # An artifact on disk ends the bootstrap-grace window (see
+            # tests/test_hook_bootstrap.py for the grace behavior itself).
+            (session_dir / "direction-map.md").write_text("stub", encoding="utf-8")
             result = self.run_hook(str(state_path))
         self.assertEqual(2, result.returncode)
         self.assertIn("Session validation failed", result.stderr)
+
+
+class SkillAgentYamlTests(unittest.TestCase):
+    AGENT_YAML = (
+        PLUGIN_ROOT
+        / "skills"
+        / "research-direction-debate"
+        / "agents"
+        / "openai.yaml"
+    )
+
+    def load(self) -> dict:
+        try:
+            import yaml
+        except ImportError:  # pragma: no cover - CI always installs PyYAML
+            self.skipTest("PyYAML is not installed")
+        return yaml.safe_load(self.AGENT_YAML.read_text(encoding="utf-8"))
+
+    def test_agent_yaml_uses_only_upstream_accepted_fields(self) -> None:
+        # Mirror of validate_skill_agent_manifest in the pinned upstream
+        # validator: unknown keys fail Codex plugin ingestion.
+        payload = self.load()
+        self.assertLessEqual(
+            set(payload), {"interface", "policy", "dependencies"}
+        )
+        self.assertLessEqual(
+            set(payload["interface"]),
+            {
+                "display_name",
+                "short_description",
+                "icon_small",
+                "icon_large",
+                "brand_color",
+                "default_prompt",
+            },
+        )
+
+    def test_interface_matches_upstream_ux_constraints(self) -> None:
+        interface = self.load()["interface"]
+        self.assertTrue(interface["display_name"].strip())
+        # Upstream guidance: 25-64 chars so the blurb scans in the UI.
+        self.assertTrue(25 <= len(interface["short_description"]) <= 64)
+        # Upstream requires the default prompt to name the skill as $<name>.
+        self.assertIn(
+            "$research-direction-debate", interface["default_prompt"]
+        )
+
+    def test_implicit_invocation_is_pinned_on(self) -> None:
+        # Natural-language routing parity with the Claude runtime: the
+        # upstream default is already true, but pinning it keeps a future
+        # default flip from silently disabling description-based routing.
+        self.assertIs(True, self.load()["policy"]["allow_implicit_invocation"])
 
 
 class SkillFrontmatterTests(unittest.TestCase):

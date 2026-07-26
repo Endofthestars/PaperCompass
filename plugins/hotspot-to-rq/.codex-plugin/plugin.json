@@ -1,10 +1,19 @@
 {
   "name": "hotspot-to-rq",
-  "version": "0.9.0+codex.20260726084753",
+  "version": "0.9.0+codex.20260726091918",
   "description": "Choose research directions or assess experiments through a mainline-controlled workflow with bundled Academic Research Suite roles.",
   "author": {
     "name": "PaperNotes Project"
   },
+  "homepage": "https://github.com/Endofthestars/PaperCompass#readme",
+  "repository": "https://github.com/Endofthestars/PaperCompass",
+  "keywords": [
+    "research",
+    "research-question",
+    "socratic-debate",
+    "multi-agent",
+    "paper-notes"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Hotspot to Research Question",
@@ -17,6 +26,10 @@
       "Interactive",
       "Multi-agent"
     ],
-    "defaultPrompt": "Use the bundled Academic Research Suite role bridge and Mainline Workflow Controller to route this request, checkpoint every gate, and stop at the first required user decision."
+    "defaultPrompt": [
+      "Map research directions from my local paper notes and stop at the first user gate.",
+      "Evaluate my current experiment: continue, repair, pivot, or stop?",
+      "Refine my chosen research area into a frozen research question."
+    ]
   }
 }
