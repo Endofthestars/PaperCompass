@@ -377,6 +377,13 @@ fresh-context retry, but it may not repair or substitute the role's answer.
 
 ### Transport failures
 
+At commit time, before invoking any delegation vehicle, persist every
+dispatch's complete role envelope and inline payload to
+`control-inputs/dispatches/<packet id>.json` inside the session directory.
+Re-invocation and cross-session resume rebuild the call from that file —
+never from the conversation transcript or a runtime-scoped workflow run id,
+which do not survive the session.
+
 A dispatch whose agent dies in the harness — API overload, timeout,
 session-limit termination, or a killed subagent — is a transport failure, not
 a rejected work product. The committed dispatch stays pending:

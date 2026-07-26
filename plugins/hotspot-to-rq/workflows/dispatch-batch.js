@@ -174,7 +174,20 @@ const ROLE_SCHEMAS = {
     type: 'object',
     properties: {
       envelope: ENVELOPE,
-      verdict: { type: 'string' },
+      // Union of the documented Panel Judge vocabularies (debate rounds,
+      // evaluation debate, audit verdicts; agent-contracts.md:345/389/462).
+      // Null stays legal for calls that carry no verdict (macro selection).
+      // Devil's-Advocate severity tokens (CRITICAL/MAJOR/MINOR/OBSERVATION)
+      // are deliberately absent: one leaked into a verdict slot in a real
+      // session and permanently deadlocked the candidate.
+      verdict: {
+        type: ['string', 'null'],
+        enum: [
+          'CONTINUE', 'SEARCH', 'REVISE', 'DOWNGRADE', 'DEFER', 'ELIMINATE',
+          'USER_GATE', 'CONVERGED', 'REPAIR', 'PIVOT', 'STOP',
+          'INSUFFICIENT_EVIDENCE', 'PASS', 'PASS_WITH_LIMITS', 'BLOCK', null,
+        ],
+      },
       selected_macro_direction_ids: STRING_ARRAY,
       not_selected: STRING_ARRAY,
       evidence_summary: STRING_ARRAY,

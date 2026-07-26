@@ -61,7 +61,11 @@ workflow returns one work product per dispatch with a convenience envelope
 echo pre-check; you must still verify every echoed envelope, apply the
 rejection rules, persist state, and run the validators exactly as for direct
 role calls. Never send dependent roles from one lane to a single batch, and
-never route a CONTROL call through it.
+never route a CONTROL call through it. Before invoking the workflow or any
+direct delegation, persist each committed dispatch's envelope and payload to
+`control-inputs/dispatches/<packet id>.json` in the session directory so an
+interrupted batch can be re-invoked — in this session or a resumed one — from
+durable files instead of a runtime-scoped workflow run id.
 
 Keep the main agent as orchestrator. It owns project inspection, state,
 external retrieval dispatch, user communication, and final synthesis. Delegated roles must
@@ -248,11 +252,16 @@ policy is in `references/mainline-controller.md` (Transport failures).
    - Require user confirmation before handing off to full research or paper writing.
 
 11. **Validate the session**
+   - `<skill-root>` in every command below means the absolute path of this
+     skill's installed directory — the directory that contains this SKILL.md
+     (ends in `skills/research-direction-debate`). Resolve it once from where
+     the runtime loaded this skill and substitute the absolute path into each
+     command; never run a command with the placeholder still in it.
    - Keep `session-state.json` current after every Judge transition.
    - Before each controller call, write the exact companion
      `control-input.json`; when accepting the directive, preserve the same bytes
      at `control-inputs/<CONTROL packet ID>.json`. Do not hand-assemble the
-     snapshot: run `python3 <skill-root>/scripts/build_control_input.py
+     snapshot: run `python3 -B <skill-root>/scripts/build_control_input.py
      <session-directory> --checkpoint <CHECKPOINT> --packet-id <CONTROL packet
      ID>` — it derives every recomputable field with the validators' own
      projection functions, writes both byte-identical files, and prints the
@@ -263,12 +272,12 @@ policy is in `references/mainline-controller.md` (Transport failures).
      `PRE_USER_GATE`, `POST_USER_GATE`, `RECOVERY`, `RESUME`, and
      `PRE_COMPLETE` as applicable.
    - Before committing a controller dispatch, run
-     `python3 <skill-root>/scripts/validate_controller_decision.py
+     `python3 -B <skill-root>/scripts/validate_controller_decision.py
      <session-state.json> <controller-output.json> --control-input
      <control-input.json>`.
-   - Run `python3 <skill-root>/scripts/validate_session.py <session-directory>`
-     on every staged controller transition, including before each user gate and
-     before declaring the session complete.
+   - Run `python3 -B <skill-root>/scripts/validate_session.py
+     <session-directory>` on every staged controller transition, including
+     before each user gate and before declaring the session complete.
    - Always build both validator paths as absolute paths from the skill's base
      directory; never rely on the shell's working directory persisting between
      tool calls.

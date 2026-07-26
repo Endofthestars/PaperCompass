@@ -981,12 +981,12 @@ the one decision-changing experiment or `NONE` rationale.
 Run:
 
 ```bash
-python3 <skill-root>/scripts/validate_controller_decision.py \
+python3 -B <skill-root>/scripts/validate_controller_decision.py \
   <project-root>/reports/research-direction/<session-id>/session-state.json \
   <controller-output.json> \
   --control-input \
   <project-root>/reports/research-direction/<session-id>/control-input.json
-python3 <skill-root>/scripts/validate_session.py \
+python3 -B <skill-root>/scripts/validate_session.py \
   <project-root>/reports/research-direction/<session-id>
 ```
 
