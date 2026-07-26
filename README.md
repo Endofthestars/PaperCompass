@@ -98,6 +98,14 @@ PostToolUse hook 会自动运行 `validate_session.py`，校验失败会立刻�
 （`mainline-controller`、`research-role`、`search-verification`）以工具
 白名单和 `maxTurns` 上限机制化执行角色隔离契约。
 
+插件还带一个 `dispatch-batch` workflow（需 Claude Code v2.1.154+，注册为
+`/hotspot-to-rq:dispatch-batch`），供编排者把 controller 已提交的一个调度
+批次（批内角色互相独立）交给确定性脚本并行执行：每个 dispatch 得到干净
+上下文、按角色契约强制的结构化输出和 envelope 回显预检。它刻意不做整轮
+编排——轮内依赖角色必须逐层经过 controller 的 ROLE_BOUNDARY 检查点，这是
+schema 1.3 控制契约的要求。envelope 校验、状态落盘与校验器执行仍由编排
+者完成。
+
 ## Plugin 工作流
 
 ```text

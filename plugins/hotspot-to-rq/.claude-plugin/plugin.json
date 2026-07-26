@@ -1,8 +1,9 @@
 {
   "name": "hotspot-to-rq",
   "displayName": "Hotspot to Research Question",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "hooks": "./hooks/hooks.json",
+  "workflows": "./workflows/",
   "description": "Choose research directions or assess experiments through a mainline-controlled workflow with bundled Academic Research Suite roles.",
   "author": {
     "name": "PaperNotes Project"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -132,6 +133,43 @@ class PluginAgentTests(unittest.TestCase):
                         for line in lines
                     )
                 )
+
+
+class PluginWorkflowTests(unittest.TestCase):
+    WORKFLOW = PLUGIN_ROOT / "workflows" / "dispatch-batch.js"
+
+    def test_manifest_declares_the_workflows_directory(self) -> None:
+        manifest = load_json(CLAUDE_MANIFEST)
+        self.assertEqual("./workflows/", manifest["workflows"])
+        self.assertTrue(self.WORKFLOW.is_file())
+
+    def test_workflow_meta_matches_its_filename(self) -> None:
+        source = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertTrue(source.startswith("export const meta = {"))
+        self.assertIn("name: 'dispatch-batch'", source)
+        self.assertIn("description:", source)
+
+    def test_workflow_body_parses_in_an_async_function_context(self) -> None:
+        # The workflow runtime executes the script body inside an async
+        # function (top-level await and return are legal there), so plain
+        # `node --check` cannot be used.
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        script = (
+            "const fs = require('fs');"
+            f"const src = fs.readFileSync({str(self.WORKFLOW)!r}, 'utf8');"
+            "const body = src.replace(/^export const meta/m, 'const meta');"
+            "const AsyncFunction ="
+            "  Object.getPrototypeOf(async function () {}).constructor;"
+            "new AsyncFunction("
+            "  'agent', 'pipeline', 'parallel', 'phase', 'log',"
+            "  'args', 'budget', 'workflow', body);"
+        )
+        result = subprocess.run(
+            [node, "-e", script], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
 
 
 class SessionStateHookTests(unittest.TestCase):

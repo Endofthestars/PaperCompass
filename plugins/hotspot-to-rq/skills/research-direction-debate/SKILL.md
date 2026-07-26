@@ -49,6 +49,18 @@ Reproducibility Auditor through the runtime's generic delegation tool instead.
 Use that generic clean-context tool with the same envelopes whenever bundled
 agent types are unavailable.
 
+When the runtime also exposes this plugin's `dispatch-batch` workflow, you may
+execute a committed controller dispatch batch through one workflow invocation
+instead of separate delegation calls. Pass the batch's dispatches with their
+complete pre-built envelopes, role instructions, inline payloads, allowed
+artifact paths, and search budgets as the workflow arguments, and set
+`agent_types` to the runtime's exact identifiers for the bundled agents. The
+workflow returns one work product per dispatch with a convenience envelope
+echo pre-check; you must still verify every echoed envelope, apply the
+rejection rules, persist state, and run the validators exactly as for direct
+role calls. Never send dependent roles from one lane to a single batch, and
+never route a CONTROL call through it.
+
 Keep the main agent as orchestrator. It owns project inspection, state,
 external retrieval dispatch, user communication, and final synthesis. Delegated roles must
 stay within the contracts in `references/agent-contracts.md`.
