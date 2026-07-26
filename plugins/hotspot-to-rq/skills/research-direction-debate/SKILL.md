@@ -9,6 +9,12 @@ Turn local project signals into a broad direction map, let the user choose where
 to invest attention, then narrow the selected area through agent-to-agent
 deliberation. Keep role contexts clean and the session auditable.
 
+Runtime-substituted invocation arguments: "$ARGUMENTS". When that value is
+non-empty, treat it as the requested mode (discover, refine, rq-only, or
+evaluate) and/or the research subject, and route accordingly instead of asking
+the user for the same information. When it is empty or still reads as a
+literal placeholder, infer the route from the conversation as described below.
+
 ## Required references
 
 Read these files completely before running the workflow:

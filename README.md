@@ -82,12 +82,21 @@ codex plugin add hotspot-to-rq@personal
 
 ```text
 /hotspot-to-rq:research-direction-debate
+/hotspot-to-rq:research-direction-debate evaluate 我的现有实验方向……
 ```
 
-或直接用自然语言描述研究方向选择/实验评估需求，Claude 会按技能描述自动
-路由。两种运行时共享同一份 SKILL.md、references、校验脚本与 vendored ARS
-角色提示；`.codex-plugin/` 与 `.claude-plugin/` 只是各自运行时的 manifest
-入口，版本号基线保持一致（Codex 侧附加 `+codex.<timestamp>` cachebuster）。
+也可以直接用自然语言描述研究方向选择/实验评估需求，Claude 会按技能描述
+自动路由；斜杠命令后的参数会作为模式与主题种子直接进入路由。两种运行时
+共享同一份 SKILL.md、references、校验脚本与 vendored ARS 角色提示；
+`.codex-plugin/` 与 `.claude-plugin/` 只是各自运行时的 manifest 入口，
+版本号基线保持一致（Codex 侧附加 `+codex.<timestamp>` cachebuster）。
+
+在 Claude Code 下插件还带一层机制强制：每次写入
+`reports/research-direction/<session-id>/session-state.json` 后，插件的
+PostToolUse hook 会自动运行 `validate_session.py`，校验失败会立刻反馈给
+模型（协议的 fail-closed 不再依赖模型自觉）。三个捆绑 agent
+（`mainline-controller`、`research-role`、`search-verification`）以工具
+白名单和 `maxTurns` 上限机制化执行角色隔离契约。
 
 ## Plugin 工作流
 

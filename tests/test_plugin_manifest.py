@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -50,9 +53,12 @@ class ClaudeManifestTests(unittest.TestCase):
     def test_manifest_relies_on_default_skill_discovery(self) -> None:
         # Claude Code scans skills/ by default; declaring the same path again
         # would be redundant, so the manifest must not override component paths.
+        # Hooks are the exception: declared explicitly so the enforcement layer
+        # cannot be lost to auto-discovery changes.
         manifest = load_json(CLAUDE_MANIFEST)
-        for key in ("skills", "commands", "agents", "hooks", "mcpServers"):
+        for key in ("skills", "commands", "agents", "mcpServers"):
             self.assertNotIn(key, manifest)
+        self.assertEqual("./hooks/hooks.json", manifest["hooks"])
         self.assertTrue(SKILL_FILE.is_file())
 
 
@@ -111,6 +117,9 @@ class PluginAgentTests(unittest.TestCase):
                 lines = frontmatter.splitlines()
                 self.assertIn(f"tools: {self.EXPECTED_TOOLS[path.name]}", lines)
                 self.assertTrue(
+                    any(line.startswith("maxTurns: ") for line in lines)
+                )
+                self.assertTrue(
                     any(
                         line.startswith("name: ") and line.split(": ", 1)[1].strip()
                         for line in lines
@@ -123,6 +132,49 @@ class PluginAgentTests(unittest.TestCase):
                         for line in lines
                     )
                 )
+
+
+class SessionStateHookTests(unittest.TestCase):
+    HOOK_SCRIPT = PLUGIN_ROOT / "hooks" / "validate-session-state.sh"
+
+    def run_hook(self, file_path: str) -> subprocess.CompletedProcess[str]:
+        payload = json.dumps(
+            {"tool_name": "Write", "tool_input": {"file_path": file_path}}
+        )
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(PLUGIN_ROOT))
+        return subprocess.run(
+            [str(self.HOOK_SCRIPT)],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+
+    def test_hook_wiring_targets_write_and_edit(self) -> None:
+        config = load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
+        entry = config["hooks"]["PostToolUse"][0]
+        self.assertEqual("Write|Edit", entry["matcher"])
+        self.assertEqual(
+            "${CLAUDE_PLUGIN_ROOT}/hooks/validate-session-state.sh",
+            entry["hooks"][0]["command"],
+        )
+        self.assertTrue(os.access(self.HOOK_SCRIPT, os.X_OK))
+
+    def test_hook_ignores_unrelated_writes(self) -> None:
+        result = self.run_hook("/tmp/unrelated.txt")
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("", result.stderr)
+
+    def test_hook_reports_an_invalid_session_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / "reports" / "research-direction" / "s1"
+            session_dir.mkdir(parents=True)
+            state_path = session_dir / "session-state.json"
+            state_path.write_text("{}", encoding="utf-8")
+            result = self.run_hook(str(state_path))
+        self.assertEqual(2, result.returncode)
+        self.assertIn("Session validation failed", result.stderr)
 
 
 class SkillFrontmatterTests(unittest.TestCase):
