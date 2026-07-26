@@ -3499,12 +3499,6 @@ def validate_control_input_snapshot(
             f"{location}.failed_packets includes packets that were not rejected "
             f"prior dispatches {invalid_failed}"
         )
-    retry_counts = (
-        control.get("retry_counts")
-        if isinstance(control, dict)
-        and isinstance(control.get("retry_counts"), dict)
-        else {}
-    )
     if isinstance(failed_packets_value, list):
         for failed_index, failed in enumerate(failed_packets_value):
             if not isinstance(failed, dict):
@@ -3543,7 +3537,12 @@ def validate_control_input_snapshot(
                     if isinstance(rejection, dict)
                     else None
                 ),
-                "retry_count": retry_counts.get(valid_failed_packet_id, 0),
+                "retry_count": sum(
+                    1
+                    for record in prior_transition_records
+                    if record.get("action") == "RETRY_ROLE"
+                    and record.get("retry_key") == valid_failed_packet_id
+                ),
             }
             for field, expected in expected_failed_fields.items():
                 if failed.get(field) != expected:
