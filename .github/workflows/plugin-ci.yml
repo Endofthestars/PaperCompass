@@ -62,7 +62,7 @@ jobs:
 
       - name: Install Claude Code
         run: |
-          curl -fsSL https://code.claude.com/install.sh | bash
+          curl -fsSL https://claude.ai/install.sh | bash -s 2.1.220
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Record Claude Code version

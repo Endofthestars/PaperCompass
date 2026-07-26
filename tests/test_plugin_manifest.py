@@ -86,41 +86,43 @@ class ManifestParityTests(unittest.TestCase):
 
 
 class PluginAgentTests(unittest.TestCase):
-    def test_agents_declare_launchable_tool_whitelists(self) -> None:
-        # Claude Code refuses to launch an agent whose tools list resolves to
-        # nothing (and `claude plugin validate` does not catch it), so every
-        # bundled agent must whitelist at least one real tool.
+    # Exact single-line whitelists. Claude Code refuses to launch an agent
+    # whose tools list resolves to nothing (and `claude plugin validate` does
+    # not catch that), and the mainline-controller contract forbids any
+    # content, write, or network tool — so the whitelists are pinned verbatim.
+    # If an agent legitimately changes tools, update this table deliberately.
+    EXPECTED_TOOLS = {
+        "mainline-controller.md": "Glob",
+        "research-role.md": "Read",
+        "search-verification.md": "Read, WebSearch, WebFetch",
+    }
+
+    def test_bundled_agents_match_the_pinned_tool_whitelists(self) -> None:
         agent_files = sorted((PLUGIN_ROOT / "agents").glob("*.md"))
-        self.assertTrue(agent_files, "no bundled plugin agents found")
+        self.assertEqual(
+            sorted(self.EXPECTED_TOOLS),
+            [path.name for path in agent_files],
+        )
         for path in agent_files:
             with self.subTest(agent=path.name):
                 text = path.read_text(encoding="utf-8")
                 self.assertTrue(text.startswith("---\n"))
                 frontmatter = text.split("---\n", 2)[1]
-                fields = {
-                    line.split(":", 1)[0].strip(): line.split(":", 1)[1].strip()
-                    for line in frontmatter.splitlines()
-                    if ":" in line
-                }
-                self.assertTrue(fields.get("name"))
-                self.assertTrue(fields.get("description"))
-                tools = fields.get("tools", "")
-                self.assertTrue(tools)
-                self.assertNotEqual("[]", tools)
-
-    def test_controller_agent_cannot_read_write_or_search(self) -> None:
-        # The Mainline Workflow Controller contract forbids inspecting files,
-        # editing state, or external retrieval; its whitelist must not grant
-        # content access even accidentally.
-        text = (PLUGIN_ROOT / "agents" / "mainline-controller.md").read_text(
-            encoding="utf-8"
-        )
-        frontmatter = text.split("---\n", 2)[1]
-        tools_line = next(
-            line for line in frontmatter.splitlines() if line.startswith("tools:")
-        )
-        for forbidden in ("Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch"):
-            self.assertNotIn(forbidden, tools_line)
+                lines = frontmatter.splitlines()
+                self.assertIn(f"tools: {self.EXPECTED_TOOLS[path.name]}", lines)
+                self.assertTrue(
+                    any(
+                        line.startswith("name: ") and line.split(": ", 1)[1].strip()
+                        for line in lines
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        line.startswith("description: ")
+                        and line.split(": ", 1)[1].strip()
+                        for line in lines
+                    )
+                )
 
 
 class SkillFrontmatterTests(unittest.TestCase):

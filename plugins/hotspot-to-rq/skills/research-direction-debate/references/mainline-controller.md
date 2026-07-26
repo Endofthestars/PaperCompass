@@ -21,6 +21,10 @@ The controller must not:
   or the full user/Orchestrator conversation
 - invoke tools, edit artifacts, message research roles, or address the user
 
+A runtime that cannot launch a tool-less agent may grant the controller one
+metadata-only tool (for example a path lister) so the lane can start; invoking
+any granted tool remains a contract violation.
+
 ## Lifecycle and isolation
 
 Create the controller after `session-state.json` is initialized and before the

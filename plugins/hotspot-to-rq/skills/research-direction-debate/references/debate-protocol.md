@@ -59,7 +59,9 @@ the user confirms the final RQ in non-evaluation modes. Create
 
 Use UTF-8 JSON, schema version `1.3`, and keep it valid after every committed
 transition. The validator continues to accept legacy `1.1` and `1.2` sessions;
-do not create a new legacy session.
+do not create a new legacy session. Regardless of schema version,
+`session-state.json` must be strict UTF-8 JSON: no byte-order mark, duplicate
+object keys, or non-finite numbers.
 Required top-level fields:
 
 ```text

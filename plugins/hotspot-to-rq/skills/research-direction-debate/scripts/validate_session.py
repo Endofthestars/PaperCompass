@@ -2781,7 +2781,7 @@ def parse_strict_json_bytes(
 
     try:
         return json.loads(
-            raw,
+            raw.decode("utf-8"),
             object_pairs_hook=reject_duplicate_keys,
             parse_constant=reject_nonfinite,
         )
@@ -4823,7 +4823,7 @@ def validate_mainline_control(
                     and dispatch.get("packet_id") in accepted_packet_ids
                     for dispatch in prior["dispatches"]
                 ):
-                    return True
+                    return not missing
             return False
 
         for required_action in required_actions:

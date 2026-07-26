@@ -6,7 +6,7 @@ import re
 import json
 import sys
 
-ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "data/Paper-Notes.incomplete/docs")
+ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "data/Paper-Notes/docs")
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "reports/paper-notes-trends.json")
 
 def frontmatter(text):

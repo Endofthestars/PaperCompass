@@ -37,11 +37,14 @@ When the runtime exposes this plugin's bundled agent types, dispatch through the
 matching one: `mainline-controller` for the control lane, `search-verification`
 for the Search and Verification Specialist, and `research-role` for every other
 delegated role. Their tool boundaries enforce the isolation contracts in
-`references/agent-contracts.md`. Otherwise use the runtime's generic
-clean-context delegation tool with the same envelopes.
+`references/agent-contracts.md`. One exception: the bundled `research-role`
+cannot execute code, so a user-authorized local reproduction run dispatches the
+Reproducibility Auditor through the runtime's generic delegation tool instead.
+Use that generic clean-context tool with the same envelopes whenever bundled
+agent types are unavailable.
 
-Keep the main agent as orchestrator. It owns project inspection, state, external
-search transport, user communication, and final synthesis. Delegated roles must
+Keep the main agent as orchestrator. It owns project inspection, state,
+external retrieval dispatch, user communication, and final synthesis. Delegated roles must
 stay within the contracts in `references/agent-contracts.md`.
 
 Run one bounded Mainline Workflow Controller lane per session. It advises only

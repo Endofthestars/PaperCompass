@@ -116,7 +116,8 @@ Mainline Workflow Controller 是只读控制面，不是第二个主代理：它
 ```
 
 该脚本会运行单元测试与 Codex 校验器；当本机安装了 Claude Code CLI 时，
-还会对双 manifest 与 marketplace 运行 `claude plugin validate --strict`。
+还会对 Claude 侧 manifest 与 marketplace 运行 `claude plugin validate
+--strict`（Codex manifest 由 Codex 校验器与 JSON 语法检查覆盖）。
 
 端到端 smoke test：
 

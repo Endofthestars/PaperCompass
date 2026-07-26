@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PINNED_CODEX_SHA = "61a44880a85d2fd0d8770908dea5733495e571c8"
+PINNED_CLAUDE_CODE = "2.1.220"
 SETUP_PYTHON_ACTION = "actions/setup-python@v7"
 
 
@@ -22,7 +23,10 @@ class CiWorkflowTests(unittest.TestCase):
 
     def test_blocking_ci_validates_the_claude_code_plugin(self) -> None:
         workflow = (WORKFLOWS / "plugin-ci.yml").read_text(encoding="utf-8")
-        self.assertIn("https://code.claude.com/install.sh", workflow)
+        self.assertIn(
+            f"curl -fsSL https://claude.ai/install.sh | bash -s {PINNED_CLAUDE_CODE}",
+            workflow,
+        )
         self.assertIn("claude plugin validate plugins/hotspot-to-rq --strict", workflow)
         self.assertIn("claude plugin validate . --strict", workflow)
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -1731,6 +1733,57 @@ class StrictIntegerRegressionTests(unittest.TestCase):
             self.assertTrue(
                 any("min_rounds must equal the integer 3" in error for error in errors)
             )
+
+
+class StrictnessRegressionTests(unittest.TestCase):
+    def test_require_keys_reports_missing_keys_via_return_value(self) -> None:
+        errors: list[str] = []
+        self.assertFalse(
+            validator.require_keys({"a": 1}, ("a", "b"), "loc", errors)
+        )
+        self.assertEqual(["loc.b is required"], errors)
+
+        errors = []
+        self.assertTrue(validator.require_keys({"a": 1}, ("a",), "loc", errors))
+        self.assertEqual([], errors)
+
+    def test_stored_retry_count_must_be_exactly_one(self) -> None:
+        # An explicit 0 entry passed the controller validator while the
+        # session validator rejected it; both now require exactly 1.
+        state = control_state()
+        state["mainline_control"]["retry_counts"] = {"PACKET-1": 0}
+        errors: list[str] = []
+        controller_validator.validate_mainline_state(state, errors)
+        self.assertTrue(any("must be integer 1" in error for error in errors))
+
+    def test_state_parsing_rejects_duplicates_nonfinite_and_non_utf8(self) -> None:
+        cases = {
+            "duplicate keys": b'{"a": 1, "a": 2}',
+            "non-finite": b'{"a": NaN}',
+            "utf-16": '{"a": 1}'.encode("utf-16"),
+            "utf-8 bom": b'\xef\xbb\xbf{"a": 1}',
+        }
+        for label, raw in cases.items():
+            with self.subTest(case=label):
+                errors: list[str] = []
+                self.assertIsNone(
+                    validator.parse_strict_json_bytes(raw, "state", errors)
+                )
+                self.assertTrue(errors)
+
+    def test_cli_rejects_a_duplicate_key_state_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / "20260726-000000"
+            session_dir.mkdir()
+            (session_dir / "session-state.json").write_bytes(b'{"a": 1, "a": 2}')
+            result = subprocess.run(
+                [sys.executable, "-B", str(VALIDATOR_PATH), str(session_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(1, result.returncode)
+            self.assertIn("cannot parse", result.stdout)
 
 
 class ControllerDecisionTests(unittest.TestCase):
