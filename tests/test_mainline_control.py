@@ -1771,6 +1771,82 @@ class StrictnessRegressionTests(unittest.TestCase):
                 )
                 self.assertTrue(errors)
 
+    def test_delegated_panel_selection_check_does_not_crash(self) -> None:
+        # Regression: has_delegated_panel_product() once hit a stray
+        # `return not missing` (NameError) on its success path, so a fully
+        # matched user-delegated direction selection crashed the validator.
+        judge = {
+            "packet_id": "DIRSEL-1",
+            "phase": "DIRECTION_SELECTION",
+            "role": "Panel Judge",
+            "candidate_id": None,
+            "round": None,
+            "depends_on_packet_ids": [],
+        }
+        transitions = [
+            transition(),
+            transition(
+                revision=2,
+                packet_id="CTRL-0002",
+                digest="b" * 64,
+                checkpoint="PRE_USER_GATE",
+                from_status="SCANNING",
+                action="HOLD_FOR_USER",
+                to_status="DIRECTION_GATE",
+                pending_user_gate="DIRECTION_SELECTION",
+                required_actions=[],
+                required_checks=["PERSIST_STATE", "RUN_SESSION_VALIDATOR"],
+            ),
+            transition(
+                revision=3,
+                packet_id="CTRL-0003",
+                digest="c" * 64,
+                checkpoint="POST_USER_GATE",
+                from_status="DIRECTION_GATE",
+                to_status="SCANNING",
+                dispatches=[judge],
+                required_actions=[],
+                required_checks=[
+                    "PERSIST_STATE",
+                    "VERIFY_ENVELOPES",
+                    "ENFORCE_BUDGET",
+                    "VERIFY_GATE_RECEIPT",
+                ],
+            ),
+            transition(
+                revision=4,
+                packet_id="CTRL-0004",
+                digest="d" * 64,
+                checkpoint="PHASE_BOUNDARY",
+                from_status="SCANNING",
+                to_status="CANDIDATE_GENERATION",
+                required_actions=["APPLY_PANEL_DIRECTION_SELECTION"],
+                required_checks=["PERSIST_STATE"],
+            ),
+        ]
+        products = [
+            research_product(
+                "DIRSEL-1", "DIRECTION_SELECTION", "Panel Judge", None, None
+            )
+        ]
+        state = control_state(
+            status="CANDIDATE_GENERATION",
+            transitions=transitions,
+            products=products,
+        )
+        state["gate_receipts"] = [
+            {
+                "receipt_id": "GATE-DIRECTION-0001",
+                "gate": "DIRECTION_SELECTION",
+                "action": "DELEGATE",
+                "values": [],
+                "based_on_revision": 2,
+                "received_at": "2026-07-25T12:10:00+08:00",
+            }
+        ]
+        errors: list[str] = []
+        validator.validate_mainline_control(state, errors)
+
     def test_cli_rejects_a_duplicate_key_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session_dir = Path(tmp) / "20260726-000000"

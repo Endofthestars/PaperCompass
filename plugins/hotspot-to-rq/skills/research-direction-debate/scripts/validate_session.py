@@ -4823,7 +4823,7 @@ def validate_mainline_control(
                     and dispatch.get("packet_id") in accepted_packet_ids
                     for dispatch in prior["dispatches"]
                 ):
-                    return not missing
+                    return True
             return False
 
         for required_action in required_actions:
