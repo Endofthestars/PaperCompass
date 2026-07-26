@@ -1,15 +1,15 @@
 {
   "name": "hotspot-to-rq",
-  "version": "0.4.0+codex.20260723161635",
-  "description": "Choose broad project directions or assess completed experiments through context-isolated Socratic debate and session validation.",
+  "version": "0.5.0+codex.20260725155110",
+  "description": "Choose research directions or assess experiments through a mainline-controlled, context-isolated workflow.",
   "author": {
     "name": "PaperNotes Project"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Hotspot to Research Question",
-    "shortDescription": "Choose directions or assess completed experiments.",
-    "longDescription": "Scans project evidence to present a broad direction map for selection, or audits an existing experimental direction through evidence inventory, result validation, external positioning, Socratic debate, and a continue/repair/pivot/stop decision.",
+    "shortDescription": "Mainline-controlled research decisions.",
+    "longDescription": "Uses a bounded Mainline Workflow Controller to route and checkpoint project evidence mapping or existing-experiment evaluation, while isolated research roles and deterministic validators enforce evidence, debate, user gates, retries, and resumability.",
     "developerName": "PaperNotes Project",
     "category": "Productivity",
     "capabilities": [
@@ -17,6 +17,6 @@
       "Interactive",
       "Multi-agent"
     ],
-    "defaultPrompt": "Evaluate my existing experiments before recommending whether to continue, repair, pivot, or stop."
+    "defaultPrompt": "Use the Mainline Workflow Controller to route this request, checkpoint every gate, and stop at the first required user decision."
   }
 }

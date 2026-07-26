@@ -10,7 +10,8 @@ PaperCompass 是一个 Codex 插件项目：它把本地论文笔记、趋势报
 
 ## 安装 Codex 插件
 
-需要已安装并登录 Codex CLI。插件由此仓库的 marketplace（当前标识为 `personal`）提供。
+需要已安装并登录 Codex CLI。插件由此仓库现有的 marketplace（标识为
+`personal`）提供；更新时保留该标识，避免破坏已有安装。
 
 ### 从 GitHub 安装
 
@@ -22,22 +23,97 @@ codex plugin marketplace add Endofthestars/PaperCompass --ref main
 codex plugin add hotspot-to-rq@personal
 ```
 
-安装后，在 Codex 对话中可通过 `$hotspot-to-rq:research-direction-debate` 调用研究方向辩论工作流。
+安装后，请新建一个 Codex 任务，再通过
+`$hotspot-to-rq:research-direction-debate` 调用工作流。已打开的任务不会热加载
+新安装或刚升级的 plugin 内容。
 
 ### 本地开发安装
 
-在本仓库根目录执行：
+仅在尚未配置名为 `personal` 的 marketplace 的新环境里，在本仓库根目录执行：
 
 ```bash
 codex plugin marketplace add .
 codex plugin add hotspot-to-rq@personal
 ```
 
-在推送新版本后，使用以下命令刷新 Git marketplace：
+如果 `personal` 已指向 Git source，不要再执行 `marketplace add .`；修改 plugin
+后先更新开发 cachebuster，再运行下方测试。Git marketplace 需要提交并推送新
+版本后才能刷新：
 
 ```bash
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/plugin-creator/scripts/update_plugin_cachebuster.py" \
+  plugins/hotspot-to-rq
+./scripts/test_plugin.sh
+
 codex plugin marketplace upgrade personal
+codex plugin add hotspot-to-rq@personal
 ```
+
+刷新后新建 Codex 任务验证新版本。
+
+## Plugin 工作流
+
+```text
+主代理识别 DISCOVER / REFINE / RQ-only / EVALUATE
+  → 创建 schema 1.3 session
+  → Mainline Workflow Controller 检查状态并批量调度独立角色
+  → 主代理执行调用、写入产物
+  → Panel Judge 给出科学判断
+  → Controller 在角色/轮次/阶段边界决定推进、修复、重试、暂停或阻塞
+  → deterministic validator 放行 user gate
+  → 主代理获取并记录用户 receipt
+  → RQ 确认后完成；EVALUATE 则在实验决策后生成最小下一实验计划并校验完成
+```
+
+Mainline Workflow Controller 是只读控制面，不是第二个主代理：它不能搜索、
+改文件、替 Panel Judge 判断研究价值，或替用户选择。主代理仍是唯一执行者和
+用户接口。
+
+## 实际测试 Plugin
+
+静态验证和回归测试：
+
+```bash
+./scripts/test_plugin.sh
+```
+
+端到端 smoke test：
+
+1. 按“本地开发安装”安装或刷新 plugin；用 `codex plugin list --json` 确认
+   `hotspot-to-rq` 的已安装版本与
+   `plugins/hotspot-to-rq/.codex-plugin/plugin.json` 完全一致，再新建 Codex
+   任务。旧任务不会热加载新版本。
+2. 调用：
+
+   ```text
+   Use $hotspot-to-rq:research-direction-debate with its Mainline Workflow
+   Controller to inspect this project and stop at the first required user gate.
+   ```
+
+3. 确认首次输出会报告路由、session、controller 状态和当前阶段，而不是直接
+   给出最终研究方向。
+4. 检查 `reports/research-direction/<session-id>/session-state.json`：
+   `schema_version` 为 `1.3`，`mainline_control.revision` 连续递增，
+   CONTROL packet 与 transition 一一对应；每个 transition 的
+   `control_input_path` 都存在且 digest 匹配。
+5. 在方向 gate 回复选择后，确认存在对应 `gate_receipts`，且不会重复 dispatch
+   已接受或已拒绝的 packet。RQ `CONFIRM` receipt 必须同时绑定候选 ID 和用户
+   实际看到的 RQ packet ID；确认后只能执行确认落盘与完成校验，不能再改写 RQ。
+6. 对 session 运行：
+
+   ```bash
+   python3 <skill-root>/scripts/validate_controller_decision.py \
+     reports/research-direction/<session-id>/session-state.json \
+     <controller-output.json> \
+     --control-input reports/research-direction/<session-id>/control-input.json
+
+   python3 <skill-root>/scripts/validate_session.py \
+     reports/research-direction/<session-id>
+   ```
+
+   第一条用于每次 controller 调用落盘前；第二条用于每个 staged
+   transition。只有两者都通过后，工作流才应执行 dispatch、展示 user gate
+   或声明完成。
 
 ## 数据工作流
 

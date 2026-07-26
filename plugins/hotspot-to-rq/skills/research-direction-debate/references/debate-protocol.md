@@ -4,16 +4,17 @@
 
 1. Session initialization
 2. Machine-readable state
-3. Macro direction mapping, gate, or existing-experiment intake
-4. Candidate selection, lineage, or evaluation target
-5. Round sequence
-6. Search triggers and budgets
-7. Evidence ledger
-8. Identification or experiment-validity gate
-9. Convergence and transitions
-10. User gates
-11. Artifacts and validation
-12. Failure paths
+3. Mainline control plane
+4. Macro direction mapping, gate, or existing-experiment intake
+5. Candidate selection, lineage, or evaluation target
+6. Round sequence
+7. Search triggers and budgets
+8. Evidence ledger
+9. Identification or experiment-validity gate
+10. Convergence and transitions
+11. User gates
+12. Artifacts and validation
+13. Failure paths
 
 ## Session initialization
 
@@ -56,7 +57,9 @@ the user confirms the final RQ in non-evaluation modes. Create
 
 ## Machine-readable state
 
-Use UTF-8 JSON, schema version `1.2`, and keep it valid after every transition.
+Use UTF-8 JSON, schema version `1.3`, and keep it valid after every committed
+transition. The validator continues to accept legacy `1.1` and `1.2` sessions;
+do not create a new legacy session.
 Required top-level fields:
 
 ```text
@@ -83,6 +86,8 @@ source_ledger
 search_budget
 accepted_work_products
 rejected_work_products
+mainline_control
+gate_receipts
 user_required
 updated_at
 ```
@@ -108,6 +113,34 @@ Use:
 - `min_rounds`: `3`
 - `default_rounds`: `4`
 - `max_rounds`: `6`
+
+Initialize control fields before the first delegated call:
+
+```json
+{
+  "mainline_control": {
+    "controller_id": "MAINLINE",
+    "controller_status": "ACTIVE",
+    "revision": 0,
+    "last_checkpoint": null,
+    "pending_user_gate": null,
+    "last_controller_packet_id": null,
+    "retry_counts": {},
+    "lane_search_requests": [],
+    "transition_log": []
+  },
+  "gate_receipts": []
+}
+```
+
+Revision 0 is a bootstrap state. It is valid only at `SCANNING` for
+non-evaluation modes or `EVIDENCE_INTAKE` for evaluation, before any accepted
+work product. The first `SESSION_INIT` transition has no role dispatch and runs
+exactly `BUILD_PROJECT_EVIDENCE_PACK` outside evaluation mode, or
+`BUILD_EVALUATION_INPUT_SNAPSHOT` in evaluation mode. The evaluation action
+resolves the target and initial inventory shell; the Experiment Auditor creates
+the full experiment evidence pack afterward. Commit this transition before
+calling a research role.
 
 Default `interaction_mode` to `GUIDED`. Use `AUTONOMOUS` only when the user
 explicitly asks the panel to select broad directions without an early pause.
@@ -261,6 +294,12 @@ An `evaluate` session stores its target and evidence state as follows:
 }
 ```
 
+At `EVIDENCE_INTAKE` only, a missing `direction`, `primary_claim`, or
+`study_type` may be an empty string when `user_required` contains the matching
+code `EVALUATION_DIRECTION`, `PRIMARY_CLAIM`, or `STUDY_TYPE`. Ask for that
+smallest clarification before calling the Experiment Auditor. All three fields
+must be non-empty before `RESULT_VALIDATION`.
+
 Initialize the top-level search budget as:
 
 ```json
@@ -288,6 +327,98 @@ Record every accepted role output in `accepted_work_products`:
 
 Copy identity fields from the echoed role envelope. The validator recomputes the
 fingerprint and checks phase-specific role coverage.
+
+Record an accepted agent controller output with `phase: CONTROL`, role
+`Mainline Workflow Controller`, null candidate and round, plus
+`control_revision`, `state_digest`, and `control_input_digest`:
+
+```json
+{
+  "packet_id": "CTRL-0001",
+  "phase": "CONTROL",
+  "role": "Mainline Workflow Controller",
+  "session_id": "20260723-160000",
+  "project_root": "/absolute/project",
+  "project_snapshot": "snapshot-id",
+  "candidate_id": null,
+  "round": null,
+  "control_revision": 0,
+  "state_digest": "<lowercase sha256>",
+  "control_input_digest": "<lowercase sha256>",
+  "context_fingerprint": "<lowercase sha256>"
+}
+```
+
+For a deterministic fallback, use the same shape with role
+`Deterministic Mainline Fallback`.
+
+## Mainline control plane
+
+Read `mainline-controller.md` before invoking the controller. Persist each
+accepted directive as one transition:
+
+```json
+{
+  "revision": 1,
+  "observed_revision": 0,
+  "packet_id": "CTRL-0001",
+  "observed_state_digest": "<lowercase sha256>",
+  "control_input_digest": "<lowercase sha256>",
+  "control_input_path": "control-inputs/CTRL-0001.json",
+  "checkpoint": "SESSION_INIT",
+  "from_status": "SCANNING",
+  "action": "ADVANCE",
+  "to_status": "SCANNING",
+  "pending_user_gate": null,
+  "dispatches": [],
+  "required_actions": ["BUILD_PROJECT_EVIDENCE_PACK"],
+  "required_checks": ["PERSIST_STATE"],
+  "reason_codes": ["SESSION_INITIALIZED"],
+  "blocking_reasons": [],
+  "retry_key": null,
+  "recorded_at": "2026-07-25T12:00:00+08:00"
+}
+```
+
+The committed state must satisfy all of these:
+
+- revisions begin at 1 and are consecutive
+- `observed_revision` is exactly `revision - 1`
+- every transition's `from_status` equals the prior transition's `to_status`
+- top-level control revision equals the transition count
+- the last packet, checkpoint, pending gate, and state status match the last
+  transition
+- accepted CONTROL packets and transition packet IDs form a one-to-one set
+- the CONTROL packet's `control_revision`, `state_digest`, and
+  `control_input_digest` match the transition's observed values
+- `control_input_path` is exactly `control-inputs/<CONTROL packet ID>.json`;
+  the file exists, has the recorded digest, uses the strict control-input
+  schema, and binds the transition's revision, state, status, mode, and
+  checkpoint
+
+Only `HOLD_FOR_USER` may set a pending gate. Use `REPAIR_STATE` or
+`RETRY_ROLE` as a same-status transition. A retry must reference one recorded
+rejected packet, preserve its original phase/role/candidate/round, and may occur
+once for that logical call; a retry packet cannot start another retry chain.
+`BLOCK_SESSION` targets `BLOCKED`; `COMPLETE` targets `COMPLETE`.
+
+Stage a proposed controller transition, state update, and artifact metadata
+together. Validate the controller output, then validate the staged session.
+Replace live state only when both pass. At user gates and completion, fail
+closed rather than committing a half-valid state.
+
+Before every controller call, write an immutable per-revision control snapshot
+(for example `control-inputs/CTRL-0007.json`) and copy those exact bytes to the
+companion `control-input.json` used by the runtime validator. Hash the bytes into
+the CONTROL envelope and committed transition. The snapshot contains exact
+accepted/failed packet projections, active-lane next roles and dependencies,
+persisted verdicts, readiness, receipts, blockers, and legal target statuses.
+
+Do not upgrade a legacy `1.1` or `1.2` session in place. Start a new `1.3`
+session, reference the legacy artifact paths in the evidence pack, and route
+through `SESSION_INIT`; this avoids inventing controller dispatches for old work
+products. Use `RESUME` only when a session already has non-empty, valid `1.3`
+control history.
 
 ## Macro direction mapping and gate
 
@@ -318,6 +449,11 @@ After a user selection, mark 1-2 directions `SELECTED`, mark the remainder
 `CANDIDATE_GENERATION`, and continue. This intermediate state may be checkpointed
 before or after the Hotspot Analyst returns. Set `DEBATING` only after detailed
 candidate screening is complete.
+
+When the user delegates the choice, record `DIRECTION_SELECTION/DELEGATE`,
+return to `SCANNING`, and dispatch a fresh `DIRECTION_SELECTION` Panel Judge.
+Only after that accepted product identifies 1-2 directions may the Orchestrator
+record `PANEL_DELEGATED` and advance to `CANDIDATE_GENERATION`.
 
 In explicit `AUTONOMOUS`, use a fresh `DIRECTION_SELECTION` Panel Judge to
 select 1-2 directions, record `PANEL_AUTONOMOUS`, and continue without pausing.
@@ -446,13 +582,26 @@ Run this exact sequence separately for each active candidate:
 2. Evidence Researcher answers from available evidence.
 3. Devil's Advocate issues an independent challenge.
 4. Orchestrator collects `SEARCH_NEEDED` and counter-search requests.
+   If search is required, append one immutable
+   `mainline_control.lane_search_requests` record sourced from the accepted
+   same-lane Devil packet.
 5. If search is triggered, retrieve and verify evidence, then send the evidence
-   back to the Evidence Researcher for one revised answer.
+   back to the Evidence Researcher for exactly one revised answer. Mark this
+   dispatch `SUPERSEDE_ACCEPTED_CALL` and depend on both the original Evidence
+   and Search packets.
 6. A fresh Panel Judge reads the structured question, answer, challenge, search
    result, and revision.
 7. Judge emits one transition and next-round focus.
-8. Orchestrator validates role envelopes, updates JSON state, and appends a
-   concise round record.
+8. Orchestrator validates role envelopes, updates the candidate/evaluation
+   delta, and appends a concise round record.
+9. After each dependency level resolves, invoke `ROLE_BOUNDARY`; the controller
+   uses the exact `active_lanes.next_role` and dependency packet IDs to batch
+   the next ready role across independent lanes.
+10. Invoke `ROUND_BOUNDARY` only after every continuing lane is ready for its
+    next Mentor and all current-lane Judges have returned. The controller checks
+    retry/search budgets, stop conditions, and gate readiness.
+11. Orchestrator validates and commits each control transition before executing
+    its batch.
 
 Never put multiple candidates in one role prompt. Run candidate lanes in
 parallel only when each lane has a separate envelope and isolated role contexts.
@@ -614,10 +763,54 @@ After `CONVERGED`, set a generated candidate to `READY_FOR_GATE`; keep a derived
 candidate `DOWNGRADED`. Set `gate_ready` to `true` only after the identification
 audit passes.
 
-At six rounds, stop automatically. Return the best supported state, unresolved
-issues, and a user gate instead of manufacturing convergence.
+At six rounds, stop automatically instead of manufacturing convergence. Set
+`early_exit_reason.code` to `MAX_ROUND_NONCONVERGENCE`, preserve the actual last
+verdict and unresolved issues, and run the identification audit on the
+best-supported state. A passing audit may mark the candidate
+`READY_FOR_GATE`/`DOWNGRADED` and `gate_ready: true` for an explicitly uncertain
+human choice; it does not relabel the candidate `CONVERGED`.
 
 ## User gates
+
+Only the Orchestrator may create a gate receipt, and only after a direct user
+reply. Record:
+
+```json
+{
+  "receipt_id": "GATE-CANDIDATE-0001",
+  "gate": "CANDIDATE_SELECTION",
+  "action": "SELECT",
+  "values": ["C01"],
+  "based_on_revision": 8,
+  "received_at": "2026-07-25T12:30:00+08:00"
+}
+```
+
+`based_on_revision` must identify a committed `HOLD_FOR_USER` transition for the
+same gate, except that a blocker receipt references the `BLOCK_SESSION`
+transition that first entered `BLOCKED` in the current blocking episode.
+Allowed actions are:
+
+- direction: `SELECT|DELEGATE|REVISE`
+- candidate: `SELECT|REJECT|BROADEN`
+- RQ confirmation: `CONFIRM|REVISE`
+- evaluation decision: `CONFIRM|OVERRIDE`
+- blocker decision: `REPAIR|STOP`
+
+For `SELECT`, put the selected direction or candidate IDs in `values`. For RQ
+`CONFIRM`, put exactly `[selected_candidate_id, confirmed_rq_packet_id]` in
+`values`; the packet must be the accepted Research Question Architect result
+actually shown to the user. For an evaluation confirmation or override, put the
+resulting decision verdict in `values`.
+For blocker `REPAIR`, put the blocked transition's `from_status` in `values`;
+this is an audit binding, not a user-selected workflow status. Blocker `STOP`
+and other actions that do not select or confirm anything use an empty `values`
+array.
+
+The controller may consume a receipt but may never create, alter, or infer one.
+After blocker `REPAIR`, call it at `RECOVERY` or `RESUME`; it may only advance
+back to the status that entered the blocking episode. Blocker `STOP` leaves the
+session at `BLOCKED` without another controller transition.
 
 ### Macro direction gate
 
@@ -636,7 +829,10 @@ Ask only:
 > Select 1-2 direction IDs, ask the panel to choose, or request a revised map.
 
 Do not silently continue if the user has not answered. A paused session remains
-valid and resumable at `DIRECTION_GATE`.
+valid and resumable at `DIRECTION_GATE`. Enter the state only with a committed
+`HOLD_FOR_USER` transition whose gate is `DIRECTION_SELECTION`, then run the
+session validator before presenting it. Record the direct reply as a direction
+gate receipt before leaving the gate.
 
 ### Candidate decision gate
 
@@ -645,18 +841,33 @@ Open `USER_GATE` when:
 - two or three candidates are ready and preference matters
 - only one candidate survives and the user must accept it or broaden scope
 - `USER_REQUIRED` fields affect ranking or feasibility
-- the final RQ is ready to freeze
 
 Before setting status `USER_GATE`:
 
 1. Populate `user_gate_candidate_ids`.
 2. Confirm each listed candidate has at least three rounds.
 3. Confirm each is gate-ready and has a passing identification audit.
-4. Run `scripts/validate_session.py`.
-5. Present actual per-candidate round counts.
+4. Commit `HOLD_FOR_USER` with gate `CANDIDATE_SELECTION`.
+5. Run `<skill-root>/scripts/validate_session.py`.
+6. Present actual per-candidate round counts.
 
 Do not surface `SCREENED_OUT`, `DEFERRED`, or `ELIMINATED` candidates as options.
-Include them in the audit trail with reasons.
+Include them in the audit trail with reasons. Do not set
+`selected_candidate_id` until a direct candidate-selection receipt is recorded.
+
+### Research-question confirmation gate
+
+After one fresh `Research Question Architect` refinement of the selected
+candidate, remain at `RQ_REFINEMENT` and commit `HOLD_FOR_USER` with gate
+`RQ_CONFIRMATION`. This refinement does not add candidate-debate rounds. Present
+the proposed RQ, scope, estimand, limitations, and strongest counterargument.
+Record `CONFIRM|REVISE`. A `CONFIRM` receipt binds both the selected candidate
+and the displayed RQ packet. Consume it with a no-dispatch `POST_USER_GATE`
+transition that requires exactly `APPLY_RQ_CONFIRMATION`, then immediately run
+`PRE_COMPLETE`; no later RQ dispatch or supersession is legal. A `REVISE`
+receipt uses empty `values` and requires exactly `APPLY_RQ_REVISION` plus one
+fresh Research Question Architect dispatch that supersedes the prior RQ packet.
+Only the confirmed two-step path permits `COMPLETE`.
 
 ### Evaluation decision gate
 
@@ -668,11 +879,13 @@ Open `DECISION_GATE` only after all of the following are true:
 3. External positioning is either source-ledgered or explicitly `UNRESOLVED`.
 4. At least three evaluation debate rounds are recorded.
 5. A fresh Panel Judge has issued the evaluation decision.
-6. `scripts/validate_session.py` passes.
+6. `<skill-root>/scripts/validate_session.py` passes.
 
 Ask the user to confirm whether to act on `CONTINUE`, `REPAIR`, `PIVOT`, `STOP`,
 or `INSUFFICIENT_EVIDENCE`. User-owned constraints such as deadline, compute,
-data access, and risk tolerance remain `USER_REQUIRED`; do not guess them.
+data access, and risk tolerance remain `USER_REQUIRED`; do not guess them. Enter
+the state with `HOLD_FOR_USER` and gate `EVALUATION_DECISION`; do not proceed to
+`NEXT_EXPERIMENT` without a direct evaluation-decision receipt.
 
 ## Artifacts and validation
 
@@ -763,19 +976,30 @@ the one decision-changing experiment or `NONE` rationale.
 Run:
 
 ```bash
-python3 scripts/validate_session.py reports/research-direction/<session-id>
+python3 <skill-root>/scripts/validate_controller_decision.py \
+  <project-root>/reports/research-direction/<session-id>/session-state.json \
+  <controller-output.json> \
+  --control-input \
+  <project-root>/reports/research-direction/<session-id>/control-input.json
+python3 <skill-root>/scripts/validate_session.py \
+  <project-root>/reports/research-direction/<session-id>
 ```
 
-Validation must pass before `DIRECTION_GATE`, `USER_GATE`, `DECISION_GATE`, and
-`COMPLETE`. If it fails, repair state or report the exact failure; never claim
-generic completion.
+Validate the controller output before staging its effects. Full session
+validation must pass before presenting `DIRECTION_GATE`, `USER_GATE`,
+`RQ_CONFIRMATION`, or `DECISION_GATE`, and before declaring `COMPLETE`. If it
+fails, do not commit the proposed gate/complete transition; record
+`CONTROL_PRECONDITION_FAILED`, repair the staged state, or report the exact
+failure.
 
 ## Failure paths
 
 - **No user response at direction gate**: remain at `DIRECTION_GATE`; do not
   auto-select or start debate.
 - **User rejects the direction map**: revise the map once using the user's
-  boundary; preserve the first map in the audit trail.
+  boundary; preserve the first map in the audit trail. Record
+  `DIRECTION_SELECTION/REVISE`, advance back to `SCANNING` for the bounded
+  remap, then open a new `DIRECTION_GATE` hold at a new control revision.
 - **Insufficient local signal**: broaden the local scan, then run one bounded
   external three-way scan.
 - **Search unavailable**: continue only with `UNRESOLVED`; make no novelty claim.
@@ -783,8 +1007,12 @@ generic completion.
   reopen the selected macro direction or choose another.
 - **Existing experiment lacks a primary claim**: remain at `EVIDENCE_INTAKE` and
   ask for the smallest clarification needed to identify the claim and comparison.
-- **Critical validity or integrity flaw**: record the flaw, return `REPAIR` or
-  `STOP`, and do not use external popularity to override it.
+- **Critical validity or integrity flaw**: commit `BLOCK_SESSION` at the current
+  phase and present the accepted Critical finding as a preliminary
+  repair-or-stop blocker. Do not claim a fully evaluated `REPAIR` or `STOP`
+  verdict or use external popularity to override it. Resume only after an
+  explicit user repair/stop response recorded as a `BLOCKER_DECISION` receipt;
+  the formal decision gate still requires its normal evidence and rounds.
 - **No rerunnable artifact**: continue with `ARTIFACT_INSPECTED` or `UNRESOLVED`;
   never imply local reproduction.
 - **No decision-changing next experiment**: choose `STOP` or
@@ -794,6 +1022,15 @@ generic completion.
   round but cannot erase dissent.
 - **Context contamination**: reject, log, and rerun the work product once with a
   clean envelope.
+- **Stale controller output**: reject it without changing revision, recompute the
+  state digest, and retry once in a fresh controller context.
+- **Repeated controller failure**: switch to `DEGRADED_FALLBACK` and run the
+  deterministic control checklist. At a gate, Critical stop, or completion,
+  block unless the same prerequisites and validators pass.
+- **Resume**: call the controller at `RESUME` before dispatching new work. Treat
+  accepted or rejected packet IDs as resolved. Do not duplicate a pending call,
+  repeat an accepted debate-round role, or disguise a rejected call as a new
+  `ADVANCE` dispatch.
 - **Repeated role failure**: mark the packet unresolved and continue or block
   the candidate; do not reuse a contaminated answer.
 - **Subjective unknown**: emit `USER_REQUIRED`; Evidence Researcher must not guess.

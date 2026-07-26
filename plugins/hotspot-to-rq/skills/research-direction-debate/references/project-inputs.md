@@ -159,6 +159,11 @@ experiment_inventory:
 claim_evidence_matrix: []
 ```
 
+During `EVIDENCE_INTAKE`, use an empty string only for a target field that is
+genuinely missing and add the corresponding `user_required` code:
+`EVALUATION_DIRECTION`, `PRIMARY_CLAIM`, or `STUDY_TYPE`. Do not create an
+Experiment Auditor call until those fields are resolved.
+
 External positioning begins only after this local inventory is complete enough
 to state the primary claim and its most important comparison. Search current
 literature, benchmarks, and artifacts when novelty, direct prior, contradiction,

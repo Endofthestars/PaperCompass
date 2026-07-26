@@ -15,13 +15,16 @@ Read these files completely before running the workflow:
 
 - `references/project-inputs.md` for local evidence discovery and canonical-source rules.
 - `references/agent-contracts.md` for role boundaries and Academic Research Suite mapping.
+- `references/mainline-controller.md` for control checkpoints, batched dispatch,
+  stale-state protection, and deterministic fallback.
 - `references/debate-protocol.md` for state transitions, round sequencing, budgets,
   identification gates, and artifacts.
 
 If `academic-research-suite` is available, also read its root router, route to
 `deep-research` in `socratic` mode, and load only the upstream agent files needed
 for the active phase. Use the bundled contracts when the upstream skill is absent,
-and disclose that degraded mode.
+and disclose a bundled-contract fallback. This fallback does not change
+`execution_mode`; reserve `DEGRADED_INLINE` for unavailable subagents.
 
 ## Core behavior
 
@@ -32,6 +35,12 @@ are available. Do not merely write one response under several role labels.
 Keep the main agent as orchestrator. It owns project inspection, state, external
 search transport, user communication, and final synthesis. Delegated roles must
 stay within the contracts in `references/agent-contracts.md`.
+
+Run one bounded Mainline Workflow Controller lane per session. It advises only
+on protocol sequencing, prerequisites, retries, gates, checkpoints, and batches
+of independent role calls. The main agent remains the sole tool executor, state
+writer, user-facing agent, and final decision presenter. Validate every
+controller directive before applying it.
 
 For non-evaluation calls, default to `GUIDED` interaction. After building a
 local evidence pack, present 4-6 macro directions and stop at `DIRECTION_GATE`
@@ -63,6 +72,8 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
      user-owned constraints. Ask only for missing high-impact inputs.
    - Keep all macro-direction and candidate fields empty; the direction is
      preseeded rather than a newly generated candidate.
+   - Start the clean Mainline Workflow Controller lane at `SESSION_INIT` before
+     calling an evaluation role.
 
 2. **Build the experiment evidence pack**
    - Inventory code, data/splits, configurations, all runs (including failed or
@@ -88,6 +99,8 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
      changing next step.
    - In each round use Mentor -> Evidence Researcher -> Devil's Advocate ->
      search/repair when triggered -> fresh Judge. Preserve dissent.
+   - At each `ROUND_BOUNDARY`, let the controller batch only independent next
+     calls; keep dependent calls in later batches.
 
 6. **Open the evaluation decision gate**
    - Present one of `CONTINUE`, `REPAIR`, `PIVOT`, `STOP`, or
@@ -97,9 +110,11 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
      work. Do not let an agent infer the user's risk tolerance or deadline.
 
 7. **Plan the minimum next experiment**
-   - Produce one information-gain-focused next experiment (or an explicit
-     no-further-experiment rationale for `STOP`) with decision rules and a
-     stop condition. Validate before `DECISION_GATE` and `COMPLETE`.
+   - After the evaluation-decision receipt, produce one information-gain-focused
+     next experiment (or an explicit no-further-experiment rationale for
+     `STOP`) with decision rules and a stop condition.
+   - Validate in `NEXT_EXPERIMENT` and again before `COMPLETE`; do not create
+     the plan before the user acts on `DECISION_GATE`.
 
 ### DISCOVER, REFINE, and RQ-only modes
 
@@ -108,6 +123,8 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
    - Initialize the six pre-selection Markdown artifacts with matching metadata.
    - Set `interaction_mode` to `GUIDED` unless the user explicitly requests
      `AUTONOMOUS`.
+   - Start the clean Mainline Workflow Controller lane at `SESSION_INIT` before
+     calling a research role.
    - Report the corpus, interaction mode, and current phase to the user.
 
 2. **Build a project evidence pack**
@@ -151,6 +168,8 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
      challenge -> evidence repair/search -> Judge verdict.
    - Keep one candidate per role call. Reuse a role agent only within one
      `(session, candidate, role)` lane; use a fresh Judge every round.
+   - At `ROUND_BOUNDARY`, ask the controller for one dispatch batch across
+     independent candidate lanes; never batch dependent roles from one lane.
    - Store concise role work products, not hidden chain-of-thought.
 
 7. **Search external evidence when triggered**
@@ -180,7 +199,9 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
      subjective inputs.
 
 10. **Refine and freeze the research question**
-   - Run a second, shorter debate on the selected direction.
+   - Run one fresh, structured `Research Question Architect` refinement on the
+     selected direction. Do not reuse or extend the capped candidate-debate
+     rounds.
    - Produce one primary research question, 2-3 subquestions, scope boundaries,
      preliminary FINER assessment, keywords, method direction, known limitations,
      and strongest counterargument.
@@ -188,8 +209,19 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
 
 11. **Validate the session**
    - Keep `session-state.json` current after every Judge transition.
-   - Run `python3 scripts/validate_session.py <session-directory>` before each user
-     gate and before declaring the session complete.
+   - Before each controller call, write the exact companion
+     `control-input.json`; when accepting the directive, preserve the same bytes
+     at `control-inputs/<CONTROL packet ID>.json`.
+   - Run the controller at `PHASE_BOUNDARY`, `ROLE_BOUNDARY`, `ROUND_BOUNDARY`,
+     `PRE_USER_GATE`, `POST_USER_GATE`, `RECOVERY`, `RESUME`, and
+     `PRE_COMPLETE` as applicable.
+   - Before committing a controller dispatch, run
+     `python3 <skill-root>/scripts/validate_controller_decision.py
+     <session-state.json> <controller-output.json> --control-input
+     <control-input.json>`.
+   - Run `python3 <skill-root>/scripts/validate_session.py <session-directory>`
+     on every staged controller transition, including before each user gate and
+     before declaring the session complete.
    - Repair validation failures or disclose the exact unresolved failure.
 
 ## Hard rules
@@ -214,6 +246,9 @@ label the run `DEGRADED_INLINE`, and tell the user before presenting results.
   contribution, create a derived candidate with a new ID and lineage.
 - Stop immediately on a Critical methodological or integrity flaw; revise or
   eliminate the candidate before continuing.
+- Never let the Mainline Workflow Controller choose scientific merit, infer a
+  user preference, override a Judge or Critical stop, mutate state directly, or
+  communicate with the user.
 
 ## Progress communication
 
@@ -231,6 +266,7 @@ Write resumable artifacts under
 or when the workflow is being run as a project task:
 
 - `session-state.json`
+- `control-inputs/<CONTROL packet ID>.json`
 - `project-evidence-pack.md`
 - `direction-map.md`
 - `candidate-directions.md`
