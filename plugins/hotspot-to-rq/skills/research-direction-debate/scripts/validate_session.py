@@ -445,10 +445,10 @@ def require_keys(
     if not isinstance(value, dict):
         errors.append(f"{location} must be an object")
         return False
-    for key in keys:
-        if key not in value:
-            errors.append(f"{location}.{key} is required")
-    return True
+    missing = [key for key in keys if key not in value]
+    for key in missing:
+        errors.append(f"{location}.{key} is required")
+    return not missing
 
 
 def parse_markdown_header(path: Path, errors: list[str]) -> dict[str, str] | None:
@@ -2776,8 +2776,15 @@ def parse_strict_json_bytes(
             parsed[key] = value
         return parsed
 
+    def reject_nonfinite(value: str) -> Any:
+        raise ValueError(f"non-finite number {value}")
+
     try:
-        return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+        return json.loads(
+            raw,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonfinite,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         errors.append(f"{location} is not strict UTF-8 JSON: {exc}")
         return None
@@ -5402,6 +5409,9 @@ def validate_mainline_control(
         )
 
     last = transitions[-1]
+    if not isinstance(last, dict):
+        # The per-transition loop above already reported the malformed entry.
+        return
     if control.get("last_checkpoint") != last.get("checkpoint"):
         errors.append(
             "mainline_control.last_checkpoint must match the last transition"
@@ -6064,9 +6074,15 @@ def main() -> int:
         print(f"Session validation failed: missing {state_path}")
         return 1
     try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw_state = state_path.read_bytes()
+    except OSError as exc:
         print(f"Session validation failed: cannot parse {state_path}: {exc}")
+        return 1
+    parse_errors: list[str] = []
+    state = parse_strict_json_bytes(raw_state, "session-state.json", parse_errors)
+    if parse_errors or not isinstance(state, dict):
+        detail = parse_errors[0] if parse_errors else "top-level value must be an object"
+        print(f"Session validation failed: cannot parse {state_path}: {detail}")
         return 1
 
     validate_state(session_dir, state, errors)

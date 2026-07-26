@@ -1372,6 +1372,142 @@ class MainlineControlTests(unittest.TestCase):
             lane["dependency_packet_ids"],
         )
 
+    def test_partial_lane_projection_survives_missing_earlier_roles(self) -> None:
+        # Regression: a lane whose accepted packets lacked the Mentor (or the
+        # Mentor and Evidence Researcher) crashed the live projection with an
+        # IndexError instead of producing a validation result.
+        evidence = {
+            "packet_id": "EVIDENCE-1",
+            "phase": "DEBATE",
+            "role": "Evidence Researcher",
+            "candidate_id": "C01",
+            "round": 1,
+            "depends_on_packet_ids": [],
+        }
+        search = {
+            "packet_id": "SEARCH-1",
+            "phase": "DEBATE",
+            "role": "Search and Verification Specialist",
+            "candidate_id": "C01",
+            "round": 1,
+            "depends_on_packet_ids": ["EVIDENCE-1"],
+        }
+        transitions = [transition()]
+        for revision, dispatch in enumerate((evidence, search), start=2):
+            transitions.append(
+                transition(
+                    revision=revision,
+                    packet_id=f"CTRL-000{revision}",
+                    digest=chr(96 + revision) * 64,
+                    checkpoint="ROLE_BOUNDARY",
+                    from_status="DEBATING",
+                    to_status="DEBATING",
+                    dispatches=[dispatch],
+                    required_actions=[],
+                    required_checks=[
+                        "PERSIST_STATE",
+                        "VERIFY_ENVELOPES",
+                        "ENFORCE_BUDGET",
+                    ],
+                )
+            )
+        accepted = {
+            dispatch["packet_id"]: research_product(
+                dispatch["packet_id"],
+                dispatch["phase"],
+                dispatch["role"],
+                dispatch["candidate_id"],
+                dispatch["round"],
+            )
+            for dispatch in (evidence, search)
+        }
+        state = control_state(status="DEBATING", transitions=transitions, products=[])
+        state.update(
+            {
+                "max_rounds": 6,
+                "initial_debate_candidate_ids": ["C01"],
+                "candidates": [
+                    {
+                        "candidate_id": "C01",
+                        "origin": "GENERATED",
+                        "status": "ACTIVE",
+                        "gate_ready": False,
+                        "rounds_completed": 0,
+                    }
+                ],
+            }
+        )
+
+        lane = controller_validator.expected_active_lanes(state, accepted)[0]
+        self.assertEqual("Evidence Researcher", lane["next_role"])
+        self.assertEqual(["EVIDENCE-1", "SEARCH-1"], lane["dependency_packet_ids"])
+
+        challenge = {
+            "packet_id": "DEVIL-1",
+            "phase": "DEBATE",
+            "role": "Devil's Advocate",
+            "candidate_id": "C01",
+            "round": 1,
+            "depends_on_packet_ids": [],
+        }
+        judge_transitions = [
+            transition(),
+            transition(
+                revision=2,
+                packet_id="CTRL-0002",
+                digest="b" * 64,
+                checkpoint="ROLE_BOUNDARY",
+                from_status="DEBATING",
+                to_status="DEBATING",
+                dispatches=[challenge],
+                required_actions=[],
+                required_checks=[
+                    "PERSIST_STATE",
+                    "VERIFY_ENVELOPES",
+                    "ENFORCE_BUDGET",
+                ],
+            ),
+        ]
+        judge_state = control_state(
+            status="DEBATING", transitions=judge_transitions, products=[]
+        )
+        judge_state.update(
+            {
+                "max_rounds": 6,
+                "initial_debate_candidate_ids": ["C01"],
+                "candidates": [
+                    {
+                        "candidate_id": "C01",
+                        "origin": "GENERATED",
+                        "status": "ACTIVE",
+                        "gate_ready": False,
+                        "rounds_completed": 0,
+                    }
+                ],
+            }
+        )
+        judge_accepted = {
+            "DEVIL-1": research_product(
+                "DEVIL-1", "DEBATE", "Devil's Advocate", "C01", 1
+            )
+        }
+
+        lane = controller_validator.expected_active_lanes(
+            judge_state, judge_accepted
+        )[0]
+        self.assertEqual("Panel Judge", lane["next_role"])
+        self.assertEqual(["DEVIL-1"], lane["dependency_packet_ids"])
+
+    def test_malformed_final_transition_reports_instead_of_crashing(self) -> None:
+        # Regression: a non-object tail entry in transition_log raised an
+        # AttributeError in the last-transition consistency block.
+        state = control_state()
+        state["mainline_control"]["transition_log"].append("not-a-transition")
+        state["mainline_control"]["revision"] = 2
+        errors: list[str] = []
+        validator.validate_mainline_control(state, errors)
+        self.assertTrue(errors)
+
     def test_converged_evaluation_has_no_spurious_next_round_lane(self) -> None:
         state = control_state()
         state.update(

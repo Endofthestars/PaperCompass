@@ -617,8 +617,8 @@ def validate_mainline_state(
             location = f"session-state.json.mainline_control.retry_counts[{key!r}]"
             if not nonempty_string(key) or not SAFE_ID.fullmatch(key):
                 errors.append(f"{location}: retry key is invalid")
-            if not is_int(count) or count not in {0, 1}:
-                errors.append(f"{location} must be integer 0 or 1")
+            if not is_int(count) or count != 1:
+                errors.append(f"{location} must be integer 1")
                 continue
             retry_counts[key] = count
 
@@ -2219,15 +2219,30 @@ def expected_active_lanes(
             dependencies = [judge[-1]]
         elif search and len(evidence) == 1:
             next_role = "Evidence Researcher"
-            dependencies = [mentor[-1], evidence[-1], search[-1]]
+            dependencies = [
+                packet_id
+                for packet_id in (
+                    mentor[-1] if mentor else None,
+                    evidence[-1],
+                    search[-1],
+                )
+                if packet_id is not None
+            ]
         elif challenge and search_required and not search:
             next_role = "Search and Verification Specialist"
             dependencies = [challenge[-1]]
         elif challenge:
             next_role = "Panel Judge"
-            dependencies = [mentor[-1], evidence[-1], challenge[-1]]
-            if search:
-                dependencies.append(search[-1])
+            dependencies = [
+                packet_id
+                for packet_id in (
+                    mentor[-1] if mentor else None,
+                    evidence[-1] if evidence else None,
+                    challenge[-1],
+                    search[-1] if search else None,
+                )
+                if packet_id is not None
+            ]
         elif evidence:
             next_role = "Devil's Advocate"
             dependencies = [evidence[-1]]
