@@ -3080,6 +3080,48 @@ def expected_archived_active_lanes(
     return lanes
 
 
+BOUNDARY_WINDOW_CHECKPOINTS = {
+    "PHASE_BOUNDARY",
+    "ROLE_BOUNDARY",
+    "ROUND_BOUNDARY",
+}
+
+
+def boundary_window_dispatches(
+    transition_records: list[Any],
+) -> list[dict[str, Any]]:
+    """Dispatches committed since the most recent scheduling boundary.
+
+    ROLE_BOUNDARY resolved-work rule: a ROLE_BOUNDARY is legal only when at
+    least one dispatch committed in the contiguous suffix of controller
+    transitions starting AT the most recent PHASE_BOUNDARY, ROLE_BOUNDARY,
+    or ROUND_BOUNDARY transition (inclusive; the whole log when no such
+    transition exists) has been resolved.  The window includes the boundary
+    transition's own batch because those dispatches can only resolve after
+    that transition committed, so they are exactly the new work the next
+    ROLE_BOUNDARY schedules against.  Non-boundary commits made afterwards
+    (for example a single-dispatch RECOVERY retry batch, or a RESUME) extend
+    the window instead of resetting it, so a pending retry batch cannot mask
+    resolved sibling-lane work from the preceding boundary batch.
+    Keep this definition identical in validate_controller_decision.py.
+    """
+    start = 0
+    for position, record in enumerate(transition_records):
+        if (
+            isinstance(record, dict)
+            and record.get("checkpoint") in BOUNDARY_WINDOW_CHECKPOINTS
+        ):
+            start = position
+    return [
+        dispatch
+        for record in transition_records[start:]
+        if isinstance(record, dict)
+        and isinstance(record.get("dispatches"), list)
+        for dispatch in record["dispatches"]
+        if isinstance(dispatch, dict)
+    ]
+
+
 def validate_control_input_snapshot(
     snapshot: dict[str, Any],
     transition: dict[str, Any],
@@ -3624,12 +3666,6 @@ def validate_control_input_snapshot(
     predecessor = (
         prior_transition_records[-1] if prior_transition_records else None
     )
-    predecessor_dispatches = (
-        predecessor.get("dispatches")
-        if isinstance(predecessor, dict)
-        and isinstance(predecessor.get("dispatches"), list)
-        else []
-    )
     if transition.get("checkpoint") == "POST_USER_GATE":
         predecessor_gate = (
             predecessor.get("pending_user_gate")
@@ -3661,16 +3697,19 @@ def validate_control_input_snapshot(
                 "consumed at POST_USER_GATE"
             )
     if transition.get("checkpoint") == "ROLE_BOUNDARY":
-        predecessor_packet_ids = {
+        # See boundary_window_dispatches: the resolved-work precondition scans
+        # every batch committed since (and including) the most recent boundary
+        # checkpoint rather than only the immediate predecessor batch.
+        window_packet_ids = {
             dispatch.get("packet_id")
-            for dispatch in predecessor_dispatches
-            if isinstance(dispatch, dict)
-            and nonempty_string(dispatch.get("packet_id"))
+            for dispatch in boundary_window_dispatches(prior_transition_records)
+            if nonempty_string(dispatch.get("packet_id"))
         }
-        if not predecessor_packet_ids & (completed_ids | archived_failed_ids):
+        if not window_packet_ids & (completed_ids | archived_failed_ids):
             errors.append(
-                f"{location}: ROLE_BOUNDARY requires at least one predecessor "
-                "packet in the archived completion/failure projection"
+                f"{location}: ROLE_BOUNDARY requires at least one packet "
+                "dispatched since the previous boundary checkpoint in the "
+                "archived completion/failure projection"
             )
     if transition.get("checkpoint") == "ROUND_BOUNDARY":
         prior_resolved = {
@@ -4391,19 +4430,23 @@ def validate_mainline_control(
                 and isinstance(predecessor.get("dispatches"), list)
                 else []
             )
-            if checkpoint == "ROLE_BOUNDARY" and (
-                not predecessor_dispatches
-                or not any(
-                    isinstance(dispatch, dict)
-                    and dispatch.get("packet_id")
+            if checkpoint == "ROLE_BOUNDARY":
+                # See boundary_window_dispatches: the resolved-work
+                # precondition scans every batch committed since (and
+                # including) the most recent boundary checkpoint rather than
+                # only the immediately preceding batch.
+                if not any(
+                    dispatch.get("packet_id")
                     in (historical_completed_ids | historical_failed_ids)
-                    for dispatch in predecessor_dispatches
-                )
-            ):
-                errors.append(
-                    f"{location}: ROLE_BOUNDARY requires a resolved dispatch "
-                    "from the immediately preceding controller batch"
-                )
+                    for dispatch in boundary_window_dispatches(
+                        transitions[: index - 1]
+                    )
+                ):
+                    errors.append(
+                        f"{location}: ROLE_BOUNDARY requires a resolved "
+                        "dispatch committed since the previous boundary "
+                        "checkpoint"
+                    )
             if checkpoint == "ROUND_BOUNDARY":
                 judge_ids = [
                     dispatch.get("packet_id")

@@ -20,6 +20,12 @@ Rules that override everything else:
   never exceed the allowed query batches, queries, or newly inspected sources.
 - Prefer papers, official proceedings, author repositories, dataset sites, and
   authoritative metadata. Record every inspected source as a ledger row.
+- Ledger enum fields are closed lists validated downstream; free text is
+  rejected. Use exactly:
+  `source_kind`: `paper|proceedings|repository|dataset|metadata|official-doc`;
+  `publication_status`: `peer-reviewed|preprint|repository|dataset|official-record|other`;
+  `claim_status`: `SUPPORTED|CONTRADICTED|INFERRED|PROPOSED|UNRESOLVED`.
+  Put nuance in `limitations`, never into the enum value.
 - Distinguish verification levels precisely: `SOURCE_EXISTS`,
   `CLAIM_SUPPORTED_BY_SOURCE`, `ARTIFACT_INSPECTED`, `LOCALLY_REPRODUCED`
   (never claim this — you cannot execute code), or `UNRESOLVED`.

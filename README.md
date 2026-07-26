@@ -33,11 +33,11 @@ codex plugin add hotspot-to-rq@personal
 仅在尚未配置名为 `personal` 的 marketplace 的新环境里，在本仓库根目录执行：
 
 ```bash
-codex plugin marketplace add .
+codex plugin marketplace add ./
 codex plugin add hotspot-to-rq@personal
 ```
 
-如果 `personal` 已指向 Git source，不要再执行 `marketplace add .`；修改 plugin
+如果 `personal` 已指向 Git source，不要再执行 `marketplace add ./`；修改 plugin
 后先更新开发 cachebuster，再运行下方测试。Git marketplace 需要提交并推送新
 版本后才能刷新：
 
@@ -71,12 +71,16 @@ codex plugin add hotspot-to-rq@personal
 在本仓库根目录打开 Claude Code，然后执行：
 
 ```text
-/plugin marketplace add .
+/plugin marketplace add ./
 /plugin install hotspot-to-rq@personal
 ```
 
 安装后技能会注册为 `/hotspot-to-rq:research-direction-debate`。修改 plugin
-后运行 `/plugin marketplace update personal` 刷新，再新开会话验证。
+后运行 `/plugin marketplace update personal` 刷新，再新开会话验证。注意：
+已安装的插件从 `~/.claude/plugins/cache/` 里的副本运行——skills、hooks、
+agents 与 workflows（按 `hotspot-to-rq:dispatch-batch` 名称解析）都不会
+读取仓库工作区；直接改仓库源码对当前会话不生效，必须刷新 marketplace
+并重开会话。
 
 ### 调用方式
 
@@ -105,6 +109,19 @@ PostToolUse hook 会自动运行 `validate_session.py`，校验失败会立刻�
 编排——轮内依赖角色必须逐层经过 controller 的 ROLE_BOUNDARY 检查点，这是
 schema 1.3 控制契约的要求。envelope 校验、状态落盘与校验器执行仍由编排
 者完成。
+
+Codex 侧没有这三层机制强制的宿主能力：上游 Codex plugin ingestion 契约
+目前不接受 `hooks`、agents、workflows 等 manifest 字段（validator 直接
+拒绝未知字段），因此同样的契约在 Codex 下由协议文本程序化承担——SKILL.md
+要求编排者在每次写入 `session-state.json` 后立即自行运行
+`validate_session.py`（hook 仅是有 hook 运行时的兜底），角色隔离通过干净
+上下文委派加 envelope 校验实现，controller 批次退化为逐个委派调用。Codex
+manifest 做了上游规范内的对等优化：与 Claude manifest 一致的 `keywords`、
+`homepage`/`repository` 元数据，`defaultPrompt` 改为规范要求的数组形式
+（≤3 条、每条 ≤128 字符；此前的单条长提示会被产品端截断）；skill 级
+`agents/openai.yaml` 显式钉住 `policy.allow_implicit_invocation: true`，
+与 Claude 侧按技能描述自动路由的行为对齐。单元测试把上游 ingestion 契约
+的字段白名单编码进本地 CI，防止 Claude-only 字段误入 Codex manifest。
 
 ## Plugin 工作流
 

@@ -1036,6 +1036,12 @@ failure.
   accepted or rejected packet IDs as resolved. Do not duplicate a pending call,
   repeat an accepted debate-round role, or disguise a rejected call as a new
   `ADVANCE` dispatch.
-- **Repeated role failure**: mark the packet unresolved and continue or block
-  the candidate; do not reuse a contaminated answer.
+- **Repeated role failure**: distinguish the failure class. A transport
+  failure (API overload, timeout, killed subagent) leaves the dispatch pending
+  and never consumes the `RETRY_ROLE` credit: re-invoke up to three attempts,
+  then execute the single call `DEGRADED_INLINE` with disclosure (see the
+  controller reference). A content rejection gets its one `RETRY_ROLE`; after
+  that retry also fails, a missing Search continues the lane with `UNRESOLVED`
+  claims, while a missing Mentor, Evidence, Devil's Advocate, or Judge blocks
+  the candidate. Never reuse a contaminated answer.
 - **Subjective unknown**: emit `USER_REQUIRED`; Evidence Researcher must not guess.

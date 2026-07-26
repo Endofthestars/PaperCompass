@@ -889,6 +889,48 @@ def prior_retry_dispatch_ids(state: dict[str, Any]) -> set[str]:
     }
 
 
+BOUNDARY_WINDOW_CHECKPOINTS = {
+    "PHASE_BOUNDARY",
+    "ROLE_BOUNDARY",
+    "ROUND_BOUNDARY",
+}
+
+
+def boundary_window_dispatches(
+    transition_records: list[Any],
+) -> list[dict[str, Any]]:
+    """Dispatches committed since the most recent scheduling boundary.
+
+    ROLE_BOUNDARY resolved-work rule: a ROLE_BOUNDARY is legal only when at
+    least one dispatch committed in the contiguous suffix of controller
+    transitions starting AT the most recent PHASE_BOUNDARY, ROLE_BOUNDARY,
+    or ROUND_BOUNDARY transition (inclusive; the whole log when no such
+    transition exists) has been resolved.  The window includes the boundary
+    transition's own batch because those dispatches can only resolve after
+    that transition committed, so they are exactly the new work the next
+    ROLE_BOUNDARY schedules against.  Non-boundary commits made afterwards
+    (for example a single-dispatch RECOVERY retry batch, or a RESUME) extend
+    the window instead of resetting it, so a pending retry batch cannot mask
+    resolved sibling-lane work from the preceding boundary batch.
+    Keep this definition identical in validate_session.py.
+    """
+    start = 0
+    for position, record in enumerate(transition_records):
+        if (
+            isinstance(record, dict)
+            and record.get("checkpoint") in BOUNDARY_WINDOW_CHECKPOINTS
+        ):
+            start = position
+    return [
+        dispatch
+        for record in transition_records[start:]
+        if isinstance(record, dict)
+        and isinstance(record.get("dispatches"), list)
+        for dispatch in record["dispatches"]
+        if isinstance(dispatch, dict)
+    ]
+
+
 def validate_resolved_dispatch_bindings(
     state: dict[str, Any],
     accepted: dict[str, dict[str, Any]],
@@ -2432,6 +2474,94 @@ def validate_lane_dispatches(
                 )
 
 
+def expected_completed_packet_ids(
+    accepted: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Project the completed_packet_ids a control input must carry."""
+    return [
+        packet_id
+        for packet_id, product in accepted.items()
+        if product.get("phase") != "CONTROL"
+    ]
+
+
+def expected_failed_packets(
+    state: dict[str, Any],
+    rejected: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project the failed_packets entries a control input must carry."""
+    dispatched = prior_dispatches_by_id(state)
+    control = state.get("mainline_control")
+    counts = (
+        control.get("retry_counts")
+        if isinstance(control, dict)
+        and isinstance(control.get("retry_counts"), dict)
+        else {}
+    )
+    packets: list[dict[str, Any]] = []
+    for packet_id, rejection in rejected.items():
+        if rejection.get("role") in {
+            "Mainline Workflow Controller",
+            "Deterministic Mainline Fallback",
+        }:
+            continue
+        original_dispatch = dispatched.get(packet_id)
+        packets.append(
+            {
+                "packet_id": packet_id,
+                "phase": (
+                    original_dispatch.get("phase")
+                    if isinstance(original_dispatch, dict)
+                    else None
+                ),
+                "role": rejection.get("role"),
+                "candidate_id": rejection.get("candidate_id"),
+                "round": rejection.get("round"),
+                "reason_code": rejection.get("reason_code"),
+                "retry_count": counts.get(packet_id, 0),
+            }
+        )
+    return packets
+
+
+def expected_accepted_verdicts(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Project the accepted_verdicts a control input must carry."""
+    expected_verdicts: list[dict[str, Any]] = []
+    for candidate in state.get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        for round_record in candidate.get("rounds", []):
+            if isinstance(round_record, dict):
+                expected_verdicts.append(
+                    {
+                        "candidate_id": candidate.get("candidate_id"),
+                        "round": round_record.get("round"),
+                        "verdict": round_record.get("verdict"),
+                    }
+                )
+    for round_record in state.get("evaluation_rounds", []):
+        if isinstance(round_record, dict):
+            expected_verdicts.append(
+                {
+                    "candidate_id": None,
+                    "round": round_record.get("round"),
+                    "verdict": round_record.get("verdict"),
+                }
+            )
+    return expected_verdicts
+
+
+def legal_target_statuses(state: dict[str, Any]) -> list[str]:
+    """Return the sorted legal target statuses for the state's current status."""
+    mode = state.get("mode")
+    statuses = EVALUATION_STATUSES if mode == "evaluate" else DISCOVERY_STATUSES
+    transitions = (
+        EVALUATION_TRANSITIONS if mode == "evaluate" else DISCOVERY_TRANSITIONS
+    )
+    legal = transitions.get(state.get("status"), set())
+    return sorted(target for target in legal if target in statuses)
+
+
 def validate_control_input(
     value: Any,
     state: dict[str, Any],
@@ -2470,11 +2600,7 @@ def validate_control_input(
         f"{location}.completed_packet_ids",
         errors,
     )
-    expected_completed = {
-        packet_id
-        for packet_id, product in accepted.items()
-        if product.get("phase") != "CONTROL"
-    }
+    expected_completed = set(expected_completed_packet_ids(accepted))
     if set(completed) != expected_completed:
         errors.append(
             f"{location}.completed_packet_ids must exactly match accepted "
@@ -2545,10 +2671,8 @@ def validate_control_input(
                     f"{failed_location}.retry_count does not match session state"
                 )
     expected_failed = {
-        packet_id
-        for packet_id, rejection in rejected.items()
-        if rejection.get("role")
-        not in {"Mainline Workflow Controller", "Deterministic Mainline Fallback"}
+        packet["packet_id"]
+        for packet in expected_failed_packets(state, rejected)
     }
     if failed_ids != expected_failed:
         errors.append(
@@ -2662,28 +2786,7 @@ def validate_control_input(
             }:
                 errors.append(f"{verdict_location}.verdict is invalid")
 
-        expected_verdicts: list[dict[str, Any]] = []
-        for candidate in state.get("candidates", []):
-            if not isinstance(candidate, dict):
-                continue
-            for round_record in candidate.get("rounds", []):
-                if isinstance(round_record, dict):
-                    expected_verdicts.append(
-                        {
-                            "candidate_id": candidate.get("candidate_id"),
-                            "round": round_record.get("round"),
-                            "verdict": round_record.get("verdict"),
-                        }
-                    )
-        for round_record in state.get("evaluation_rounds", []):
-            if isinstance(round_record, dict):
-                expected_verdicts.append(
-                    {
-                        "candidate_id": None,
-                        "round": round_record.get("round"),
-                        "verdict": round_record.get("verdict"),
-                    }
-                )
+        expected_verdicts = expected_accepted_verdicts(state)
         if accepted_verdicts != expected_verdicts:
             errors.append(
                 f"{location}.accepted_verdicts must exactly match persisted "
@@ -2800,19 +2903,13 @@ def validate_control_input(
                     f"{location}.user_event.selected_ids must equal receipt values"
                 )
 
-    mode = state.get("mode")
-    statuses = EVALUATION_STATUSES if mode == "evaluate" else DISCOVERY_STATUSES
     allowed_targets = validate_string_list(
         value.get("allowed_target_statuses"),
         f"{location}.allowed_target_statuses",
         errors,
     )
-    observed_status = state.get("status")
-    transitions = (
-        EVALUATION_TRANSITIONS if mode == "evaluate" else DISCOVERY_TRANSITIONS
-    )
-    legal_targets = transitions.get(observed_status, set())
-    if any(target not in statuses or target not in legal_targets for target in allowed_targets):
+    legal_targets = set(legal_target_statuses(state))
+    if any(target not in legal_targets for target in allowed_targets):
         errors.append(
             f"{location}.allowed_target_statuses contains an illegal transition"
         )
@@ -3528,14 +3625,17 @@ def validate_directive(
     )
     resolved_packet_ids = set(accepted) | set(rejected)
     if checkpoint == "ROLE_BOUNDARY":
-        if not latest_dispatches or not any(
-            isinstance(dispatch, dict)
-            and dispatch.get("packet_id") in resolved_packet_ids
-            for dispatch in latest_dispatches
+        # See boundary_window_dispatches: resolved work is sought across every
+        # batch committed since (and including) the most recent boundary
+        # checkpoint, not only the latest batch, so a pending retry commit
+        # cannot hide resolved sibling-lane dispatches.
+        if not any(
+            dispatch.get("packet_id") in resolved_packet_ids
+            for dispatch in boundary_window_dispatches(transitions_log)
         ):
             errors.append(
-                "ROLE_BOUNDARY requires at least one resolved dispatch from "
-                "the latest committed controller batch"
+                "ROLE_BOUNDARY requires at least one resolved dispatch "
+                "committed since the previous boundary checkpoint"
             )
     if checkpoint == "ROUND_BOUNDARY":
         active_lanes = control_input.get("active_lanes")

@@ -86,6 +86,11 @@ control_input:
   allowed_target_statuses: [DEBATING, USER_GATE, BLOCKED]
 ```
 
+Build this snapshot with `scripts/build_control_input.py` rather than by hand:
+it derives the projected fields below with the validators' own functions,
+writes `control-input.json` and `control-inputs/<packet>.json` byte-identically,
+and prints the sha256 digest for the envelope's `control_input_digest`.
+
 `completed_packet_ids`, `failed_packets`, `active_lanes`, and
 `accepted_verdicts` are exact projections of persisted state, not controller
 claims. A failed packet also includes its original `phase`, `candidate_id`, and
@@ -177,7 +182,9 @@ Allowed actions are:
   packet named by `retry_key`. The new dispatch must preserve the original
   phase, role, candidate, and round. Each logical call may be retried at most
   once: do not retry a retry packet or reschedule a rejected call with
-  `ADVANCE`.
+  `ADVANCE`. `RETRY_ROLE` answers content rejections only; a transport failure
+  is not a rejection and does not consume this credit (see Transport failures
+  under Failure and fallback).
 - `BLOCK_SESSION`: set the target to `BLOCKED`, dispatch nothing, and preserve
   explicit blocking reason codes.
 - `COMPLETE`: set the target to `COMPLETE`, dispatch nothing, and require
@@ -254,8 +261,10 @@ Call the controller at stable boundaries, not between every ordinary role:
 
 - `SESSION_INIT`: after state initialization and before the first research role
 - `PHASE_BOUNDARY`: after a phase's required role batch is accepted
-- `ROLE_BOUNDARY`: after at least one role in the latest debate batch resolves;
-  use it to schedule the next dependency-safe role across ready lanes
+- `ROLE_BOUNDARY`: after at least one role dispatched since the previous
+  `PHASE_BOUNDARY`, `ROLE_BOUNDARY`, or `ROUND_BOUNDARY` resolves (a pending
+  recovery retry batch does not hide resolved sibling lanes); use it to
+  schedule the next dependency-safe role across ready lanes
 - `ROUND_BOUNDARY`: after all current-lane Judges return for a round
 - `PRE_USER_GATE`: immediately before any user-facing gate
 - `POST_USER_GATE`: after the Orchestrator records the user's explicit reply
@@ -365,3 +374,28 @@ set or remain at `BLOCKED` and report the exact blocker.
 
 Research-role failure remains separate. The controller may schedule one
 fresh-context retry, but it may not repair or substitute the role's answer.
+
+### Transport failures
+
+A dispatch whose agent dies in the harness — API overload, timeout,
+session-limit termination, or a killed subagent — is a transport failure, not
+a rejected work product. The committed dispatch stays pending:
+
+- Do not record the failure in `rejected_work_products`, and do not spend the
+  single `RETRY_ROLE` credit on it. Re-invoking the identical dispatch is the
+  same logical call, not a retry.
+- Re-invoke the identical dispatch (same envelope, fresh context) up to three
+  total attempts, backing off between attempts. Switching the delegation
+  vehicle — bundled agent type, generic delegation tool, or another model —
+  is allowed and does not change the packet's identity.
+- After the third failed attempt, list the packet in the control input's
+  `failed_packets`, run a `RECOVERY` checkpoint, and execute that single role
+  call inline in the Orchestrator. Label the work product `DEGRADED_INLINE`
+  and disclose the degradation to the user before presenting anything built
+  on it. A single-call degradation does not switch the session to inline mode
+  and does not touch `controller_status`.
+- If inline execution is also impossible (for example a Search role without
+  network access), mark the packet unresolved: a missing Search continues the
+  lane with its claims recorded as `UNRESOLVED`, while a missing Mentor,
+  Evidence Researcher, Devil's Advocate, or Judge blocks that lane — use
+  `BLOCK_SESSION` when no other lane can proceed.

@@ -6,7 +6,7 @@ export const meta = {
     'Invoke from the research-direction-debate orchestrator after committing a controller ADVANCE directive. Pass the directive dispatches plus pre-built envelopes as args; never use it to run dependent roles in one batch.',
 }
 
-// args = {
+// args = {                        // object, or the same object JSON-encoded
 //   agent_types: { research: string|null, search: string|null } | undefined,
 //     // subagent type overrides; null forces the default workflow subagent
 //   dispatches: [{
@@ -23,9 +23,20 @@ export const meta = {
 //   }]
 // }
 //
-// Returns { packets: [...], rejected: [...] }. The orchestrator must still
-// verify each echoed envelope and validate before recording work products;
-// echo_ok below is a convenience pre-check, not the validation of record.
+// Returns { packets: [...], rejected: [...], dispatched_count, failed_count }.
+// The orchestrator must still verify each echoed envelope and validate before
+// recording work products; echo_ok below is a convenience pre-check, not the
+// validation of record.
+//
+// Failure semantics:
+// - Each dispatch is attempted twice (one transparent retry) and always yields
+//   a packet; `result: null` plus `error` marks a transport failure. Per the
+//   protocol's transport-failure policy these packets stay PENDING: do not
+//   record them as rejections and do not spend the RETRY_ROLE credit —
+//   re-dispatch them or resume this workflow run.
+// - `rejected[].reason` is workflow-internal. When the orchestrator does
+//   record a rejection in rejected_work_products, use the accompanying
+//   `reason_code`, which is drawn from the session validator's REJECTION_CODES.
 
 const SEARCH_ROLE = 'Search and Verification Specialist'
 const CONTROL_ROLES = new Set([
@@ -100,7 +111,58 @@ const ROLE_SCHEMAS = {
         },
         required: ['query_batches', 'queries', 'sources_inspected'],
       },
-      ledger_rows: { type: 'array', items: { type: 'object' } },
+      // Enums mirror validate_session.py exactly; free-text values here used
+      // to surface only 28 rows later as session-validation errors.
+      ledger_rows: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            source_id: { type: 'string' },
+            title: { type: 'string' },
+            url: { type: 'string' },
+            source_kind: {
+              type: 'string',
+              enum: ['paper', 'proceedings', 'repository', 'dataset', 'metadata', 'official-doc'],
+            },
+            publication_status: {
+              type: 'string',
+              enum: ['peer-reviewed', 'preprint', 'repository', 'dataset', 'official-record', 'other'],
+            },
+            version_or_commit: { type: 'string' },
+            published_or_updated: { type: 'string' },
+            claim_locator: { type: 'string' },
+            verification_level: {
+              type: 'string',
+              enum: [
+                'SOURCE_EXISTS',
+                'CLAIM_SUPPORTED_BY_SOURCE',
+                'ARTIFACT_INSPECTED',
+                'LOCALLY_REPRODUCED',
+                'UNRESOLVED',
+              ],
+            },
+            claim_status: {
+              type: 'string',
+              enum: ['SUPPORTED', 'CONTRADICTED', 'INFERRED', 'PROPOSED', 'UNRESOLVED'],
+            },
+            limitations: STRING_ARRAY,
+          },
+          required: [
+            'source_id',
+            'title',
+            'url',
+            'source_kind',
+            'publication_status',
+            'version_or_commit',
+            'published_or_updated',
+            'claim_locator',
+            'verification_level',
+            'claim_status',
+            'limitations',
+          ],
+        },
+      },
       supported: STRING_ARRAY,
       contradicted: STRING_ARRAY,
       still_unknown: STRING_ARRAY,
@@ -140,28 +202,60 @@ const GENERIC_SCHEMA = {
 // log() is not part of the documented workflow API; degrade to a no-op.
 const note = typeof log === 'function' ? log : () => {}
 
+// Some runtimes deliver args as a JSON-encoded string; tolerate both shapes.
+let input = args
+if (typeof input === 'string') {
+  try {
+    input = JSON.parse(input)
+  } catch (error) {
+    throw new Error(`dispatch-batch args must be an object or JSON string: ${error.message}`)
+  }
+}
+
 const agentTypes = Object.assign(
   { research: 'hotspot-to-rq:research-role', search: 'hotspot-to-rq:search-verification' },
-  (args && args.agent_types) || {},
+  (input && input.agent_types) || {},
 )
 
-const dispatches = (args && args.dispatches) || []
+const dispatches = (input && input.dispatches) || []
 if (!Array.isArray(dispatches) || dispatches.length === 0) {
-  throw new Error('dispatch-batch requires args.dispatches (non-empty array)')
+  throw new Error(
+    `dispatch-batch requires args.dispatches (non-empty array); received args of type ${args === null ? 'null' : typeof args}`,
+  )
+}
+
+// LLM-built dispatches sometimes carry typographic apostrophes ("Devil’s
+// Advocate"); keying is exact-string, so normalize before any role lookup.
+function normalizeRole(role) {
+  return typeof role === 'string' ? role.replace(/[‘’]/g, "'").trim() : role
 }
 
 const rejected = []
 const runnable = []
+const seenPacketIds = new Set()
 for (const dispatch of dispatches) {
-  if (!dispatch || !dispatch.packet_id || !dispatch.role || !dispatch.envelope) {
+  const role = dispatch ? normalizeRole(dispatch.role) : null
+  if (!dispatch || !dispatch.packet_id || typeof role !== 'string' || !role || !dispatch.envelope) {
     rejected.push({
       packet_id: (dispatch && dispatch.packet_id) || null,
       reason: 'MISSING_FIELDS',
+      reason_code: 'ROLE_CONTRACT_VIOLATION',
     })
-  } else if (CONTROL_ROLES.has(dispatch.role)) {
-    rejected.push({ packet_id: dispatch.packet_id, reason: 'CONTROL_ROLE_NOT_BATCHABLE' })
+  } else if (CONTROL_ROLES.has(role) || dispatch.phase === 'CONTROL') {
+    rejected.push({
+      packet_id: dispatch.packet_id,
+      reason: 'CONTROL_ROLE_NOT_BATCHABLE',
+      reason_code: 'CONTROL_SCOPE_VIOLATION',
+    })
+  } else if (seenPacketIds.has(dispatch.packet_id)) {
+    rejected.push({
+      packet_id: dispatch.packet_id,
+      reason: 'DUPLICATE_PACKET_ID',
+      reason_code: 'ROLE_CONTRACT_VIOLATION',
+    })
   } else {
-    runnable.push(dispatch)
+    seenPacketIds.add(dispatch.packet_id)
+    runnable.push(Object.assign({}, dispatch, { role }))
   }
 }
 if (rejected.length) {
@@ -208,32 +302,65 @@ function echoOk(sent, received) {
 
 // Batched dispatches are independent by the controller contract, so a
 // single-stage pipeline runs them concurrently with no artificial barrier.
-const packets = await pipeline(runnable, dispatch => {
+// Each stage catches its own failures: one overloaded agent must never sink
+// the sibling work products in the batch.
+const packets = await pipeline(runnable, async dispatch => {
   const isSearch = dispatch.role === SEARCH_ROLE
   const schema = ROLE_SCHEMAS[dispatch.role] || GENERIC_SCHEMA
+  if (!ROLE_SCHEMAS[dispatch.role]) {
+    note(`${dispatch.packet_id}: role "${dispatch.role}" has no dedicated schema; using the generic {envelope, output} contract`)
+  }
   const agentType = isSearch ? agentTypes.search : agentTypes.research
   const opts = {
     label: `${dispatch.packet_id}:${dispatch.role}`,
     schema,
   }
   if (agentType) opts.agentType = agentType
-  return agent(rolePrompt(dispatch), opts).then(result => ({
+  let result = null
+  let error = null
+  for (let attempt = 1; attempt <= 2 && result == null; attempt += 1) {
+    try {
+      result = await agent(rolePrompt(dispatch), opts)
+      if (result != null) error = null
+    } catch (caught) {
+      error = String((caught && caught.message) || caught)
+    }
+    if (result == null && attempt === 1) {
+      note(`${dispatch.packet_id}: attempt 1 returned no result${error ? ` (${error})` : ''}; retrying once`)
+    }
+  }
+  return {
     packet_id: dispatch.packet_id,
     phase: dispatch.phase,
     role: dispatch.role,
     candidate_id: dispatch.candidate_id ?? null,
     round: dispatch.round ?? null,
+    agent_type: agentType || null,
     echo_ok: result ? echoOk(dispatch.envelope, result.envelope) : false,
     result,
-  }))
+    error,
+  }
 })
 
 const resolved = packets.filter(Boolean)
 const missing = runnable
   .filter(d => !resolved.some(p => p && p.packet_id === d.packet_id))
-  .map(d => ({ packet_id: d.packet_id, reason: 'AGENT_FAILED' }))
-if (missing.length) {
-  note(`${missing.length} dispatch(es) returned no result`)
+  .map(d => ({ packet_id: d.packet_id, reason: 'AGENT_FAILED', reason_code: 'OTHER' }))
+const failedPacketIds = resolved
+  .filter(p => !p.result)
+  .map(p => p.packet_id)
+  .concat(missing.map(m => m.packet_id))
+if (failedPacketIds.length) {
+  note(
+    `FAILED: ${failedPacketIds.length} of ${runnable.length} dispatch(es) returned no result after retry ` +
+      `(${failedPacketIds.join(', ')}); they stay PENDING — re-dispatch or resume; ` +
+      'transport failures do not consume the RETRY_ROLE credit',
+  )
 }
 
-return { packets: resolved, rejected: rejected.concat(missing) }
+return {
+  packets: resolved,
+  rejected: rejected.concat(missing),
+  dispatched_count: runnable.length,
+  failed_count: failedPacketIds.length,
+}

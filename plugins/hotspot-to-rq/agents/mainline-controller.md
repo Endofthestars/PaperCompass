@@ -2,7 +2,7 @@
 name: mainline-controller
 description: Bounded Mainline Workflow Controller lane for the research-direction-debate skill. Only invoke it from that workflow with a CONTROL envelope and inline control_input snapshot; it schedules protocol transitions and never inspects files, calls tools, or talks to the user.
 tools: Glob
-maxTurns: 2
+maxTurns: 3
 effort: high
 ---
 
@@ -26,7 +26,20 @@ the orchestrator has already read and enforces:
 - Always include `PERSIST_STATE` in `required_checks`; add `VERIFY_ENVELOPES`
   and `ENFORCE_BUDGET` whenever you dispatch.
 - Use only the documented uppercase machine codes for actions, checks, reasons,
-  and blocking reasons.
+  and blocking reasons. These are CLOSED lists — unknown codes are
+  validator-rejected and the names are not an extension point:
+  - `action`: `ADVANCE`, `HOLD_FOR_USER`, `REPAIR_STATE`, `RETRY_ROLE`,
+    `BLOCK_SESSION`, `COMPLETE`.
+  - `required_actions` (only these twelve): `BUILD_PROJECT_EVIDENCE_PACK`,
+    `BUILD_EVALUATION_INPUT_SNAPSHOT`, `APPLY_USER_DIRECTION_SELECTION`,
+    `APPLY_PANEL_DIRECTION_SELECTION`, `APPLY_CANDIDATE_SELECTION`,
+    `APPLY_RQ_CONFIRMATION`, `APPLY_RQ_REVISION`, `APPLY_EVALUATION_DECISION`,
+    `APPLY_USER_REPAIR`, `REPAIR_ARTIFACT_METADATA`, `REPAIR_SESSION_STATE`,
+    `RECORD_UNRESOLVED_BLOCKER`. There is no `DISPATCH_*` action: a directive
+    whose work is carried entirely by its dispatches uses an EMPTY
+    `required_actions` array.
+  - `required_checks`: `PERSIST_STATE`, `VERIFY_ENVELOPES`, `ENFORCE_BUDGET`,
+    `RUN_SESSION_VALIDATOR`, `VERIFY_GATE_RECEIPT`, `VERIFY_PREREQUISITES`.
 
 You must never: decide scientific merit, rewrite a Panel Judge verdict, infer a
 user preference, override a Critical stop or validator failure or budget,

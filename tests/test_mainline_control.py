@@ -2838,5 +2838,361 @@ class ControllerDecisionTests(unittest.TestCase):
             )
 
 
+class RoleBoundaryResolvedWindowTests(unittest.TestCase):
+    """ROLE_BOUNDARY must see resolved work committed since the previous
+    boundary checkpoint, not only in the single latest committed batch.
+
+    Incident regression: a single-dispatch RECOVERY retry batch for one
+    failing lane (C03) must not mask the resolved Devil's Advocate packets
+    of the sibling lanes (C02/C04) committed at the preceding
+    ROLE_BOUNDARY batch.
+    """
+
+    CANDIDATES = ("C02", "C03", "C04")
+
+    @staticmethod
+    def lane_dispatch(
+        role: str,
+        candidate: str,
+        packet_id: str,
+        depends: list[str] | None = None,
+    ) -> dict:
+        return {
+            "packet_id": packet_id,
+            "phase": "DEBATE",
+            "role": role,
+            "candidate_id": candidate,
+            "round": 1,
+            "depends_on_packet_ids": [] if depends is None else depends,
+        }
+
+    @classmethod
+    def debate_state(cls, *, include_recovery: bool, resolve_devils: bool) -> dict:
+        mentors = [
+            cls.lane_dispatch(
+                "Socratic Mentor", candidate, f"{candidate}-R1-MENTOR"
+            )
+            for candidate in cls.CANDIDATES
+        ]
+        devils = [
+            cls.lane_dispatch(
+                "Devil's Advocate",
+                candidate,
+                f"{candidate}-R1-DEVIL",
+                depends=[f"{candidate}-R1-MENTOR"],
+            )
+            for candidate in cls.CANDIDATES
+        ]
+        transitions = [
+            transition(required_actions=[]),
+            transition(
+                revision=2,
+                packet_id="CTRL-0002",
+                checkpoint="PHASE_BOUNDARY",
+                from_status="SCANNING",
+                to_status="CANDIDATE_GENERATION",
+                required_actions=[],
+            ),
+            transition(
+                revision=3,
+                packet_id="CTRL-0003",
+                checkpoint="PHASE_BOUNDARY",
+                from_status="CANDIDATE_GENERATION",
+                to_status="DEBATING",
+                dispatches=mentors,
+                required_actions=[],
+            ),
+            transition(
+                revision=4,
+                packet_id="CTRL-0004",
+                checkpoint="ROLE_BOUNDARY",
+                from_status="DEBATING",
+                to_status="DEBATING",
+                dispatches=devils,
+                required_actions=[],
+            ),
+        ]
+        if include_recovery:
+            transitions.append(
+                transition(
+                    revision=5,
+                    packet_id="CTRL-0005",
+                    checkpoint="RECOVERY",
+                    from_status="DEBATING",
+                    to_status="DEBATING",
+                    action="RETRY_ROLE",
+                    dispatches=[
+                        {**devils[1], "packet_id": "C03-R1-DEVIL-RT"}
+                    ],
+                    required_actions=[],
+                    retry_key="C03-R1-DEVIL",
+                )
+            )
+        products = [
+            control_product(
+                packet_id=item["packet_id"],
+                observed_revision=item["revision"] - 1,
+            )
+            for item in transitions
+        ]
+        products.extend(
+            research_product(
+                f"{candidate}-R1-MENTOR",
+                "DEBATE",
+                "Socratic Mentor",
+                candidate,
+                1,
+            )
+            for candidate in cls.CANDIDATES
+        )
+        if resolve_devils:
+            products.extend(
+                research_product(
+                    f"{candidate}-R1-DEVIL",
+                    "DEBATE",
+                    "Devil's Advocate",
+                    candidate,
+                    1,
+                )
+                for candidate in ("C02", "C04")
+            )
+        state = control_state(
+            status="DEBATING",
+            transitions=transitions,
+            products=products,
+        )
+        state["max_rounds"] = 6
+        state["candidates"] = [
+            {"candidate_id": candidate} for candidate in cls.CANDIDATES
+        ]
+        if include_recovery:
+            state["rejected_work_products"] = [
+                {
+                    "role": "Devil's Advocate",
+                    "packet_id": "C03-R1-DEVIL",
+                    "candidate_id": "C03",
+                    "round": 1,
+                    "reason_code": "ROLE_CONTRACT_VIOLATION",
+                    "reason": "transport failure",
+                }
+            ]
+            state["mainline_control"]["retry_counts"] = {"C03-R1-DEVIL": 1}
+        return state
+
+    @classmethod
+    def role_boundary_snapshot(cls, current: dict, state: dict) -> dict:
+        completed = [
+            product["packet_id"]
+            for product in state["accepted_work_products"]
+            if product.get("phase") != "CONTROL"
+        ]
+        failed = [
+            {
+                "packet_id": product["packet_id"],
+                "phase": "DEBATE",
+                "role": product["role"],
+                "candidate_id": product["candidate_id"],
+                "round": product["round"],
+                "reason_code": product["reason_code"],
+                "retry_count": 1,
+            }
+            for product in state["rejected_work_products"]
+        ]
+        return {
+            "control_revision": current["observed_revision"],
+            "state_digest": current["observed_state_digest"],
+            "observed_status": current["from_status"],
+            "mode": "discover",
+            "interaction_mode": "GUIDED",
+            "checkpoint": "ROLE_BOUNDARY",
+            "completed_packet_ids": completed,
+            "failed_packets": failed,
+            "active_lanes": [],
+            "accepted_verdicts": [],
+            "artifact_readiness": {"PROJECT_EVIDENCE_PACK": "READY"},
+            "latest_validation": {"result": "PASS", "error_codes": []},
+            "budget_flags": [],
+            "unresolved_blockers": [],
+            "user_event": {
+                "kind": "NONE",
+                "receipt_id": None,
+                "selected_ids": [],
+            },
+            "allowed_target_statuses": ["DEBATING"],
+        }
+
+    def next_role_boundary(self, state: dict) -> dict:
+        revision = state["mainline_control"]["revision"] + 1
+        return transition(
+            revision=revision,
+            packet_id=f"CTRL-{revision:04d}",
+            checkpoint="ROLE_BOUNDARY",
+            from_status="DEBATING",
+            to_status="DEBATING",
+            required_actions=[],
+        )
+
+    def run_decision_validator(self, state: dict) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            state_path = directory / "session-state.json"
+            state_path.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            digest = hashlib.sha256(state_path.read_bytes()).hexdigest()
+            revision = state["mainline_control"]["revision"]
+            envelope = {
+                "schema_version": "1.0",
+                "session_id": "session-1",
+                "project_root": "/tmp/project",
+                "project_snapshot": "snapshot-1",
+                "phase": "CONTROL",
+                "role": "Mainline Workflow Controller",
+                "candidate_id": None,
+                "round": None,
+                "packet_id": f"CTRL-{revision + 1:04d}",
+                "control_revision": revision,
+                "state_digest": digest,
+                "control_input_digest": "0" * 64,
+                "context_fingerprint": "",
+                "allowed_artifacts": [],
+            }
+            output = {
+                "envelope": envelope,
+                "control_directive": {
+                    "observed_revision": revision,
+                    "observed_state_digest": digest,
+                    "observed_status": "DEBATING",
+                    "checkpoint": "ROLE_BOUNDARY",
+                    "action": "ADVANCE",
+                    "target_status": "DEBATING",
+                    "pending_user_gate": None,
+                    "dispatches": [],
+                    "required_actions": [],
+                    "required_checks": ["PERSIST_STATE"],
+                    "reason_codes": ["ROLE_BATCH_READY"],
+                    "blocking_reasons": [],
+                    "retry_key": None,
+                },
+            }
+            output_path = directory / "controller-output.json"
+            write_controller_fixture(state_path, output_path, output)
+            errors, _state_raw = controller_validator.validate(
+                state_path, output_path
+            )
+            return errors
+
+    def test_decision_role_boundary_sees_resolved_work_behind_pending_retry(
+        self,
+    ) -> None:
+        state = self.debate_state(include_recovery=True, resolve_devils=True)
+        errors = self.run_decision_validator(state)
+        self.assertFalse(
+            [error for error in errors if "ROLE_BOUNDARY requires" in error],
+            errors,
+        )
+
+    def test_decision_role_boundary_rejects_nothing_resolved_since_boundary(
+        self,
+    ) -> None:
+        state = self.debate_state(include_recovery=False, resolve_devils=False)
+        errors = self.run_decision_validator(state)
+        self.assertTrue(
+            any(
+                "ROLE_BOUNDARY requires at least one resolved dispatch "
+                "committed since the previous boundary checkpoint" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_session_log_role_boundary_sees_resolved_work_behind_pending_retry(
+        self,
+    ) -> None:
+        state = self.debate_state(include_recovery=True, resolve_devils=True)
+        current = self.next_role_boundary(state)
+        state["mainline_control"]["transition_log"].append(current)
+        state["mainline_control"]["revision"] = current["revision"]
+        state["mainline_control"]["last_checkpoint"] = "ROLE_BOUNDARY"
+        state["mainline_control"]["last_controller_packet_id"] = current[
+            "packet_id"
+        ]
+        state["accepted_work_products"].append(
+            control_product(
+                packet_id=current["packet_id"],
+                observed_revision=current["revision"] - 1,
+            )
+        )
+        log_errors: list[str] = []
+        validator.validate_mainline_control(state, log_errors)
+        self.assertFalse(
+            [error for error in log_errors if "ROLE_BOUNDARY requires" in error],
+            log_errors,
+        )
+
+        snapshot_errors: list[str] = []
+        validator.validate_control_input_snapshot(
+            self.role_boundary_snapshot(current, state),
+            current,
+            state,
+            "snapshot",
+            snapshot_errors,
+        )
+        self.assertFalse(
+            [
+                error
+                for error in snapshot_errors
+                if "ROLE_BOUNDARY requires" in error
+            ],
+            snapshot_errors,
+        )
+
+    def test_session_log_role_boundary_rejects_nothing_resolved_since_boundary(
+        self,
+    ) -> None:
+        state = self.debate_state(include_recovery=False, resolve_devils=False)
+        current = self.next_role_boundary(state)
+        state["mainline_control"]["transition_log"].append(current)
+        state["mainline_control"]["revision"] = current["revision"]
+        state["mainline_control"]["last_checkpoint"] = "ROLE_BOUNDARY"
+        state["mainline_control"]["last_controller_packet_id"] = current[
+            "packet_id"
+        ]
+        state["accepted_work_products"].append(
+            control_product(
+                packet_id=current["packet_id"],
+                observed_revision=current["revision"] - 1,
+            )
+        )
+        log_errors: list[str] = []
+        validator.validate_mainline_control(state, log_errors)
+        self.assertTrue(
+            any(
+                "ROLE_BOUNDARY requires a resolved dispatch committed since "
+                "the previous boundary checkpoint" in error
+                for error in log_errors
+            ),
+            log_errors,
+        )
+
+        snapshot_errors: list[str] = []
+        validator.validate_control_input_snapshot(
+            self.role_boundary_snapshot(current, state),
+            current,
+            state,
+            "snapshot",
+            snapshot_errors,
+        )
+        self.assertTrue(
+            any(
+                "ROLE_BOUNDARY requires at least one packet dispatched since "
+                "the previous boundary checkpoint" in error
+                for error in snapshot_errors
+            ),
+            snapshot_errors,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
