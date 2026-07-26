@@ -5,14 +5,25 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 codex_base="${CODEX_HOME:-${HOME}/.codex}"
 plugin_root="${repo_root}/plugins/hotspot-to-rq"
 skill_root="${plugin_root}/skills/research-direction-debate"
+python_bin="${PYTHON_BIN:-python3}"
 
-python3 -B -m unittest discover -s "${repo_root}/tests" -v
-python3 -B "${codex_base}/skills/.system/plugin-creator/scripts/validate_plugin.py" \
-  "${plugin_root}"
-python3 -B "${codex_base}/skills/.system/skill-creator/scripts/quick_validate.py" \
-  "${skill_root}"
-python3 -B "${skill_root}/scripts/validate_controller_decision.py" --help >/dev/null
-python3 -B "${skill_root}/scripts/validate_session.py" --help >/dev/null
-python3 -m json.tool "${plugin_root}/.codex-plugin/plugin.json" >/dev/null
-python3 -m json.tool "${repo_root}/.agents/plugins/marketplace.json" >/dev/null
+"${python_bin}" -B -m unittest discover -s "${repo_root}/tests" -v
+plugin_validator="${CODEX_PLUGIN_VALIDATOR:-${codex_base}/skills/.system/plugin-creator/scripts/validate_plugin.py}"
+skill_validator="${CODEX_SKILL_VALIDATOR:-${codex_base}/skills/.system/skill-creator/scripts/quick_validate.py}"
+if [[ -n "${CODEX_PLUGIN_VALIDATOR:-}" || -n "${CODEX_SKILL_VALIDATOR:-}" ]]; then
+  if [[ ! -f "${plugin_validator}" || ! -f "${skill_validator}" ]]; then
+    echo "Configured Codex validator path is missing." >&2
+    exit 1
+  fi
+fi
+if [[ -f "${plugin_validator}" && -f "${skill_validator}" ]]; then
+  "${python_bin}" -B "${plugin_validator}" "${plugin_root}"
+  "${python_bin}" -B "${skill_validator}" "${skill_root}"
+else
+  echo "Skipping Codex-only plugin/skill validators (not installed in this environment)."
+fi
+"${python_bin}" -B "${skill_root}/scripts/validate_controller_decision.py" --help >/dev/null
+"${python_bin}" -B "${skill_root}/scripts/validate_session.py" --help >/dev/null
+"${python_bin}" -m json.tool "${plugin_root}/.codex-plugin/plugin.json" >/dev/null
+"${python_bin}" -m json.tool "${repo_root}/.agents/plugins/marketplace.json" >/dev/null
 git -C "${repo_root}" diff --check

@@ -14,17 +14,18 @@ deliberation. Keep role contexts clean and the session auditable.
 Read these files completely before running the workflow:
 
 - `references/project-inputs.md` for local evidence discovery and canonical-source rules.
-- `references/agent-contracts.md` for role boundaries and Academic Research Suite mapping.
+- `references/agent-contracts.md` for role boundaries and bundled ARS mapping.
+- `references/ars-bridge.md` for bundled ARS phase routing and provenance.
 - `references/mainline-controller.md` for control checkpoints, batched dispatch,
   stale-state protection, and deterministic fallback.
 - `references/debate-protocol.md` for state transitions, round sequencing, budgets,
   identification gates, and artifacts.
 
-If `academic-research-suite` is available, also read its root router, route to
-`deep-research` in `socratic` mode, and load only the upstream agent files needed
-for the active phase. Use the bundled contracts when the upstream skill is absent,
-and disclose a bundled-contract fallback. This fallback does not change
-`execution_mode`; reserve `DEGRADED_INLINE` for unavailable subagents.
+Read the phase-specific bundled ARS workflow and role prompt selected by
+`references/ars-bridge.md` before dispatching a mapped role. The plugin carries
+these role prompts directly, so no separately installed ARS skill is required.
+Reserve `DEGRADED_INLINE` for unavailable subagents, not for missing role
+instructions.
 
 ## Core behavior
 

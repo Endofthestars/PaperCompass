@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS = ROOT / ".github" / "workflows"
+PINNED_CODEX_SHA = "61a44880a85d2fd0d8770908dea5733495e571c8"
+
+
+class CiWorkflowTests(unittest.TestCase):
+    def test_blocking_ci_pins_official_codex_validators(self) -> None:
+        workflow = (WORKFLOWS / "plugin-ci.yml").read_text(encoding="utf-8")
+        self.assertIn("repository: openai/codex", workflow)
+        self.assertIn(f"ref: {PINNED_CODEX_SHA}", workflow)
+        self.assertIn("CODEX_PLUGIN_VALIDATOR:", workflow)
+        self.assertIn("CODEX_SKILL_VALIDATOR:", workflow)
+        self.assertNotIn("continue-on-error", workflow)
+
+    def test_scheduled_compatibility_ci_tracks_main_without_pr_trigger(self) -> None:
+        workflow = (WORKFLOWS / "upstream-codex-compat.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("schedule:", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("repository: openai/codex", workflow)
+        self.assertIn("ref: main", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("continue-on-error", workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()

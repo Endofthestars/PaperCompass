@@ -1,15 +1,15 @@
 {
   "name": "hotspot-to-rq",
-  "version": "0.5.0+codex.20260725155110",
-  "description": "Choose research directions or assess experiments through a mainline-controlled, context-isolated workflow.",
+  "version": "0.6.0+codex.20260726063632",
+  "description": "Choose research directions or assess experiments through a mainline-controlled workflow with bundled Academic Research Suite roles.",
   "author": {
     "name": "PaperNotes Project"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Hotspot to Research Question",
-    "shortDescription": "Mainline-controlled research decisions.",
-    "longDescription": "Uses a bounded Mainline Workflow Controller to route and checkpoint project evidence mapping or existing-experiment evaluation, while isolated research roles and deterministic validators enforce evidence, debate, user gates, retries, and resumability.",
+    "shortDescription": "Bundled-ARS research decisions.",
+    "longDescription": "Bundles the Academic Research Suite role prompts needed by this workflow, while a bounded Mainline Workflow Controller enforces local evidence, context isolation, user gates, deterministic validation, and resumability.",
     "developerName": "PaperNotes Project",
     "category": "Productivity",
     "capabilities": [
@@ -17,6 +17,6 @@
       "Interactive",
       "Multi-agent"
     ],
-    "defaultPrompt": "Use the Mainline Workflow Controller to route this request, checkpoint every gate, and stop at the first required user decision."
+    "defaultPrompt": "Use the bundled Academic Research Suite role bridge and Mainline Workflow Controller to route this request, checkpoint every gate, and stop at the first required user decision."
   }
 }

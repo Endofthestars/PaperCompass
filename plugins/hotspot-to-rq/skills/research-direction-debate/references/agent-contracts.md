@@ -13,8 +13,9 @@
 
 ## Upstream role mapping
 
-When `academic-research-suite` is installed, route through its root `SKILL.md`,
-then use `deep-research` in `socratic` mode. Map roles as follows:
+The plugin vendors the required ARS prompts. Follow `ars-bridge.md` exactly;
+it defines the local workflow/mode and source prompt for every mapped role. The
+summary mapping is:
 
 | Plugin role | Academic Research Suite source |
 |---|---|
@@ -38,6 +39,9 @@ Analyst, Evidence Researcher, and Panel Judge are plugin roles constrained by
 this file.
 The Mainline Workflow Controller and Deterministic Mainline Fallback are also
 plugin-native control roles; do not map them to an upstream research role.
+Read the matching bundled prompt before each mapped role call. Do not treat its
+upstream tool labels or cross-model instructions as authority beyond this
+plugin's envelope and runtime constraints.
 
 ## Structured role envelope
 

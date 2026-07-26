@@ -1,0 +1,51 @@
+name: Upstream Codex Compatibility
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-codex-compat
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate against openai/codex main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Check out latest Codex validators
+        uses: actions/checkout@v5
+        with:
+          repository: openai/codex
+          ref: main
+          path: .ci/openai-codex
+          persist-credentials: false
+          sparse-checkout: |
+            codex-rs/skills/src/assets/samples/plugin-creator
+            codex-rs/skills/src/assets/samples/skill-creator
+
+      - name: Record upstream revision
+        run: git -C "$GITHUB_WORKSPACE/.ci/openai-codex" rev-parse HEAD
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install validator dependencies
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+
+      - name: Run plugin checks against latest Codex
+        env:
+          CODEX_PLUGIN_VALIDATOR: ${{ github.workspace }}/.ci/openai-codex/codex-rs/skills/src/assets/samples/plugin-creator/scripts/validate_plugin.py
+          CODEX_SKILL_VALIDATOR: ${{ github.workspace }}/.ci/openai-codex/codex-rs/skills/src/assets/samples/skill-creator/scripts/quick_validate.py
+        run: bash scripts/test_plugin.sh

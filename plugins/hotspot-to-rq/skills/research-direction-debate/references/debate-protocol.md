@@ -133,6 +133,9 @@ Initialize control fields before the first delegated call:
 }
 ```
 
+Before dispatching an ARS-mapped role, read the corresponding bundled prompt
+from `ars-bridge.md`; no separately installed ARS dependency is required.
+
 Revision 0 is a bootstrap state. It is valid only at `SCANNING` for
 non-evaluation modes or `EVIDENCE_INTAKE` for evaluation, before any accepted
 work product. The first `SESSION_INIT` transition has no role dispatch and runs
