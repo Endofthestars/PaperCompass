@@ -1529,6 +1529,31 @@ class MainlineControlTests(unittest.TestCase):
             controller_validator.expected_active_lanes(state, {}),
         )
 
+    def test_terminal_derived_candidate_has_no_spurious_next_round_lane(self) -> None:
+        """A converged downgraded lane must not block its identification audit."""
+        state = control_state(status="DEBATING")
+        state.update(
+            {
+                "max_rounds": 6,
+                "initial_debate_candidate_ids": [],
+                "candidates": [
+                    {
+                        "candidate_id": "C02",
+                        "origin": "DERIVED",
+                        "status": "DOWNGRADED",
+                        "gate_ready": False,
+                        "rounds_completed": 1,
+                        "rounds": [{"round": 1, "verdict": "CONVERGED"}],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            [],
+            controller_validator.expected_active_lanes(state, {}),
+        )
+
     def test_selected_candidate_requires_user_receipt(self) -> None:
         state = control_state()
         state["selected_candidate_id"] = "C01"

@@ -2189,6 +2189,24 @@ def expected_active_lanes(
             next_round = rounds_completed + 1
             if is_int(max_rounds) and next_round > max_rounds:
                 continue
+            rounds_list = candidate.get("rounds")
+            last_verdict = (
+                rounds_list[-1].get("verdict")
+                if isinstance(rounds_list, list)
+                and rounds_list
+                and isinstance(rounds_list[-1], dict)
+                else None
+            )
+            # Keep this projection aligned with validate_session.py: no
+            # terminal verdict may schedule a phantom next debate round.
+            if last_verdict in {
+                "DOWNGRADE",
+                "DEFER",
+                "ELIMINATE",
+                "USER_GATE",
+                "CONVERGED",
+            }:
+                continue
             lane_coordinates.append(("DEBATE", candidate_id, next_round))
 
     control = state.get("mainline_control")
