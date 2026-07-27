@@ -50,7 +50,7 @@ cp "$cache_dir/LICENSE" "$staging_dir/LICENSE"
 
 existing_revision=""
 if [ -f "$repo_dir/UPSTREAM.md" ]; then
-  existing_revision="$(sed -n 's/^upstream_commit: //p' "$repo_dir/UPSTREAM.md" | head -n 1)"
+  existing_revision="$(sed -n 's/^- upstream_commit: //p' "$repo_dir/UPSTREAM.md" | head -n 1)"
 fi
 
 if [ "$existing_revision" = "$revision" ]; then
