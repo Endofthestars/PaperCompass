@@ -1,0 +1,44 @@
+name: Sync Paper-Notes Corpus
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-paper-notes-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Mirror Paper-Notes docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Synchronize upstream corpus
+        env:
+          PAPER_NOTES_CACHE_DIR: ${{ runner.temp }}/paper-notes-upstream
+        run: bash scripts/sync_paper_notes.sh
+
+      - name: Commit updated corpus when changed
+        run: |
+          if [[ -z "$(git status --porcelain -- data/Paper-Notes)" ]]; then
+            echo "Paper-Notes corpus is already current."
+            exit 0
+          fi
+
+          git add -A data/Paper-Notes
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          upstream_commit="$(sed -n 's/^upstream_commit: //p' data/Paper-Notes/UPSTREAM.md | head -n 1)"
+          git commit -m "chore(data): sync Paper-Notes (${upstream_commit:0:12})"
+          git push origin HEAD:main

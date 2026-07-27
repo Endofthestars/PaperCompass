@@ -208,7 +208,7 @@ Mainline Workflow Controller 是只读控制面，不是第二个主代理：它
 同步上游论文笔记 → 生成趋势信号 → 运行插件的方向选择 / 实验评估工作流
 ```
 
-论文笔记数据来自 [`zhaoyang97/Paper-Notes`](https://github.com/zhaoyang97/Paper-Notes)，并以本地数据目录方式使用，不随本仓库提交。请遵守其 CC BY-NC-SA 4.0 许可，并在报告中注明来源与同步时间。
+论文笔记数据来自 [`zhaoyang97/Paper-Notes`](https://github.com/zhaoyang97/Paper-Notes)。`data/Paper-Notes/docs` 是由 GitHub Actions 镜像并纳入版本控制的语料；其中的 `LICENSE` 与 `UPSTREAM.md` 保留其许可证、来源 revision 和同步时间。请遵守其 CC BY-NC-SA 4.0 许可，并在报告中注明来源与同步时间。
 
 ```bash
 ./scripts/sync_paper_notes.sh
@@ -216,4 +216,8 @@ python3 scripts/analyze_paper_notes.py
 python3 scripts/build_trend_report.py
 ```
 
-默认会将上游仓库存放在 `data/Paper-Notes`，将分析结果输出至 `reports/`；两者都由 Git 忽略。
+默认会将上游 `docs/` 语料同步到 `data/Paper-Notes`，将分析结果输出至 `reports/`；只有后者由 Git 忽略。上游当前约 382 MB，随每周更新会增加仓库历史体积。
+
+GitHub Actions 的 **Sync Paper-Notes Corpus** 工作流会在每周一 `07:17 UTC`
+自动运行。也可以在仓库的 **Actions** 页面选择该工作流、点击 **Run workflow**
+手动同步；只有上游 `docs/` 或许可证版本改变时，机器人才会提交到 `main`。

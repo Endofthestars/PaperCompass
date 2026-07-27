@@ -1,6 +1,10 @@
-# Local upstream corpus and generated research artifacts
-data/
+# Local upstream corpus cache and generated research artifacts
+# Paper-Notes/docs is intentionally mirrored by GitHub Actions and committed.
+data/*
+!data/Paper-Notes/
+!data/Paper-Notes/**
 reports/
+.cache/
 
 # Python and operating-system artifacts
 __pycache__/

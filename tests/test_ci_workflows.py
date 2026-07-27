@@ -42,6 +42,17 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("continue-on-error", workflow)
 
+    def test_paper_notes_sync_is_scheduled_manual_and_writes_only_when_needed(self) -> None:
+        workflow = (WORKFLOWS / "sync-paper-notes.yml").read_text(encoding="utf-8")
+        self.assertIn('cron: "17 7 * * 1"', workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn("group: sync-paper-notes-main", workflow)
+        self.assertIn("PAPER_NOTES_CACHE_DIR: ${{ runner.temp }}/paper-notes-upstream", workflow)
+        self.assertIn("bash scripts/sync_paper_notes.sh", workflow)
+        self.assertIn("git status --porcelain -- data/Paper-Notes", workflow)
+        self.assertIn("git push origin HEAD:main", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
