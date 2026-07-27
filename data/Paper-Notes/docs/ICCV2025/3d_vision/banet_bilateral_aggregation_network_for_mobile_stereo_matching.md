@@ -1,0 +1,150 @@
+---
+title: >-
+  [论文解读] BANet: Bilateral Aggregation Network for Mobile Stereo Matching
+description: >-
+  [ICCV 2025][3D视觉][立体匹配] 提出双边聚合网络BANet，通过空间注意力将代价体分离为高频细节体和低频平滑体并分别聚合，仅使用2D卷积即可在移动设备上实时运行并大幅超越MobileStereoNet-2D（KITTI 2015上精度提升35.3%），3D版本在GPU上达到实时方法最高精度。
+tags:
+  - "ICCV 2025"
+  - "3D视觉"
+  - "立体匹配"
+  - "移动端部署"
+  - "双边聚合"
+  - "2D卷积"
+  - "空间注意力"
+---
+
+# BANet: Bilateral Aggregation Network for Mobile Stereo Matching
+
+**会议**: ICCV 2025  
+**arXiv**: [2503.03259](https://arxiv.org/abs/2503.03259)  
+**代码**: [GitHub](https://github.com/gangweix/BANet)  
+**领域**: 3D视觉 / 立体匹配  
+**关键词**: 立体匹配, 移动端部署, 双边聚合, 2D卷积, 空间注意力
+
+## 一句话总结
+
+提出双边聚合网络BANet，通过空间注意力将代价体分离为高频细节体和低频平滑体并分别聚合，仅使用2D卷积即可在移动设备上实时运行并大幅超越MobileStereoNet-2D（KITTI 2015上精度提升35.3%），3D版本在GPU上达到实时方法最高精度。
+
+## 研究背景与动机
+
+立体匹配在无人机导航、手机摄影、机器人手术等场景中至关重要。当前SOTA方法（如IGEV、ACVNet）使用大量3D卷积聚合代价体，虽然精度高但无法部署在高通骁龙等移动芯片上。降低计算量的尝试主要有：
+
+- **下采样/稀疏代价体**: StereoNet、Fast-ACVNet等构建低分辨率或稀疏代价体，但仍依赖3D卷积，移动端不友好
+- **复杂2D替代操作**: AANet用可变形卷积、HITNet用迭代warping来替代3D卷积缓解边缘模糊问题，但这些操作在移动端部署代价高
+- **纯2D卷积**: MobileStereoNet-2D使用纯2D卷积，移动端友好但精度严重下降——边缘模糊、细节丢失、无纹理区域误匹配
+
+核心矛盾：**如何在仅用移动端友好操作的前提下保持高精度？** 作者观察到，图像同时包含高频细节区域和低频平滑/无纹理区域，单一2D聚合网络难以同时处理两者。这启发了"分而治之"的双边聚合思路。
+
+## 方法详解
+
+### 整体框架
+
+BANet包含四个步骤：（1）MobileNetV2特征提取，（2）相关性体构建，（3）双边聚合（核心创新），（4）视差预测。整体流程仅使用2D卷积和标准移动端操作，可直接部署在高通骁龙芯片上。
+
+### 关键设计
+
+1. **双边聚合 (Bilateral Aggregation)**:
+   核心idea是"分而治之"——通过空间注意力图 $\mathbf{A}$ 将完整相关性体 $\mathbf{C}_{cor}$ 分离为两部分：
+    $\mathbf{C}_d = \mathbf{A} \odot \mathbf{C}_{cor}, \quad \mathbf{C}_s = (1 - \mathbf{A}) \odot \mathbf{C}_{cor}$
+   其中 $\mathbf{C}_d$ 聚焦高频细节和边缘，$\mathbf{C}_s$ 聚焦低频平滑和无纹理区域。然后用两个独立的聚合分支 $\mathbf{G}_d$ 和 $\mathbf{G}_s$ 分别处理，最后加权融合：
+    $\mathbf{C}_{agg} = \mathbf{A} \odot \mathbf{C}_d' + (1 - \mathbf{A}) \odot \mathbf{C}_s'$
+   两个分支结构相同（但不共享权重），由MobileNetV2的inverted residual blocks组成：4个block在1/4分辨率、6个block在1/8分辨率、8个block在1/16分辨率，通道数分别为32/64/128。
+
+2. **尺度感知空间注意力 (Scale-aware Spatial Attention)**:
+   精确区分高频和低频区域是双边聚合成功的关键。作者观察到：**细尺度特征感知更多高频细节，粗尺度特征捕获更多低频平滑信息**。因此提出融合多尺度特征来生成注意力图：
+    $\mathbf{S} = \text{Concat}[\text{Conv}(\mathbf{F}_{l,16}^{up}), \text{Conv}(\mathbf{F}_{l,8}^{up}), \text{Conv}(\mathbf{F}_{l,4})]$
+    $\mathbf{A} = \sigma(\text{Conv}(\mathbf{S}))$
+   三个尺度的特征（1/16、1/8、1/4分辨率）统一上采样到1/4后拼接，经卷积和sigmoid生成空间注意力图。
+
+3. **3D扩展 (BANet-3D)**:
+   双边聚合概念可无缝扩展到3D卷积。3D聚合网络包含3个下采样块（2层3×3×3卷积）和3个上采样块（4×4×4转置卷积 + 2层3×3×3卷积）。BANet-3D在高端GPU上实时方法中精度最高，但不适用于移动端。
+
+### 损失函数 / 训练策略
+
+- 损失函数：Smooth L1 Loss
+  $$\mathcal{L} = \lambda_0 \text{SmoothL1}(\mathbf{d}_0 - \mathbf{d}_{gt}) + \lambda_1 \text{SmoothL1}(\mathbf{d}_1 - \mathbf{d}_{gt})$$
+  其中 $\lambda_0=0.3, \lambda_1=1.0$，$\mathbf{d}_0$ 为1/4分辨率视差，$\mathbf{d}_1$ 为全分辨率视差（通过superpixel权重上采样）
+- 先在Scene Flow上训练200K步（batch=16），再在KITTI 2012+2015混合集微调50K步
+- 训练裁剪尺寸256×512，$D_{max}=192$
+- 使用AdamW优化器，one-cycle学习率策略，最大学习率8e-4
+- RTX 3090 GPU训练
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | KITTI 2015 D1-all(%) | KITTI 2012 3-noc(%) | Scene Flow EPE(px) | MACs(G) |
+|------|---------------------|--------------------|--------------------|---------|
+| MobileStereoNet-2D | 2.83 | — | 1.11 | 127→136 |
+| Fast-ACVNet+ | 2.01 | 1.45 | 0.59 | 85→93 |
+| HITNet | 1.98 | 1.41 | — | 47 |
+| CoEx | 2.13 | 1.55 | 0.67 | 49→53 |
+| **BANet-2D (本文)** | **1.83** | **1.38** | **0.57** | **36→39** |
+| **BANet-3D (本文)** | **1.77** | **1.27** | **0.51** | **78→85** |
+
+### 消融实验
+
+| 聚合类型 | 双边聚合 | 尺度注意力 | Scene Flow EPE | Bad 3.0(%) | MACs(G) |
+|---------|---------|----------|---------------|-----------|---------|
+| 2D Baseline | ✗ | ✗ | 0.63 | 2.75 | 29 |
+| 2D + BA | ✓ | ✗ | 0.59 | 2.57 | 38 |
+| 2D + BA + SSA | ✓ | ✓ | 0.57 | 2.49 | 39 |
+| 3D Baseline | ✗ | ✗ | 0.56 | 2.43 | 57 |
+| 3D + BA | ✓ | ✗ | 0.53 | 2.27 | 80 |
+| 3D + BA + SSA | ✓ | ✓ | 0.51 | 2.21 | 85 |
+
+| 方法 | KITTI 2015 前景D1-fg(%) | 提升幅度 |
+|------|----------------------|---------|
+| 2D w/o BA | 3.67 | — |
+| BANet-2D | 3.03 | **17%↑** |
+| 3D w/o BA | 3.87 | — |
+| BANet-3D | 3.02 | **22%↑** |
+
+### 关键发现
+
+- **前景区域改善最显著**: KITTI测试集上前景D1-fg提升17-22%，因为前景包含更多高频边缘和细节
+- **即插即用**: 双边聚合可集成到PSMNet（EPE提升29%）、GwcNet（EPE提升12%）、Fast-ACVNet+（EPE提升10%）
+- **移动端延迟**: 高通骁龙8 Gen 3上512×512输入仅需45ms（特征提取16ms + 相关体构建6.5ms + 双边聚合22.5ms），不到MobileStereoNet-2D延迟的1/3
+- **计算量最低**: BANet-2D的MACs(36G)是所有方法中最低的，同时精度最高
+
+## 亮点与洞察
+
+- **"分而治之"的精妙思路**: 不去设计更强的统一聚合网络，而是先分割问题域再分别解决，用简单操作达到复杂操作的效果
+- **多尺度感知 → 频率分离**: 利用不同尺度特征天然对应不同频率信息的特性来生成分离注意力，设计巧妙
+- **实际部署价值极高**: 在真实移动芯片上验证了延迟，45ms@512×512完全满足实时需求
+
+## 局限与展望
+
+- 双边分离假设场景可以清晰地划分为高频/低频区域，对半透明、反射等复杂场景可能需要更精细的分区策略
+- 两个聚合分支结构相同只是不共享权重，是否可以为细节/平滑分支设计不同的最优结构
+- 未探讨在多视图立体和光流估计等相关任务上的迁移效果（论文在结论中提及为未来工作）
+- superpixel上采样策略对极细结构的恢复能力有限
+
+## 相关工作与启发
+
+- 与AANet的核心区别：AANet用可变形卷积做自适应聚合，计算开销大且移动端不友好；BANet用注意力分离再分别聚合，全程标准2D卷积
+- 与HITNet的区别：HITNet避开显式代价体用迭代warping恢复视差，但迭代操作同样不移动端友好
+- 双边滤波/双边网络的思想在图像处理中有悠久历史，本文将其迁移到代价体聚合是一个有价值的尝试
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ "双边聚合"思路简洁有效，在立体匹配移动端部署领域有开创意义
+- **实验充分度**: ⭐⭐⭐⭐⭐ 涵盖合成+真实数据、2D+3D版本、移动芯片延迟、可插拔验证
+- **写作质量**: ⭐⭐⭐⭐ 问题动机清晰，可视化说服力强
+- **价值**: ⭐⭐⭐⭐⭐ 真正面向工程落地的工作，移动端高精度实时立体匹配的有力方案
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Learning Robust Stereo Matching in the Wild with Selective Mixture-of-Experts](learning_robust_stereo_matching_in_the_wild_with_selective_mixture-of-experts.md)
+- [\[ICCV 2025\] RobuSTereo: Robust Zero-Shot Stereo Matching under Adverse Weather](robustereo_robust_zero-shot_stereo_matching_under_adverse_weather.md)
+- [\[ICCV 2025\] Stereo Any Video: Temporally Consistent Stereo Matching](stereo_any_video_temporally_consistent_stereo_matching.md)
+- [\[CVPR 2025\] DEFOM-Stereo: Depth Foundation Model Based Stereo Matching](../../CVPR2025/3d_vision/defom-stereo_depth_foundation_model_based_stereo_matching.md)
+- [\[ICCV 2025\] Diving into the Fusion of Monocular Priors for Generalized Stereo Matching](diving_into_the_fusion_of_monocular_priors_for_generalized_stereo_matching.md)
+
+</div>
+
+<!-- RELATED:END -->

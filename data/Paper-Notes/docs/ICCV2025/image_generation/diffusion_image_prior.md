@@ -1,0 +1,178 @@
+---
+title: >-
+  [论文解读] DIIP: Diffusion Image Prior
+description: >-
+  [ICCV 2025][图像生成][扩散模型] 发现预训练扩散模型在重建退化图像时存在类似 Deep Image Prior 的隐式偏置——迭代优化过程中先生成干净图像再过拟合到退化输入——且比 DIP 适用更广泛的退化类型，据此提出完全盲（无需退化模型）的图像复原方法 DIIP。 图像复原（IR）的目标是从退化图像 $y$…
+tags:
+  - "ICCV 2025"
+  - "图像生成"
+  - "扩散模型"
+  - "图像恢复"
+  - "Deep Image Prior"
+  - "Early Stopping"
+  - "Zero-shot"
+---
+
+# DIIP: Diffusion Image Prior
+
+**会议**: ICCV 2025  
+**arXiv**: [2503.21410](https://arxiv.org/abs/2503.21410)  
+**代码**: 无  
+**领域**: 图像生成 / 图像复原  
+**关键词**: diffusion model, Blind Image Restoration, Deep Image Prior, Early Stopping, Zero-shot
+
+## 一句话总结
+
+发现预训练扩散模型在重建退化图像时存在类似 Deep Image Prior 的隐式偏置——迭代优化过程中先生成干净图像再过拟合到退化输入——且比 DIP 适用更广泛的退化类型，据此提出完全盲（无需退化模型）的图像复原方法 DIIP。
+
+## 研究背景与动机
+
+图像复原（IR）的目标是从退化图像 $y$ 恢复干净图像 $x$。现有方法的退化模型假设从强到弱分为三级：
+
+**非盲方法**（DDRM, DDNM, DPS）：需完全已知退化模型（如已知模糊核）
+
+**部分盲方法**（BlindDPS, BIRD）：需已知退化的参数形式
+
+**完全盲方法**（DIP, DreamClean）：无需任何退化模型知识
+
+Deep Image Prior (DIP) 是经典的完全盲方法，利用 CNN 的隐式先验，通过优化网络参数拟合退化图像，在中间迭代阶段产出干净图像。但 DIP 的核心局限在于：**这种"先干净后过拟合"的性质仅对高频退化（如噪声）有效，对低频退化（如模糊）无效**。
+
+作者提出关键研究问题：预训练扩散模型是否也具有类似偏置？如果有，其适用范围比 DIP 更广吗？
+
+## 方法详解
+
+### 整体框架
+
+DIIP 使用冻结的预训练扩散模型 $g$（DDIM 确定性映射），**不优化模型参数**，而是优化**输入噪声** $z$：
+
+$$z^* = \arg\min_z \|g(z) - y\|^2, \quad x^* = g(z^*)$$
+
+通过梯度下降迭代优化 $z$，并在合适时机 early stop 来获取干净复原图像。
+
+### 关键设计
+
+1. **扩散模型隐式先验的发现与验证**:
+
+    - 在 FFHQ 图像上分别添加高斯噪声和高斯模糊，运行上述优化到收敛（1500 次迭代）
+    - 关键发现有两个：
+        - **(a) 两阶段行为**：无论退化类型是噪声还是模糊，优化过程都存在两个阶段——(I) 中间阶段生成干净、逼真的图像；(II) 后期开始过拟合到退化输入。相比之下，DIP 在模糊退化时无法在中间阶段产出清晰图像
+        - **(b) 高频惰性**：与 DIP 类似，扩散模型对高频伪影有很强的抵抗力，直到很晚才开始过拟合噪声
+    - 设计动机：这一发现将 DIP 的适用范围从"仅高频退化"扩展到"包括低频退化在内的广泛退化类型"
+
+2. **低频退化的停止准则（Laplacian 方差）**:
+
+    - 监测重建图像的 Laplacian 方差（LV）作为清晰度指标
+    - 在 regime (I) 阶段，生成图像清晰，LV 较高
+    - 当 $k > k_{min}$ 且 $\sigma^2[k+1] < \sigma^2[k]$，表明图像开始变模糊，触发停止
+    - 返回最后一次 LV 峰值对应的重建结果
+    - 设计动机：绝对清晰度难以衡量，但相对清晰度变化趋势可靠
+
+3. **高频退化的停止准则（归一化损失斜率）**:
+
+    - 计算归一化斜率 $\Delta_k = \frac{E(z^k;y) - E(z^{k-1};y)}{E(z^{k-1};y)}$
+    - 实验发现 $\Delta_k$ 的最小值恰好对应于 PSNR 的最大值
+    - 当 $\Delta_k < \epsilon$（默认 0.001）时停止
+    - 设计动机：损失曲线的拐点标志着从"学习干净信号"到"开始拟合噪声"的转折
+
+### 损失函数 / 训练策略
+
+- 优化使用 Adam 优化器，学习率 0.0015
+- 超参数 $k_{min} = 100$，$\epsilon = 0.001$
+- 采用 BIRD 提出的快速扩散反演方法加速 $g(z)$ 的计算
+- 预训练模型为 UNet 骨干的无条件扩散模型
+- 无需训练数据集，纯 test-time 优化
+
+## 实验关键数据
+
+### 主实验
+
+**CelebA 结构化退化（去噪、超分辨率）**:
+
+| 方法 | 去噪 PSNR↑ | 去噪 SSIM↑ | SR×4 PSNR↑ | SR×8 PSNR↑ |
+|---|---|---|---|---|
+| DIP | 25.81 | 0.606 | 21.33 | 20.34 |
+| BIRD | 27.92 | 0.821 | 25.26 | 22.63 |
+| DreamClean | 27.05 | 0.771 | 23.44 | 21.33 |
+| **DIIP** | **28.37** | **0.842** | 25.14 | **22.86** |
+
+**非结构化退化（完全盲场景）**:
+
+| 方法 | JPEG PSNR↑ | 水滴去除 PSNR↑ | 非均匀变形 PSNR↑ |
+|---|---|---|---|
+| DIP | 20.43 | 20.37 | 18.83 |
+| DreamClean | 23.92 | 22.94 | 22.16 |
+| **DIIP** | **25.29** | **23.78** | **23.45** |
+
+注：BIRD、BlindDPS 等部分盲方法**无法应用**于非结构化退化场景。
+
+### 消融实验
+
+**$k_{min}$ 的影响（PSNR dB）**:
+
+| $k_{min}$ | 非均匀变形 | 水滴去除 |
+|---|---|---|
+| 50 | 22.18 | 22.48 |
+| **100** | **23.45** | **23.78** |
+| 150 | 23.52 | 23.82 |
+
+**$\epsilon$ 的影响（PSNR dB）**:
+
+| $\epsilon$ | 去噪 | JPEG 去伪影 |
+|---|---|---|
+| 0.005 | 27.25 | 22.38 |
+| **0.001** | **28.37** | **25.29** |
+| 0.0005 | 28.14 | 25.02 |
+
+**与最优停止的差距**：DIIP 仅落后约 0.3 dB（去噪：28.37 vs 28.63），说明自监督停止准则接近最优。
+
+### 关键发现
+
+- DIIP 在所有完全盲复原任务上达到 SOTA，在部分任务上甚至击败需要退化模型的部分盲方法
+- 运行时间 138 秒/图，内存 1.2 GB，与 DreamClean 相当
+- 预训练扩散模型从未见过退化数据，但依然能先重建干净图像——这是一种纯粹的归纳偏置
+- 两种停止准则分别适用于不同类型退化，无需事先知道退化类型，算法自动选择先触发的准则
+
+## 亮点与洞察
+
+- **核心发现极具价值**：扩散模型的隐式先验比 DIP 更强更广，为全盲图像复原开辟了新方向
+- 方法极简优雅：冻结模型 + 优化噪声 + early stop，无需任何额外训练或退化建模
+- 两种自监督停止准则互补，无需知道退化类型
+- 实验中 DreamClean 容易改变图像身份（如人脸特征），而 DIIP 更好地保持原始内容
+
+## 局限与展望
+
+- 计算开销较大（~138 秒/图），不适合实时应用
+- 每张图像需独立优化，无法批量处理
+- 停止准则对超参数（$k_{min}$, $\epsilon$）有一定敏感性
+- 仅在 256×256 分辨率上验证，高分辨率场景需要更高效的扩散反演方案
+- 对于同时包含高频和低频退化的复合退化场景，两种停止准则的交互行为未充分分析
+
+## 相关工作与启发
+
+- DIP 是直接灵感来源，DIIP 可视为其在扩散模型上的升级版
+- DreamClean 是最接近的竞争者（同为完全盲），但采用了不同的扩散推理策略
+- BIRD 的快速扩散反演被 DIIP 借用以加速优化
+- 本文的核心发现可迁移到其他生成模型——Flow Matching、Consistency Model 等是否也有类似隐式先验？
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐⭐ — 扩散模型隐式先验的发现极具洞察力，方法简洁新颖
+- **实验充分度**: ⭐⭐⭐⭐ — 覆盖多种退化类型，消融充分；但数据集规模偏小
+- **写作质量**: ⭐⭐⭐⭐⭐ — 动机清晰，发现与方法的逻辑链条非常自然
+- **价值**: ⭐⭐⭐⭐ — 为全盲图像复原提供新思路，但计算成本限制了实际部署
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Learning Deblurring Texture Prior from Unpaired Data with Diffusion Model](learning_deblurring_texture_prior_from_unpaired_data_with_diffusion_model.md)
+- [\[ICCV 2025\] DPoser-X: Diffusion Model as Robust 3D Whole-Body Human Pose Prior](dposer-x_diffusion_model_as_robust_3d_whole-body_human_pose_prior.md)
+- [\[CVPR 2025\] Navigating Image Restoration with VAR's Distribution Alignment Prior](../../CVPR2025/image_generation/navigating_image_restoration_with_vars_distribution_alignment_prior.md)
+- [\[CVPR 2025\] Using Powerful Prior Knowledge of Diffusion Model in Deep Unfolding Networks for Image Compressive Sensing](../../CVPR2025/image_generation/using_powerful_prior_knowledge_of_diffusion_model_in_deep_unfolding_networks_for.md)
+- [\[NeurIPS 2025\] Diff-ICMH: Harmonizing Machine and Human Vision in Image Compression with Generative Prior](../../NeurIPS2025/image_generation/diff-icmh_harmonizing_machine_and_human_vision_in_image_compression_with_generat.md)
+
+</div>
+
+<!-- RELATED:END -->

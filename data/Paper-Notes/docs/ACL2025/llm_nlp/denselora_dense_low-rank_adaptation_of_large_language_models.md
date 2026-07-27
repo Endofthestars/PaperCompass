@@ -1,0 +1,152 @@
+---
+title: >-
+  [论文解读] DenseLoRA: Dense Low-Rank Adaptation of Large Language Models
+description: >-
+  [ACL 2025][LLM 其他][参数高效微调] 本文提出DenseLoRA，通过引入跨层共享的Encoder-Decoder进行隐藏表示的压缩与重建，用一个稠密的小型低秩矩阵替代LoRA中两个冗余的低秩矩阵来进行适配，仅用0.01%可训练参数在LLaMA3-8B上达到83.8%准确率，超越了LoRA用0.70%参数达到的80.8%。
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "参数高效微调"
+  - "LoRA"
+  - "低秩适配"
+  - "表示微调"
+  - "参数冗余"
+---
+
+# DenseLoRA: Dense Low-Rank Adaptation of Large Language Models
+
+**会议**: ACL 2025  
+**arXiv**: [2505.23808](https://arxiv.org/abs/2505.23808)  
+**代码**: [https://github.com/mulin-ahu/DenseLoRA](https://github.com/mulin-ahu/DenseLoRA)  
+**领域**: LLM/NLP  
+**关键词**: 参数高效微调, LoRA, 低秩适配, 表示微调, 参数冗余
+
+## 一句话总结
+本文提出DenseLoRA，通过引入跨层共享的Encoder-Decoder进行隐藏表示的压缩与重建，用一个稠密的小型低秩矩阵替代LoRA中两个冗余的低秩矩阵来进行适配，仅用0.01%可训练参数在LLaMA3-8B上达到83.8%准确率，超越了LoRA用0.70%参数达到的80.8%。
+
+## 研究背景与动机
+LoRA通过低秩矩阵分解（$\Delta W = BA$）大幅减少了可训练参数量，是目前最流行的参数高效微调方法。但研究发现LoRA低秩矩阵中存在大量冗余权重：许多参数在训练过程中增量接近零，并未对适配做出有意义的贡献。
+
+现有LoRA变体（如AdaLoRA、DoRA等）试图通过选择性地识别重要权重来解决冗余问题，但仍然受限于传统的双低秩矩阵框架。本文提出一个根本性的问题：**能否开发一种利用更稠密结构、用更少参数实现更好性能的低秩适配方法？**
+
+核心idea是：不仅修改权重矩阵，还对隐藏表示本身进行精炼。受表示微调（Representation Fine-tuning）的启发，将低秩适配与表示压缩相结合。
+
+## 方法详解
+
+### 整体框架
+DenseLoRA的适配过程分为三阶段流水线：(1) Encoder压缩隐藏表示；(2) 稠密低秩矩阵M对压缩表示进行适配；(3) Decoder将适配后的表示重建回原始维度。关键创新点在于Encoder-Decoder是跨所有适配层共享的，而每层拥有独立的适配矩阵M。
+
+### 关键设计
+1. **Encoder压缩模块**:
+
+    - 使用全连接网络 $W_e \in \mathbb{R}^{r \times k}$ 将隐藏表示 $h \in \mathbb{R}^k$ 压缩为低维表示 $h' \in \mathbb{R}^r$
+    - 后接激活函数 $\sigma(\cdot)$
+    - 用Kaiming初始化
+    - 跨所有适配层共享，减少参数冗余
+
+2. **稠密低秩适配矩阵**:
+
+    - 每层使用独立的方阵 $M \in \mathbb{R}^{r \times r}$ 进行适配
+    - 与LoRA的 $B \times A$（两个矩阵乘积）不同，DenseLoRA使用一个小的稠密方阵
+    - 虽然是 $r \times r$ 的小矩阵，但由于共享了Encoder-Decoder的压缩和重建功能，实际学到的是更有效的适配
+    - Kaiming初始化
+
+3. **Decoder重建模块**:
+
+    - 使用 $W_d \in \mathbb{R}^{d \times r}$ 将适配后的表示重建回原始维度
+    - 后接激活函数
+    - 零初始化（确保初始时不干扰前向传播）
+    - 与Encoder共享，跨层共享
+
+4. **参数量分析**:
+
+    - LoRA: $|\Theta| = l \times (d+k) \times r$（l为适配层数）
+    - DenseLoRA: $|\Theta| = (d+k+l \times r) \times r$
+    - 实际对比：LLaMA2-7B, r=16时，LoRA需28M参数，DenseLoRA仅需0.9M，30倍压缩
+
+### 损失函数 / 训练策略
+整体适配公式：$\hat{h} = W_0 h + Decoder(M \cdot Encoder(h))$
+
+使用标准的交叉熵损失进行微调。Encoder用Kaiming初始化，Decoder用零初始化确保训练初始稳定。训练在4×NVIDIA 3090 24GB GPU上完成。
+
+## 实验关键数据
+
+### 主实验 - 常识推理（LLaMA3-8B）
+
+| 方法 | 参数量(%) | BoolQ | PIQA | HellaS. | WinoG. | ARC-e | ARC-c | OBQA | Avg. |
+|------|----------|-------|------|---------|--------|-------|-------|------|------|
+| LoRA | 0.70 | 70.8 | 85.2 | 91.7 | 84.3 | 84.2 | 71.2 | 79.0 | 80.8 |
+| VeRA | 0.01 | 62.2 | 81.6 | 54.5 | 6.18 | 84.4 | 67.2 | 64.6 | 67.7 |
+| LoKr | 0.01 | 65.1 | 81.6 | 92.0 | 82.1 | 89.2 | 76.7 | 80.9 | 80.9 |
+| DoRA | 0.71 | 74.6 | 89.3 | 95.5 | 85.6 | 90.5 | 80.4 | 85.8 | 85.2 |
+| **DenseLoRA**(r=16) | **0.01** | 72.3 | 87.5 | 93.5 | 85.2 | 89.8 | 78.2 | 84.0 | **83.8** |
+| DenseLoRA(r=32) | 0.02 | 74.3 | 88.0 | 94.5 | 86.0 | 89.7 | 78.7 | 85.6 | 84.6 |
+| DenseLoRA(r=64) | 0.06 | 74.1 | 88.9 | 95.0 | 87.0 | 90.0 | 79.2 | 85.6 | 85.0 |
+
+### 数学推理（LLaMA3-8B）
+
+| 方法 | 参数量(%) | GSM8K | AQUA | AddSub | SVAMP | Avg. |
+|------|----------|-------|------|--------|-------|------|
+| LoRA | 0.70 | 47.1 | 18.1 | 90.6 | 71.9 | 56.9 |
+| DenseLoRA(r=32) | 0.02 | 45.5 | 20.5 | 73.5 | 92.1 | 57.5 |
+| DenseLoRA(r=64) | 0.06 | 47.2 | 19.7 | 92.4 | 74.5 | 58.5 |
+
+### 消融实验
+
+| 配置 | 关键指标(Avg.) | 说明 |
+|------|--------------|------|
+| DenseLoRA仅QKV模块 | 82.3 | MHA层适配 |
+| DenseLoRA仅UD模块 | 83.8 | MLP层适配效果更好 |
+| DenseLoRA QKVUD | 84.6 | 最佳配置 |
+| LoRA QKVUD + DenseLoRA无 | 80.8 | 传统LoRA |
+| 10%训练数据 DenseLoRA | 81.1 | 超过LoRA 100%数据(80.8) |
+
+### 关键发现
+- DenseLoRA用1/70的参数量（0.01% vs 0.70%）就超越了LoRA 3个百分点（83.8% vs 80.8%）
+- r=64时DenseLoRA达到85.0%，接近DoRA(85.2%)但参数量仅为其1/6
+- 在低资源场景下优势更明显：10%数据训练的DenseLoRA(81.1%)就超过了100%数据训练的LoRA(80.8%)
+- MLP层的适配比注意力层更重要：仅适配UD模块就能达到83.8%
+- 数学推理任务上同样有效：r=64时58.5% vs LoRA的56.9%
+
+## 亮点与洞察
+- 将表示微调与低秩适配结合的思路很有创意，跳出了传统的"优化AB矩阵"思维框架
+- Encoder-Decoder跨层共享的设计非常巧妙：既减少了参数量，又让压缩表示保持一致性
+- 参数效率的提升是惊人的：30-70倍的参数压缩且性能更好
+- 在低资源场景下（10%数据）仍然表现出色，说明DenseLoRA的泛化能力更强
+- MLP层适配比注意力层更重要的发现与直觉不完全一致，值得进一步研究
+
+## 局限与展望
+- 实验主要集中在常识推理和数学推理，缺少NLG任务（如摘要、翻译等）的验证
+- 跨层共享Encoder-Decoder可能在层间差异大的深层模型上不够灵活
+- Decoder的零初始化意味着训练初期适配信号很弱，可能影响收敛速度
+- 只在7B/8B模型上验证，缺少对更大模型（70B+）的实验
+- 研究idea：可以探索自适应的每层rank分配，而非所有层用相同的r
+- 推理时DenseLoRA无法像LoRA那样合并到原始权重矩阵（因为有Encoder/Decoder和激活函数），会引入额外推理延迟，这是一个重要的实际限制
+
+## 相关工作与启发
+- 与ReFT（Representation Fine-tuning）家族相关，但DenseLoRA将表示微调和低秩适配深度集成
+- LoKr使用Kronecker积分解但计算成本更高，DenseLoRA的计算成本与LoRA相当
+- VeRA也使用共享矩阵但性能差距大（67.7% vs 83.8%），说明DenseLoRA的三阶段设计更有效
+- NoRA采用嵌套结构和SVD，思路不同但目标相似
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 将表示微调与低秩适配结合的思路新颖，但Encoder-Decoder架构本身不新
+- 实验充分度: ⭐⭐⭐⭐ 消融实验详尽，多种rank配置和模块组合，但任务类型和模型规模覆盖不够广
+- 写作质量: ⭐⭐⭐⭐ 方法描述清晰，参数分析到位，但可以更突出推理延迟的讨论
+- 价值: ⭐⭐⭐⭐ 参数效率的显著提升有很大的实际价值，但推理延迟问题限制了部分应用场景
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] TableLoRA: Low-rank Adaptation on Table Structure Understanding for Large Language Models](table_lora_structure_understanding.md)
+- [\[ACL 2025\] GORP: Continual Gradient Low-Rank Projection Fine-Tuning for LLMs](gorp_continual_gradient_projection.md)
+- [\[ACL 2025\] Cultural Learning-Based Culture Adaptation of Language Models](cultural_learning-based_culture_adaptation_of_language_models.md)
+- [\[ACL 2025\] Efficient Ensemble for Fine-tuning Language Models on Multiple Datasets](efficient_ensemble_for_fine-tuning_language_models_on_multiple_datasets.md)
+- [\[ACL 2025\] RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates](rocoft_efficient_finetuning_of_large_language_models_with_row-column_updates.md)
+
+</div>
+
+<!-- RELATED:END -->

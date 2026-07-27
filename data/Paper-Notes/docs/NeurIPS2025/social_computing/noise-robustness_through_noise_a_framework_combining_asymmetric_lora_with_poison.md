@@ -1,0 +1,133 @@
+---
+title: >-
+  [论文解读] Noise-Robustness Through Noise: A Framework Combining Asymmetric LoRA with Poisoning MoE
+description: >-
+  [NeurIPS 2025][社会计算][LoRA] 提出 LoPE，在非对称 LoRA 架构中设置专门的"中毒专家"接收注入噪声，推理时屏蔽该专家，仅通过正常专家输出实现噪声鲁棒——以噪声对抗噪声，完全无需数据清洗。 参数高效微调（PEFT）在将预训练语言模型适配下游任务时，容易受到噪声数据干扰。现有降噪方法分两类：(1)…
+tags:
+  - "NeurIPS 2025"
+  - "社会计算"
+  - "LoRA"
+  - "噪声鲁棒性"
+  - "Mixture-of-Experts"
+  - "参数高效微调"
+  - "数据去噪"
+---
+
+# Noise-Robustness Through Noise: A Framework Combining Asymmetric LoRA with Poisoning MoE
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2505.23868](https://arxiv.org/abs/2505.23868)  
+**代码**: 无  
+**领域**: 社会计算  
+**关键词**: LoRA, 噪声鲁棒性, Mixture-of-Experts, 参数高效微调, 数据去噪
+
+## 一句话总结
+
+提出 LoPE，在非对称 LoRA 架构中设置专门的"中毒专家"接收注入噪声，推理时屏蔽该专家，仅通过正常专家输出实现噪声鲁棒——以噪声对抗噪声，完全无需数据清洗。
+
+## 研究背景与动机
+
+参数高效微调（PEFT）在将预训练语言模型适配下游任务时，容易受到噪声数据干扰。现有降噪方法分两类：(1) 训练前清洗数据（依赖人工干预或先验假设，开销大且局限于特定噪声类型）；(2) 训练中修改架构去噪（避免显式数据清洗，但仍需判别噪声信息，且易产生误差累积）。
+
+核心洞察是：相比噪声识别与处理，**噪声注入**是低成本且可自动化的。但直接往训练数据加噪声看似荒唐——干净和噪声样本会同时影响所有模型参数，噪声模式无法被有效利用。关键在于：如果能把噪声注入相关的模式**隔离到专门模块**，然后在推理时**屏蔽该模块**，就能用噪声数据带来的鲁棒性而不受其负面影响。非对称 LoRA + MoE 架构天然支持这种功能专特化。
+
+## 方法详解
+
+### 整体框架
+
+LoPE 基于非对称 LoRA 架构（共享矩阵 $A$ + 多个独立矩阵 $B_i$），将其中一个 $B$ 矩阵指定为"中毒专家"$B_D$。通过两阶段微调和推理时屏蔽三步走：Stage I 用混合噪声训练中毒专家学习噪声模式；Stage II 冻结中毒专家，微调正常专家学习干净知识；推理时遮掩中毒专家，仅用正常专家输出。
+
+### 关键设计
+
+1. **HyNoIse（混合噪声注入）**: 结合离散噪声（字符级：词序打乱、噪声字符插入、字符删除）和连续噪声（嵌入级：在有效 token 位置上叠加均匀分布噪声 $N \sim \mathcal{U}(-1,1)$，由噪声比率 $\alpha$ 控制）。两级噪声覆盖了字符、token、标签和结构异常的多维度干扰，等比例注入以均匀覆盖各噪声类型。
+
+2. **两阶段微调**:
+
+    - **Stage I（专特化中毒专家）**: 冻结正常专家 $B_i$，仅训练共享 $A$ 和中毒专家 $B_D$，使用 HyNoIse 增强数据。$A$ 学习通用知识，$B_D$ 专门学习噪声处理模式。
+    - **Stage II（动态补偿专家协同）**: 冻结 $B_D$ 参数（但参与前向传播），微调 $A$ 和正常 $B_i$，使用原始数据（无噪声注入）。引入 DyCompEnSate 机制：构建专家依赖矩阵 $\Theta$，计算各正常专家与中毒专家的输出余弦相似度 $\theta_{iD}$，在屏蔽中毒专家后通过动态权重补偿 $(1 + \theta_{iD})$ 弥补依赖断裂，并用归一化因子 $\beta$ 维持输出稳定。
+
+3. **推理阶段屏蔽策略**: 直接遮掩中毒专家 $B_D$，排除其受噪声影响的知识。门控路由器动态分配正常专家权重，专家加权平均后与共享 $A$ 完成低秩变换。DyCompEnSate 的补偿权重确保屏蔽后的输出分布与训练时一致。
+
+### 损失函数 / 训练策略
+
+- 基础模型：LLaMA2-7B
+- 微调数据：Alpaca-52K 的 10%
+- 噪声环境：Orig（原始数据）和 Nois（5% 离散噪声注入）
+- HyNoIse 比率 $\alpha = 5\%$，默认 3 个正常专家 + 1 个中毒专家，rank=4
+- 评测：MMLU（57 子任务）、GSM8K、PIQA、SIQA、ARC-e
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | MMLU | PIQA | SIQA | GSM8K | ARC-e | 说明 |
+|------|------|------|------|-------|-------|------|
+| HydraLoRA(r=4)† | 43.08 | 74.92 | 47.29 | 11.83 | 55.80 | 基线非对称 LoRA |
+| LoPE(r=4)† | **44.42** | **76.28** | **49.03** | **13.72** | **56.84** | 噪声鲁棒 |
+| LoRA(r=4)† | 40.45 | 71.45 | 43.17 | 11.02 | 49.03 | 标准 LoRA |
+| LoPE(r=8)† | **44.82** | **76.83** | **49.90** | **14.31** | **58.02** | 更高 rank |
+
+LoPE(r=4) 在噪声数据上相比 HydraLoRA 平均提升 1.34%（MMLU），ARC-e 提升 4.89%。
+
+### 消融实验
+
+| 配置 | PIQA+SIQA 平均 (5%噪声) | 说明 |
+|------|------------------------|------|
+| 无噪声注入 | 59.89 | LoPE 无 HyNoIse |
+| 仅连续噪声 | 60.71 | 嵌入级噪声 |
+| 仅离散噪声 | 61.95 | 字符级噪声 |
+| 混合噪声 (HyNoIse) | **62.66** | 两者互补 |
+
+跨噪声类型实验：训练集用 NCI 噪声 + HyNoIse 用 WOS 噪声——LoPE 仍优于 HydraLoRA，说明鲁棒性不依赖噪声类型的一致性。
+
+### 关键发现
+
+- **噪声环境下优势明显**：在 Orig 数据上 LoPE 与 HydraLoRA 差距不大（因为原始数据噪声极少），但在 Nois 数据上一致性超越。
+- **离散噪声效果优于连续噪声**：离散噪声直接操纵自然语言文本，在 Stage II 语义空间中更容易对齐。
+- **不同噪声级别下的稳定性**：3.5%/5%/8% 噪声水平下 LoPE 性能保持相对稳定，传统方法退化明显。
+- **DyCompEnSate 的必要性**：直接屏蔽中毒专家会破坏训练中学到的专家间依赖，补偿机制不可或缺。
+- 时间复杂度保持 $O(n^2)$，与其他 PEFT 方法一致，计算效率无额外开销。
+
+## 亮点与洞察
+
+- **"以毒攻毒"的逆向思维**：与传统去噪范式（清洗/识别噪声）完全相反，主动注入噪声来增强鲁棒性——概念大胆新颖。
+- **非对称 LoRA 的功能专特化**：巧妙利用了共享 $A$（通用知识）和独立 $B_i$（差异知识）的设计特性，将噪声吸收模块自然嵌入现有架构。
+- **完全无需数据清洗**：降低了实际部署门槛——现实中数据噪声无处不在但清洗成本高。
+- DyCompEnSate 的专家依赖补偿思路适用于任何需要动态启停 MoE 专家的场景。
+
+## 局限与展望
+
+- 中毒专家数量固定为 1，在极高噪声或多类噪声共存时可能不够。
+- 仅在 LLaMA2-7B 上验证，未扩展到更大模型或其他 LLM 架构。
+- 评测任务之间的领域差异（微调用 Alpaca，评测用 MMLU/GSM8K 等）可能引入额外变量。
+- 未与专门的降噪方法（如 MICL、LeCoRE、LLMClean）在相同设定下直接对比。
+- 连续噪声的均匀分布可能不是最优选择，高斯或结构化噪声待探索。
+
+## 相关工作与启发
+
+- 非对称 LoRA 思路来自 HydraLoRA（Tian et al.），LoPE 进一步利用其专家间功能分化的特性。
+- "中毒"概念与对抗训练、模型免疫等思路有潜在联系，但实现方式完全不同（非对抗，而是隔离）。
+- 对噪声标签学习（NLL）和数据选择/课程学习领域有启发：与其清洗噪声，不如让模型自己学会隔离噪声。
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐⭐ "以噪声对抗噪声"的范式极具创新性，中毒专家设计巧妙
+- **实验充分度**: ⭐⭐⭐⭐ 多任务多配置验证，消融充分，但缺乏与专用降噪方法的直接对比
+- **写作质量**: ⭐⭐⭐⭐ 流程图清晰，三阶段流水线描述有条理
+- **价值**: ⭐⭐⭐⭐ 提供了PEFT中噪声鲁棒性的新范式，实用性强
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] Learning Survival Distributions with the Asymmetric Laplace Distribution](../../ICML2025/social_computing/learning_survival_distributions_with_the_asymmetric_laplace_distribution.md)
+- [\[CVPR 2025\] Project-Probe-Aggregate: Efficient Fine-Tuning for Group Robustness](../../CVPR2025/social_computing/project-probe-aggregate_efficient_fine-tuning_for_group_robustness.md)
+- [\[NeurIPS 2025\] Auto-Search and Refinement: An Automated Framework for Gender Bias Mitigation in LLMs](auto-search_and_refinement_an_automated_framework_for_gender_bias_mitigation_in_.md)
+- [\[NeurIPS 2025\] Worse than Zero-shot? A Fact-Checking Dataset for Evaluating the Robustness of RAG Against Misleading Retrievals](worse_than_zero-shot_a_fact-checking_dataset_for_evaluating_the_robustness_of_ra.md)
+- [\[AAAI 2026\] Fact2Fiction: Targeted Poisoning Attack to Agentic Fact-checking System](../../AAAI2026/social_computing/fact2fiction_targeted_poisoning_attack_to_agentic_fact-check.md)
+
+</div>
+
+<!-- RELATED:END -->

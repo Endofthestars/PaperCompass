@@ -1,0 +1,175 @@
+---
+title: >-
+  [论文解读] Plug-and-Play Parameter-Efficient Tuning of Embeddings for Federated Recommendation
+description: >-
+  [AAAI 2026][AI安全][联邦推荐] 提出一个即插即用的联邦推荐框架，通过将 PEFT（Parameter-Efficient Fine-Tuning）理念引入物品嵌入，冻结预训练的全量嵌入并仅传输轻量级压缩嵌入（LoRA / Hash / RQ-VAE），大幅降低通信开销的同时提升推荐精度。
+tags:
+  - "AAAI 2026"
+  - "AI安全"
+  - "联邦推荐"
+  - "参数高效微调"
+  - "嵌入压缩"
+  - "通信效率"
+  - "隐私保护"
+---
+
+# Plug-and-Play Parameter-Efficient Tuning of Embeddings for Federated Recommendation
+
+**会议**: AAAI 2026  
+**arXiv**: [2512.13734](https://arxiv.org/abs/2512.13734)  
+**代码**: [https://github.com/young1010/FedPEFT](https://github.com/young1010/FedPEFT)  
+**领域**: AI安全  
+**关键词**: 联邦推荐, 参数高效微调, 嵌入压缩, 通信效率, 隐私保护
+
+## 一句话总结
+
+提出一个即插即用的联邦推荐框架，通过将 PEFT（Parameter-Efficient Fine-Tuning）理念引入物品嵌入，冻结预训练的全量嵌入并仅传输轻量级压缩嵌入（LoRA / Hash / RQ-VAE），大幅降低通信开销的同时提升推荐精度。
+
+## 研究背景与动机
+
+联邦推荐（Federated Recommendation, FR）是解决用户隐私保护需求下分布式推荐训练的主流框架。其核心思路是：用户数据留在本地客户端，只将模型参数上传至中心服务器进行聚合。然而，推荐模型中 **物品嵌入（item embeddings）** 的规模随物品数量线性增长，往往占据模型参数的绝大部分。在大规模物品场景下，每轮通信传输全量嵌入成为严重瓶颈。
+
+现有解决方案主要分为两类：
+
+**直接压缩嵌入**（低秩分解、哈希、量化等）：虽然减少了参数量，但通常会导致推荐精度明显下降。
+
+**引入复杂辅助模型**（元学习、SENet 等）：能部分弥补精度损失，但鲁棒性差，不同 FR 模型和设置下表现不稳定。
+
+这些局限性促使作者思考：**能否借鉴 NLP 领域的 PEFT 思想，将全量嵌入与压缩嵌入结合？** 具体而言，先在服务器端预训练高质量全量嵌入，然后冻结它们，仅在联邦训练过程中微调和传输轻量的压缩嵌入。这种方式既保留了全量嵌入的丰富语义，又大幅降低了通信量。
+
+## 方法详解
+
+### 整体框架
+
+框架分为三个阶段：
+
+1. **预训练阶段**：服务器用自编码器（AE）对物品属性进行预训练，获得高质量全量嵌入 $E = \{e_i \in \mathbb{R}^k\}_{i=1}^n$。
+2. **热身阶段**：将全量嵌入分发给客户端，进行少量轮次（< 20 轮 / 1000 轮）的联邦训练以稳定优化。
+3. **PEFT 训练阶段**：冻结全量嵌入，初始化并分发压缩嵌入，后续只训练和传输压缩嵌入。最终物品嵌入 = 冻结的全量嵌入 + 可训练的压缩嵌入。
+
+### 关键设计
+
+#### 1. **预训练全量嵌入**
+
+使用 Sentence-T5 将物品属性编码为 768 维输入嵌入，然后通过 AE（编码器 [768,512,256,128,32]，解码器对称）学习 32 维潜在表示作为全量嵌入。损失函数为重建损失：
+
+$$\mathcal{L}_{AE} = \|x - \hat{x}_{AE}\|^2$$
+
+预训练在服务器端完成，不涉及用户数据，因此不影响隐私。
+
+#### 2. **LoRA 策略**
+
+引入低维嵌入表 $A = \{\mathbf{a}_i \in \mathbb{R}^{k_L}\}_{i=1}^n$（$k_L \ll k$）和投影矩阵 $B \in \mathbb{R}^{k \times k_L}$。压缩嵌入通过矩阵乘法得到：
+
+$$\mathbf{e}_i = B(\mathbf{a}_i)$$
+
+最终嵌入为 $\mathbf{E} = \{e_i + B(\mathbf{a}_i)\}_{i=1}^n$。$B$ 初始化为零矩阵，确保训练初期 PEFT 嵌入不改变全量嵌入的输出。通信开销从 $O(k \cdot n)$ 降至 $O(k_L \cdot (n + k))$。
+
+#### 3. **Hash 策略**
+
+使用一族通用哈希函数 $\mathcal{H}$ 将物品 ID 映射到共享嵌入表 $H = \{v_i\}_{i=1}^{d_H}$（$d_H \ll n$）中的向量。每个物品由 $h$ 个哈希向量拼合而成。提供两种聚合方式：
+
+- **Mean Pooling**: $\mathbf{e}_i = \frac{1}{h} \sum_{j=1}^h v_{\mathcal{H}_j(i)}$
+- **SENet 注意力加权**: 通过 squeeze-excitation 网络动态计算各哈希向量的权重
+
+通信开销仅为 $O(d_H)$，与物品数量无关。
+
+#### 4. **RQ-VAE 策略（创新点）**
+
+首次将残差量化变分自编码器（RQ-VAE）引入联邦推荐作为 PEFT 策略。核心思想：
+
+- 维护 $l$ 个共享码本 $(C_0, \ldots, C_{l-1})$，每个码本大小为 $d_R$
+- 每个物品用一个长度为 $l$ 的语义码 $\mathbf{c}_i = (c_0, \ldots, c_{l-1})$ 表示
+- 量化表示：$\hat{z} = \sum_{j=0}^{l-1} C_j(c_j)$
+
+**预训练损失**为重建损失 + RQ-VAE 损失：
+
+$$\mathcal{L} = \|x - \hat{x}\|^2 + \sum_{j=0}^{l-1}\left(\|\text{sg}[r_j] - o_{j,c_j}\|^2 + \beta\|r_j - \text{sg}[o_{j,c_j}]\|^2\right)$$
+
+联邦训练时，语义码冻结在客户端，仅优化码本。通信开销为 $O(d_R \cdot l)$，表示空间为 $(d_R)^l$，远超物品数量。
+
+### 损失函数 / 训练策略
+
+- 推荐任务使用标准的 BPR 损失或 BCE 损失（取决于骨干模型）
+- 热身阶段全量嵌入参与优化（< 20 轮），之后冻结
+- 客户端每轮执行 2 个本地 epoch，采样率 10%，总计 1000 轮
+- 差分隐私实验中使用 Laplace 机制，测试 CDP 和 LDP 两种设定
+
+## 实验关键数据
+
+### 主实验
+
+在 4 个骨干模型 × 3 个数据集上的综合评测（部分代表性结果）：
+
+| 模型+数据集 | 方法 | N@10 | H@10 | 对比Full |
+|---|---|---|---|---|
+| FedMF-ML1M | Full | 33.98 | 58.44 | - |
+| FedMF-ML1M | P-LoRA | **37.98** | **59.79** | +4.00/+1.35 |
+| FedMF-ML1M | P-RQ-VAE | 33.59 | 58.96 | -0.39/+0.52 |
+| FedNCF-ML1M | Full | 38.80 | 61.29 | - |
+| FedNCF-ML1M | P-RQ-VAE | **39.75** | **60.91** | +0.95/-0.38 |
+| PFedRec-ML1M | Full | 38.63 | 60.48 | - |
+| PFedRec-ML1M | P-LoRA | **39.48** | **61.35** | +0.85/+0.87 |
+| FedPerGNN-Industrial | P-RQ-VAE | **12.08** | **22.08** | +3.43/+7.27 |
+
+**关键发现**: PEFT 嵌入在绝大多数设置下超越或持平全量嵌入，同时通信量下降 50-90%。
+
+### 消融实验
+
+| 配置 (PFedRec-ML1M) | N@10 | H@10 | 通信(KB) | 说明 |
+|---|---|---|---|---|
+| Full Embedding | 38.63 | 60.48 | 482.4 | 全量基线 |
+| P-LoRA ($k_L=2$) | 38.16 | 59.19 | 30.1 | 维度太低 |
+| P-LoRA ($k_L=4$) | **39.48** | **61.35** | 60.3 | 最优 |
+| P-LoRA ($k_L=6$) | 37.88 | 58.19 | 90.5 | 过度参数化 |
+
+LoRA 的最优潜在维度 $k_L = 4$，通信量仅为全量嵌入的 12.5%。RQ-VAE 中 $d_R = 256, l = 4$ 为最优配置，码本过大反而引入冗余。
+
+### 关键发现
+
+1. **PEFT > 纯压缩**: 压缩嵌入（C-LoRA, C-Hash 等）单独使用时鲁棒性差，但结合冻结全量嵌入后性能稳定提升
+2. **RQ-VAE 的独特优势**: 在 LDP 设定下 RQ-VAE 表现最佳（甚至随噪声增大性能提升），而 LoRA 在 CDP 下更鲁棒
+3. **SENet + MLP 协同**: SENet 仅在含 MLP 的模型（FedNCF, PFedRec）上带来增益，纯嵌入模型反而降低
+
+## 亮点与洞察
+
+- **即插即用设计**: 框架与 FR 骨干模型解耦，可无缝集成到任意基于嵌入的 FR 方法
+- **首次将 RQ-VAE 引入 FR**: 利用多级码本的量化机制，将嵌入大小与物品数量解耦
+- **全面的 DP 分析**: 在 CDP 和 LDP 两种隐私机制下验证了框架的鲁棒性
+- **通信分析透彻**: 从通信量、存储、计算、表示容量四个维度系统比较三种策略
+
+## 局限与展望
+
+1. **没有统一最优策略**: 三种压缩策略各有优劣，无法在所有设置下一致最优
+2. **预训练依赖物品属性**: 需要服务器端可访问物品属性信息（如文本描述），不适用于属性缺失场景
+3. **热身阶段仍需传输全量嵌入**: 虽然只有 <20 轮，但初始分发全量嵌入仍有一定开销
+4. **未考虑冷启动**: 新物品加入时如何高效更新预训练嵌入未讨论
+
+## 相关工作与启发
+
+- 联邦推荐领域从"全量传输"到"高效通信"的演进路线清晰
+- RQ-VAE 来自生成式检索推荐（TIGER, OneRec），其将物品编码为离散语义码的思路值得进一步探索
+- NLP 领域的 PEFT 方法（LoRA, Adapter）在推荐系统中的迁移应用前景广阔
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ (RQ-VAE 用于 FR 是新颖的，但整体框架借鉴 PEFT 思想)
+- 实验充分度: ⭐⭐⭐⭐⭐ (4 模型 × 3 数据集 × 多策略，含 DP 分析)
+- 写作质量: ⭐⭐⭐⭐ (结构清晰，分析全面)
+- 价值: ⭐⭐⭐⭐ (解决实际 FR 通信瓶颈，实用性强)
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2025\] Gradient Inversion Attacks on Parameter-Efficient Fine-Tuning](../../CVPR2025/ai_safety/gradient_inversion_attacks_on_parameter-efficient_fine-tuning.md)
+- [\[AAAI 2026\] Fine-Grained DINO Tuning with Dual Supervision for Face Forgery Detection](fine-grained_dino_tuning_with_dual_supervision_for_face_forgery_detection.md)
+- [\[AAAI 2026\] Reference Recommendation based Membership Inference Attack against Hybrid-based Recommender Systems](reference_recommendation_based_membership_inference_attack_against_hybrid-based_.md)
+- [\[AAAI 2026\] Detect All-Type Deepfake Audio: Wavelet Prompt Tuning for Enhanced Auditory Perception](detect_all-type_deepfake_audio_wavelet_prompt_tuning_for_enhanced_auditory_perce.md)
+- [\[AAAI 2026\] SecMoE: Communication-Efficient Secure MoE Inference via Select-Then-Compute](secmoe_communication-efficient_secure_moe_inference_via_select-then-compute.md)
+
+</div>
+
+<!-- RELATED:END -->

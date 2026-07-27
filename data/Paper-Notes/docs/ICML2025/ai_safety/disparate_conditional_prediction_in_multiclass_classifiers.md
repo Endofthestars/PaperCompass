@@ -1,0 +1,184 @@
+---
+title: >-
+  [论文解读] Disparate Conditional Prediction in Multiclass Classifiers
+description: >-
+  [ICML 2025][AI安全][公平性审计] 提出 Disparate Conditional Prediction (DCP) 度量从二分类到多类分类的扩展，通过局部优化和线性规划方法为多类分类器的公平性偏离程度提供上下界估计，支持在混淆矩阵已知或仅有人口级别统计信息两种场景下进行公平性审计。
+tags:
+  - "ICML 2025"
+  - "AI安全"
+  - "公平性审计"
+  - "多类分类"
+  - "等化赔率"
+  - "差异条件预测"
+  - "线性规划"
+---
+
+# Disparate Conditional Prediction in Multiclass Classifiers
+
+**会议**: ICML 2025  
+**arXiv**: [2206.03234](https://arxiv.org/abs/2206.03234)  
+**代码**: [sivansabato/DCPmulticlass](https://github.com/sivansabato/DCPmulticlass)  
+**领域**: AI安全  
+**关键词**: 公平性审计, 多类分类, 等化赔率, 差异条件预测, 线性规划
+
+## 一句话总结
+
+提出 Disparate Conditional Prediction (DCP) 度量从二分类到多类分类的扩展，通过局部优化和线性规划方法为多类分类器的公平性偏离程度提供上下界估计，支持在混淆矩阵已知或仅有人口级别统计信息两种场景下进行公平性审计。
+
+## 研究背景与动机
+
+分类器的公平性在现实场景中至关重要，尤其是当分类器被用于医疗诊断、保险定价、招聘筛选等高风险场景时。**等化赔率 (Equalized Odds)** 是一种被广泛采用的公平性定义：要求分类器在不同受保护子群体之间的假阳性率和假阴性率相同。
+
+然而，现有工作主要集中在**二分类**场景。在多类分类场景中，公平性问题更为复杂——不仅需要考虑预测是否正确，还需要关注**错误的类型**。例如在医疗诊断中，将心脏病误诊为焦虑症（导致患者被拒绝治疗）与误诊为中风（导致延迟治疗）有着本质区别。如果某些子群体承受更多的特定类型误诊，这可能表明诊断中存在偏见。
+
+现有的公平性偏离度量方法（如差值法、比值法）存在以下问题：
+
+- 对稀有标签的差异不敏感
+- 缺乏归一化或有界性
+- 无法区分不同偏差程度的分类器
+- 结果的可解释性依赖于类别数、子群体数及类别不平衡程度
+
+这些问题在多类场景下更加突出，亟需一种具有**一致可解释含义**的度量方法。
+
+## 方法详解
+
+### 整体框架
+
+本文将 Sabato & Yom-Tov (2020) 提出的二分类 DCP 度量推广到多类分类，并设计了两种计算场景下的上下界估计算法：
+
+1. **已知场景**：每个子群体的条件混淆矩阵 $\mathbf{M}_a$ 已知
+2. **未知场景**：仅有人口级别的频率信息（如各子群体预测标签分布 $\hat{\mathbf{p}}_a$ 和真实标签分布 $\boldsymbol{\pi}_a$）
+
+整体流程：定义多类 DCP 度量 → 建立优化问题 → 处理非光滑/非凸困难 → 顺序线性规划求解
+
+### 关键设计
+
+#### 1. 符号体系与多类 DCP 度量定义
+
+核心符号定义：
+
+- 真实标签 $Y \in \mathcal{Y} = \{1, \ldots, k\}$，预测标签 $\hat{Y} \in \mathcal{Y}$，受保护属性 $A \in \mathcal{A}$
+- 子群体频率：$w_a = \mathbb{P}[A=a]$
+- 真实标签比例：$\pi_a^y = \mathbb{P}[Y=y \mid A=a]$
+- 预测标签比例：$\hat{p}_a^y = \mathbb{P}[\hat{Y}=y \mid A=a]$
+- 条件混淆矩阵元素：$\alpha_a^{y\hat{y}} = \mathbb{P}[\hat{Y}=\hat{y} \mid Y=y, A=a]$
+
+DCP 的核心含义是：**分类器对其进行了与最接近的公共基线不同的条件预测概率的人口比例**。寻找一组最优公共条件概率向量 $\boldsymbol{\beta}^y$，使得全部子群体的预测行为尽可能接近该基线，DCP 值即为偏离该基线的人口比例之和。
+
+DCP 关键优势：结果始终表示人口比例，不受类别数量、子群体数量或类别不平衡的影响。
+
+#### 2. 已知混淆矩阵场景的上下界方法
+
+当子群体的条件混淆矩阵已知时，DCP 计算表述为：
+
+$$\text{DCP} = \min_{\boldsymbol{\beta}} \sum_{a \in \mathcal{A}} w_a \sum_{y \in \mathcal{Y}} \pi_a^y \cdot \mathbb{1}[\boldsymbol{\alpha}_a^y \neq \boldsymbol{\beta}^y]$$
+
+**上界方法**：该优化问题非凸，采用松弛策略将指示函数替换为连续 $L_1$ 距离目标：
+
+$$\min_{\boldsymbol{\beta}} \sum_{a,y} w_a \pi_a^y \cdot \|\boldsymbol{\alpha}_a^y - \boldsymbol{\beta}^y\|_1$$
+
+进一步处理 $L_1$ 范数的非光滑性：将 $\|\cdot\|_1$ 拆解为多个光滑部分的最大值，引入辅助变量将最大值约束转化为线性约束，最终形成**顺序线性规划 (Sequential LP)** 问题。每一步求解标准 LP，凹约束用一阶泰勒展开线性化，迭代至收敛到局部最优。
+
+**下界方法**：通过构造特定基线选择策略——例如对每个真实标签 $y$，选择加权频率最高的子群体的条件预测向量作为基线。
+
+#### 3. 未知混淆矩阵场景的方法
+
+当无法获取混淆矩阵（分类器不可访问或缺乏个体级别数据）时，仅使用人口级别统计 $\hat{\mathbf{p}}_a$、$\boldsymbol{\pi}_a$、$\mathbf{w}$。混淆矩阵成为隐变量，需满足边际约束：
+
+$$\sum_{\hat{y}} \alpha_a^{y\hat{y}} = 1, \quad \sum_y \pi_a^y \cdot \alpha_a^{y\hat{y}} = \hat{p}_a^{\hat{y}}$$
+
+**上界方法**：在混淆矩阵和基线的联合空间上做最小化，同样转化为顺序 LP 求解。变量维度更高，计算更具挑战性。
+
+**下界方法**：通过对偶方法建立 DCP 的下界，可用于检测可能对大比例人口实施不公平预测的分类器。
+
+### 损失函数 / 训练策略
+
+本文并非提出新的训练方法，而是设计**公平性审计工具**。核心优化目标：
+
+$$\min_{\boldsymbol{\beta}, \{\mathbf{M}_a\}} \sum_{a \in \mathcal{A}} w_a \sum_{y \in \mathcal{Y}} \pi_a^y \cdot d(\boldsymbol{\alpha}_a^y, \boldsymbol{\beta}^y)$$
+
+优化策略的关键技术：
+
+- **非光滑处理**：将 max 运算拆分为多个光滑分支，添加额外约束
+- **凹约束线性化**：用一阶泰勒展开替代凹函数约束
+- **顺序 LP**：非凸问题转化为 LP 序列，每步用高效 LP 求解器（如 HiGHS）求解
+- **多重初始化**：因问题高度非凸，采用多个随机初始点运行，取最优结果
+- **大梯度处理**：约束矩阵存在大梯度区域，LP 求解器天然适应此类数值挑战
+
+## 实验关键数据
+
+### 主实验
+
+实验在多个数据集上验证 DCP 上下界估计的准确性（Gap 越小越好）：
+
+| 数据集 | 类别数 $k$ | 子群体数 | 上下界 Gap（已知场景） | 上下界 Gap（未知场景） | 说明 |
+|---|---|---|---|---|---|
+| 多分类基准1 | 3-5 | 2-4 | 通常很小 | 略大于已知场景 | 验证基本有效性 |
+| 多分类基准2 | 5-10 | 2-6 | 小 | 可接受 | 更大规模验证 |
+| 医疗/社会数据集 | 3+ | 2+ | 紧凑 | 实用范围内 | 真实场景适用性验证 |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|---|---|---|
+| 不同随机初始化次数 | Gap 大小 | 更多初始化通常改善上界质量 |
+| 不同类别数 $k$ | 计算时间 & Gap | 类别数增加使问题更复杂，Gap 略增 |
+| 不同子群体数量 | DCP 估计稳定性 | 子群体越多，优化变量空间越大 |
+| 已知 vs 未知场景 | 上界紧凑度 | 已知场景的上界显著更紧 |
+| DCP vs 差值/比值度量 | 可解释性对比 | DCP 在不同配置下保持一致的人口比例解释 |
+
+### 关键发现
+
+1. **上下界间隔通常较小**：顺序 LP 方法提供的上界与下界差距在大多数场景下较小，估计质量良好
+2. **DCP 具有稳健的可解释性**：与差值法/比值法不同，DCP 值始终可解释为人口比例，不受问题配置影响
+3. **未知场景仍然实用**：即使没有混淆矩阵，仅用人口级别统计也能提供有意义的 DCP 估计
+4. **多类场景下的独特价值**：DCP 可以捕捉不同类型误分类的差异，这在二分类公平性度量中无法体现
+
+## 亮点与洞察
+
+- **可解释性优势突出**：DCP 始终表示"受到不公平预测的人口比例"，数值含义不随问题规模变化
+- **无需访问分类器**：未知场景方法仅需人口级别统计，适用于审计黑盒/专有分类器，在合规审查中价值极高
+- **非凸优化的实用解法**：顺序 LP 巧妙绕过非凸非光滑困难，每步子问题都是高效可解的标准 LP
+- **从二分类到多类的自然扩展**：数学上干净优雅，保持了原始度量的全部理想性质
+
+## 局限与展望
+
+1. **计算可扩展性**：类别数 $k$ 和子群体数 $|\mathcal{A}|$ 增大时 LP 规模快速增长
+2. **局部最优**：顺序 LP 只保证收敛到局部最优，缺乏全局保证
+3. **静态审计**：当前方法是事后审计，未涉及如何利用 DCP 指导训练阶段的公平性优化
+4. **统计误差传播**：有限样本下人口级别统计的估计误差对 DCP 的影响未被充分分析
+5. **交叉属性爆炸**：多属性笛卡尔积导致子群体数量指数增长，可能出现样本不足
+
+## 相关工作与启发
+
+- **Sabato & Yom-Tov (2020)**：直接前序工作，提出二分类 DCP，本文推广到多类
+- **Alghamdi et al. (2022)**：模型投影方法处理多类等化赔率，但使用比值度量
+- **Wang et al. (2024)**：研究多类公平分类器的基本极限，揭示公平性与准确性的权衡
+- **启发**：DCP 的"人口比例"解释模式可推广到推荐系统、NLP 等领域；顺序 LP 策略可应用于其他非凸公平性优化问题
+
+## 评分
+
+| 维度 | 分数 (1-10) | 说明 |
+|---|---|---|
+| 创新性 | 7 | 从二分类到多类的扩展自然但非显然，优化方法有新意 |
+| 理论深度 | 8 | 严格的数学推导，上下界方法的完整分析 |
+| 实验充分性 | 7 | 多数据集验证有效，但大规模场景实验偏少 |
+| 实用价值 | 8 | 黑盒审计能力在合规审查中价值很高 |
+| 写作质量 | 8 | 条理清晰，符号定义严谨，结构完整 |
+| **总评** | **7.5** | 扎实的公平性审计工作，DCP 可解释性是核心亮点 |
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] Generalization in Federated Learning: A Conditional Mutual Information Framework](generalization_in_federated_learning_a_conditional_mutual_information_framework.md)
+- [\[NeurIPS 2025\] On the Hardness of Conditional Independence Testing In Practice](../../NeurIPS2025/ai_safety/on_the_hardness_of_conditional_independence_testing_in_practice.md)
+- [\[CVPR 2025\] PSBD: Prediction Shift Uncertainty Unlocks Backdoor Detection](../../CVPR2025/ai_safety/psbd_prediction_shift_uncertainty_unlocks_backdoor_detection.md)
+- [\[NeurIPS 2025\] Mitigating Disparate Impact of Differentially Private Learning through Bounded Adaptive Clipping](../../NeurIPS2025/ai_safety/mitigating_disparate_impact_of_differentially_private_learning_through_bounded_a.md)
+- [\[NeurIPS 2025\] Taught Well, Learned Ill: Towards Distillation-Conditional Backdoor Attack](../../NeurIPS2025/ai_safety/taught_well_learned_ill_towards_distillation-conditional_backdoor_attack.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,148 @@
+---
+title: >-
+  [论文解读] Adaptive Neighborhood-Constrained Q Learning for Offline Reinforcement Learning
+description: >-
+  [NeurIPS 2025 Spotlight][强化学习][offline RL] 提出 ANQ（Adaptive Neighborhood-constrained Q learning），在离线 RL 中引入基于优势函数的自适应邻域约束，在密度约束（过于保守）和支持约束（需精确建模行为策略）之间找到灵活的中间方案，通过双层优化框架实现高效 Q 学习，在 D4RL 基准上达到 SOTA。
+tags:
+  - "NeurIPS 2025 Spotlight"
+  - "强化学习"
+  - "offline RL"
+  - "neighborhood constraint"
+  - "OOD actions"
+  - "adaptive conservatism"
+  - "bilevel optimization"
+---
+
+# Adaptive Neighborhood-Constrained Q Learning for Offline Reinforcement Learning
+
+**会议**: NeurIPS 2025 Spotlight  
+**arXiv**: [2511.02567](https://arxiv.org/abs/2511.02567)  
+**代码**: [https://github.com/thu-rllab/ANQ](https://github.com/thu-rllab/ANQ)  
+**领域**: 强化学习 / 离线RL  
+**关键词**: offline RL, neighborhood constraint, OOD actions, adaptive conservatism, bilevel optimization
+
+## 一句话总结
+提出 ANQ（Adaptive Neighborhood-constrained Q learning），在离线 RL 中引入基于优势函数的自适应邻域约束，在密度约束（过于保守）和支持约束（需精确建模行为策略）之间找到灵活的中间方案，通过双层优化框架实现高效 Q 学习，在 D4RL 基准上达到 SOTA。
+
+## 研究背景与动机
+**领域现状**：离线 RL 从静态数据集学习策略，核心挑战是分布外（OOD）动作导致的外推误差和 Q 值过估。现有方法通过约束动作选择来缓解，但各有局限
+
+**三类约束的系统分析**：
+   - **密度约束**（BRAC/TD3BC/CQL）：要求学习策略的概率密度接近行为策略，直接但过于保守——即使数据中包含最优行为、只要行为策略整体质量差，学到的策略仍然高度次优。理论上策略性能受行为策略整体质量 $\eta(\pi_\beta)$ 限制
+   - **支持约束**（BCQ/BEAR/SPOT）：仅要求动作落在行为策略支持集内，理论上最宽松，但需要用 CVAE、扩散模型等精确建模行为策略分布，在高维多模态真实数据上建模困难且计算开销大
+   - **样本约束**（IQL/XQL/SQL）：Bellman 目标只用数据集中已有的动作，实现简单但无法泛化到数据集之外的动作，缺少近最优动作时过于保守
+
+**核心矛盾**：密度约束和样本约束保守性过强限制策略改善，支持约束最灵活但建模代价高，三者在灵活性和实现难度之间存在未被填补的空白
+
+**切入角度**：以数据集动作的邻域联合作为约束集，既允许在数据点附近探索更优动作（比样本约束灵活），又无需显式建模行为策略（比支持约束简单），理论上可逼近支持约束
+
+**核心 idea**：用数据点的自适应邻域替代行为策略建模，实现逐点保守性调节的离线 Q 学习
+
+## 方法详解
+
+### 整体框架
+ANQ 的核心是定义自适应邻域约束 $\mathcal{C}_{AN}(s) = \{\tilde{a} \in \mathcal{A} \mid \|\tilde{a} - a\| \leq \epsilon \exp(-\alpha A(s,a)), (s,a) \in \mathcal{D}\}$，然后通过双层优化在此约束下进行 Q 学习。内层优化在每个数据点的邻域内最大化 Q 函数，外层优化通过 expectile 回归在所有邻域上隐式取最大值。
+
+### 关键设计
+1. **邻域约束（Neighborhood Constraint）**：
+
+    - 定义：约束集为数据集中所有动作的 $\epsilon$-邻域的并集 $\mathcal{C}_N(s) = \{\tilde{a} \mid \|\tilde{a} - a\| \leq \epsilon, (s,a) \in \mathcal{D}\}$
+    - 理论保证（Theorem 1）：在标准性假设下，当样本数 $n$ 足够大时，邻域并集 $U_{n,\epsilon}$ 与行为策略支持集 $S$ 的 Hausdorff 距离 $\leq \epsilon$，即邻域约束可逼近支持约束
+    - 外推控制（Lemma 2）：在 NTK 体制下，邻域内动作的 Q 值偏差 $\|Q(s,\tilde{a}) - Q(s,a)\| \leq C(\sqrt{\min(\|s \oplus a\|, \|s \oplus \tilde{a}\|)}\sqrt{\epsilon} + 2\epsilon)$，半径越小控制越紧
+    - 分布偏移（Proposition 1）：邻域约束下的状态占用分布与样本约束的 TV 距离 $\leq \gamma K_P \epsilon / (2(1-\gamma))$
+
+2. **自适应邻域半径**：
+
+    - 核心思想：高优势（高质量）数据点用小半径——已经接近最优，不需要过多探索，且能减少外推误差；低优势（低质量）数据点用大半径——鼓励在更大范围搜索更优动作
+    - 半径公式：$r(s,a) = \epsilon \exp(-\alpha A(s,a))$，其中 $\alpha$ 是逆温度参数
+    - 优势估计鲁棒性：仅在数据分布内估计（相对可靠），且只用于定性区分动作质量，指数形式是软启发式
+
+3. **双层优化框架**：
+
+    - **内层优化**：引入辅助策略 $\mu_\omega(s,a)$ 输出动作变化 $\delta$，在每个数据点的自适应邻域内最大化 Q 函数。通过 Lagrange 乘子 $\lambda$ 将约束内化：$\max_{\mu_\omega} \mathbb{E}[Q_\theta(s, a + \mu_\omega(s,a)) - \lambda \exp(\alpha(Q_{\theta'}(s,a) - V_\psi(s)))\|\mu_\omega(s,a)\|]$
+    - **外层优化**：采样数据点经辅助策略微调后的动作，通过 expectile 回归（IQL 风格）隐式取最大值：$\min_{V_\psi} \mathbb{E}[L_2^\tau(Q_{\theta'}(s, a + \mu_{\omega'}(s,a)) - V_\psi(s))]$
+    - **策略提取**：Q 函数训好后，通过加权回归从优化后的邻域动作中提取策略
+
+### 训练策略
+- Q 函数用标准 Polyak 平均更新目标网络
+- 辅助策略 $\mu_\omega$ 和目标辅助策略 $\mu_{\omega'}$ 同步 Polyak 更新
+- 超参数：expectile $\tau$、逆温度 $\alpha$、Lagrange 乘子 $\lambda$、邻域半径 $\epsilon$
+
+## 实验关键数据
+
+### 主实验——D4RL Gym Locomotion
+
+| 任务 | ANQ | IQL | CQL | TD3BC | SPOT | IDQL |
+|------|-----|-----|-----|-------|------|------|
+| halfcheetah-m | 48.4 | 47.4 | 44.0 | 48.3 | 45.4 | 51.0 |
+| hopper-m | 71.7 | 66.3 | 58.5 | 59.3 | 86.7 | 65.7 |
+| walker2d-m | 83.7 | 78.3 | 72.5 | 83.7 | 65.0 | 82.5 |
+| **平均** | **82.9** | ~78 | ~76 | ~75 | - | - |
+
+### D4RL AntMaze
+
+| 任务 | ANQ | IQL | CQL | TD3BC |
+|------|-----|-----|-----|-------|
+| antmaze-large-play | **87.5** | 81.6 | ~70 | ~30 |
+| antmaze-umaze | 97.5 | 87.5 | 74.0 | 78.6 |
+
+### 鲁棒性实验
+
+| 场景 | ANQ | IQL | CQL | SPOT |
+|------|-----|-----|-----|------|
+| 70% 专家 + 30% 噪声 | **强** | 中 | 弱 | 弱 |
+| 70% 数据丢弃 | **强** | 中 | 中 | 弱 |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|---------|------|
+| 完整 ANQ | 最优 | 自适应邻域 + 双层优化 |
+| 固定半径（无自适应） | 下降 3-5% | 失去逐点保守性 |
+| $\alpha = 0$（均匀半径） | 下降 | 等价于固定邻域 |
+| $\alpha$ 过大 | 方差增大 | 半径差异过大导致不稳定 |
+| $\alpha = 5$（最优） | 最佳平衡 | 适度区分动作质量 |
+
+### 关键发现
+- 邻域约束在低质量数据场景下优势最大——密度约束受行为策略质量拖累，ANQ 通过自适应半径有效利用少量高质量数据
+- Lagrange 乘子 $\lambda$ 对整体邻域大小的控制至关重要，太大退化为样本约束，太小外推失控
+- 在连续动作空间中，邻域约束相比样本约束的优势更明显
+
+## 亮点与洞察
+- **约束谱系定位精确**：密度约束 ← 邻域约束 → 支持约束的连续谱，邻域约束恰好填补中间空白，概念贡献清晰
+- **逐点保守性**：同一个策略对不同数据点采用不同保守程度，这比全局保守（CQL）或全局宽松（BEAR）更精细
+- **理论-实践一致**：Theorem 1（支持逼近）、Lemma 2（外推控制）、Proposition 1（分布偏移）共同构成完整理论框架，实验验证一致
+- **实现简洁**：辅助策略 $\mu_\omega$ 只是标准 MLP，无需训练生成模型或扩散模型，比 SPOT/IDQL 更简单
+
+## 局限与展望
+- **邻域形状假设**：固定为球形邻域（L2 范数），对非各向同性的动作空间可能不理想；椭球形或学习的度量可能更优
+- **优势函数估计**：虽然作者论证了鲁棒性，但在高度离线的次优数据上 $A(s,a)$ 估计仍可能有偏
+- **连续动作空间限制**：方法设计面向连续动作空间，对离散动作空间需要重新定义邻域概念
+- **缺少大规模验证**：仅在 D4RL 标准测试上验证，缺少真实机器人或高维任务的实验
+
+## 相关工作与启发
+- **vs IQL**：IQL 使用样本约束（expectile 回归），ANQ 在 IQL 基础上引入邻域扩展和辅助策略，保留 expectile 外层但增加内层优化
+- **vs SPOT**：SPOT 需要训练 CVAE 建模行为策略支持集，ANQ 用邻域逼近支持集无需建模，更简单且鲁棒
+- **vs CQL**：CQL 隐式施加密度约束（降低 OOD 动作 Q 值），ANQ 显式约束动作范围，理论保证更强
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 邻域约束填补密度-支持之间空白，自适应机制设计合理
+- 实验充分度: ⭐⭐⭐⭐ D4RL 标准验证 + 鲁棒性分析 + 消融完整
+- 写作质量: ⭐⭐⭐⭐⭐ 约束分类系统清晰，理论推导严谨，行文逻辑好
+- 价值: ⭐⭐⭐⭐ 对离线 RL 约束设计提供新视角，方法简洁实用
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Risk-Averse Constrained Reinforcement Learning with Optimized Certainty Equivalents](risk-averse_constrained_reinforcement_learning_with_optimized_certainty_equivale.md)
+- [\[NeurIPS 2025\] DeepDiver: Adaptive Search Intensity Scaling via Open-Web Reinforcement Learning](deepdiver_adaptive_search_intensity_scaling_via_open-web_reinforcement_learning.md)
+- [\[ICML 2025\] Controlling Underestimation Bias in Constrained Reinforcement Learning for Safe Exploration](../../ICML2025/reinforcement_learning/controlling_underestimation_bias_in_constrained_reinforcement_learning_for_safe_.md)
+- [\[NeurIPS 2025\] Online Optimization for Offline Safe Reinforcement Learning](online_optimization_for_offline_safe_reinforcement_learning.md)
+- [\[NeurIPS 2025\] Structural Information-based Hierarchical Diffusion for Offline Reinforcement Learning](structural_information-based_hierarchical_diffusion_for_offline_reinforcement_le.md)
+
+</div>
+
+<!-- RELATED:END -->

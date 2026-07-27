@@ -1,0 +1,169 @@
+---
+title: >-
+  [论文解读] A General Graph Spectral Wavelet Convolution via Chebyshev Order Decomposition
+description: >-
+  [ICML 2025][图学习][图小波] 提出 WaveGC——通过分离 Chebyshev 多项式的奇偶项构建严格满足可容许性条件的可学习图小波，结合矩阵值滤波核的多分辨率图谱卷积网络，在短程和长程图任务上均实现一致改进（VOC 上提升 15.7%）。 领域现状：谱图卷积是图数据滤波的核心工具。两个关键决策：(a) 选择…
+tags:
+  - "ICML 2025"
+  - "图学习"
+  - "图小波"
+  - "谱卷积"
+  - "Chebyshev多项式"
+  - "多分辨率"
+  - "长短程信息"
+---
+
+# A General Graph Spectral Wavelet Convolution via Chebyshev Order Decomposition
+
+**会议**: ICML 2025  
+**arXiv**: [2405.13806](https://arxiv.org/abs/2405.13806)  
+**代码**: [https://github.com/liun-online/WaveGC](https://github.com/liun-online/WaveGC)  
+**领域**: 图学习  
+**关键词**: 图小波, 谱卷积, Chebyshev多项式, 多分辨率, 长短程信息
+
+## 一句话总结
+提出 WaveGC——通过分离 Chebyshev 多项式的奇偶项构建严格满足可容许性条件的可学习图小波，结合矩阵值滤波核的多分辨率图谱卷积网络，在短程和长程图任务上均实现一致改进（VOC 上提升 15.7%）。
+
+## 研究背景与动机
+
+**领域现状**：谱图卷积是图数据滤波的核心工具。两个关键决策：(a) 选择谱基（信号变换域）; (b) 参数化滤波核（频率分析方式）。现有方法主要用标准傅里叶变换和向量值谱函数。
+
+**现有痛点**：
+   - 标准傅里叶基：全局频率分析，灵活性不足——无法同时捕捉短程精细和长程粗糙的信号特征
+   - 向量值核：表达能力有限——每个频率分量用标量权重
+   - 现有图小波方法：要么不满足可容许性条件（Xu et al.），要么小波形式固定不可学习（Zheng et al.）
+
+**核心矛盾**：图卷积需要同时处理短程和长程信息，但现有方法要么空间范围受限要么频率分辨率不足。
+
+**本文目标**：设计统一的多分辨率图谱卷积。
+
+**切入角度**：图小波提供多分辨率基础（通过不同尺度捕捉不同范围的信息），矩阵值核提供更强的滤波灵活性。关键挑战是如何构建满足可容许性的可学习小波。
+
+**核心 idea**：Chebyshev 多项式的偶数项经适当变换严格满足小波可容许性条件，奇数项补充直流信号→两者分别组合构成缩放函数和小波基，系数可学习。
+
+## 方法详解
+
+### 整体框架
+WaveGC 的架构：
+1. 构建图小波基：用 Chebyshev 奇偶项分解分别构造缩放函数和多个小波基
+2. 小波变换：将图信号投影到多尺度小波系数空间
+3. 矩阵值滤波：在小波域用矩阵值核滤波
+4. 逆变换：映射回节点空间
+
+### 关键设计
+
+1. **Chebyshev 奇偶项分解构建小波**:
+
+    - 功能：严格构建满足可容许性的可学习图小波
+    - 核心思路：
+        - Chebyshev 多项式 $T_k(\lambda)$ 分为偶数项 $T_{2k}$ 和奇数项 $T_{2k+1}$
+        - 关键发现：$\tilde{T}_{2k}(\lambda) = T_{2k}(\lambda) - T_{2k}(0)$ 在 $\lambda=0$ 处自动为零——满足小波可容许性的必要条件
+        - 缩放函数 $\phi(\lambda) = \sum_k a_k T_{2k+1}(\lambda)$（奇数项，保留直流）
+        - 小波函数 $\psi_s(\lambda) = \sum_k b_{s,k} \tilde{T}_{2k}(\lambda)$（修正偶数项，满足可容许性）
+        - 系数 $a_k, b_{s,k}$ 可学习
+    - 设计动机：偶数项的对称性天然确保了可容许性，无需额外约束——这比投影或惩罚方法更干净
+    - 理论保证：证明了任意满足可容许性的函数都可被此基集任意精度近似
+
+2. **多分辨率信息捕捉**:
+
+    - 功能：同时捕捉短程和长程图信息
+    - 核心思路：不同尺度 $s$ 的小波有不同的空间局部性——小尺度 $s \to 0$ 时高度局部化（短程），大尺度 $s \to \infty$ 时覆盖全图（长程）
+    - 理论证明（超越前人）：
+        - 前人（Hammond et al.）仅证明了小尺度极限下的局部性
+        - 本文完整证明了两个极端：小尺度→K-hop 内局部化，大尺度→全局混合
+        - 推论：WaveGC 可同时为每个节点捕捉短程和长程信息
+    - 设计动机：这是本文的核心理论优势——一个架构自然处理两种尺度的信息
+
+3. **矩阵值滤波核**:
+
+    - 功能：在小波域用矩阵（而非向量/标量）参数化滤波
+    - 核心思路：每个频率分量对应一个权重矩阵而非标量→更大的参数空间→更灵活的跨通道交互
+    - 与 Transformer 的连接：在平移不变条件下，矩阵值核的谱函数等价于 attention 机制
+    - 设计动机：标量核假设不同特征通道被相同地滤波，矩阵核允许通道间的差异化处理
+
+### 损失函数 / 训练策略
+- 标准分类/回归损失（取决于下游任务）
+- 小波系数在训练中学习，使小波形式自适应不同图结构
+- 多尺度特征拼接后接标准读出层
+
+## 实验关键数据
+
+### 主实验
+短程任务（分子性质预测）：
+
+| 方法 | ZINC (MAE↓) | Alchemy (MAE↓) |
+|------|-----------|---------------|
+| GCN | 0.367 | 0.203 |
+| ChebNet | 0.323 | 0.184 |
+| GAT | 0.341 | 0.191 |
+| GraphGPS | 0.070 | - |
+| **WaveGC** | **0.063** | **0.121** |
+
+### 长程任务：
+
+| 方法 | Peptides-func (AP↑) | PascalVOC (F1↑) |
+|------|-------------------|----------------|
+| GCN+RWSE | 0.654 | 0.205 |
+| SAN | 0.681 | - |
+| Exphormer | 0.688 | 0.356 |
+| **WaveGC** | **0.695** | **0.412** (+15.7%) |
+
+### 消融实验
+
+| 配置 | ZINC MAE | PascalVOC F1 | 说明 |
+|------|---------|-------------|------|
+| 仅傅里叶基（无小波） | 0.089 | 0.321 | 缺少多分辨率 |
+| 固定小波（不可学习） | 0.078 | 0.375 | 无法适应图结构 |
+| 可学习小波但不满足可容许性 | 0.071 | 0.389 | 略差 |
+| **完整 WaveGC** | **0.063** | **0.412** | 可容许+可学习 |
+| 标量核 | 0.073 | 0.385 | 矩阵核更灵活 |
+| **矩阵核** | **0.063** | **0.412** | 跨通道交互 |
+
+### 关键发现
+- PascalVOC 上 15.7% 的提升展示了多分辨率对长程任务的巨大价值
+- 可学习 vs 固定小波：自适应小波在所有任务上一致更优
+- 可容许性约束虽然是理论要求，实际上也带来了性能提升——可能因为它保证了小波的良好数学性质（如能量保持）
+- 矩阵核 vs 标量核：在长程任务上差异更大——长程信息需要更复杂的通道交互
+
+## 亮点与洞察
+- **Chebyshev 奇偶分解**是构建图小波的精巧方法——利用偶数项的对称性天然满足可容许性，避免了约束优化的复杂性
+- 完整的多尺度局部性证明（覆盖大小两个极端）填补了理论空白
+- 与 Transformer 的联系（矩阵值谱函数 ↔ attention）提供了统一视角
+- PascalVOC 上 15.7% 的提升表明长程图任务是现有方法的明显弱项
+- 方法论具有通用性——不仅适用于图分类，也适用于节点分类和链接预测
+
+## 局限与展望
+- 多尺度计算增加了模型参数和推理时间
+- 尺度数量 $S$ 是超参数
+- 未与 Mamba/SSM 等新架构在图上的应用对比
+- 大规模图（10万+ 节点）的可扩展性未验证
+- 方向性小波（在有向图上）的扩展是开放问题
+
+## 相关工作与启发
+- **vs ChebNet**: 同用 Chebyshev 多项式但 ChebNet 做标准卷积（无小波），WaveGC 分离奇偶项构建小波
+- **vs GraphWaveletNN**: 固定小波形式，WaveGC 可学习
+- **vs Graph Transformer**: GT 用全局注意力（$O(N^2)$），WaveGC 通过多分辨率实现类似全局感受野但更高效
+- **vs HyMN**: HyMN 用中心性采样子图，WaveGC 用小波做频域分析——两个正交方向的图学习增强
+- **启发**：频域（小波/傅里叶）和空域（消息传递/采样）的图学习方法可能互补
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ Chebyshev奇偶分解构建图小波极具原创性
+- 实验充分度: ⭐⭐⭐⭐⭐ 短程+长程任务，充分消融
+- 写作质量: ⭐⭐⭐⭐ 理论清晰，与现有方法的联系分析到位
+- 价值: ⭐⭐⭐⭐⭐ 多分辨率图卷积的重要进展
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Graph Persistence goes Spectral](../../NeurIPS2025/graph_learning/graph_persistence_goes_spectral.md)
+- [\[ACL 2025\] Beyond Completion: A Foundation Model for General Knowledge Graph Reasoning](../../ACL2025/graph_learning/beyond_completion_a_foundation_model_for_general_knowledge_graph_reasoning.md)
+- [\[NeurIPS 2025\] OCN: Effectively Utilizing Higher-Order Common Neighbors for Better Link Prediction](../../NeurIPS2025/graph_learning/ocn_effectively_utilizing_higher-order_common_neighbors_for_better_link_predicti.md)
+- [\[ICML 2025\] Hyperbolic-PDE GNN: Spectral Graph Neural Networks in the Perspective of A System of Hyperbolic Partial Differential Equations](hyperbolic-pde_gnn_spectral_graph_neural_networks_in_the_perspective_of_a_system.md)
+- [\[AAAI 2026\] Sheaf Graph Neural Networks via PAC-Bayes Spectral Optimization](../../AAAI2026/graph_learning/sheaf_graph_neural_networks_via_pac-bayes_spectral_optimization.md)
+
+</div>
+
+<!-- RELATED:END -->

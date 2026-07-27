@@ -1,0 +1,134 @@
+---
+title: >-
+  [论文解读] OS Agents: A Survey on MLLM-based Agents for General Computing Devices Use
+description: >-
+  [ACL 2025][LLM Agent][OS Agent] 全面综述了基于多模态大语言模型的操作系统 Agent（OS Agents），系统梳理了其基础概念（环境/观察/动作空间）、核心能力（理解/规划/动作落地）、构建方法（基础模型+Agent框架）和评估体系，涵盖 30+ 基础模型和 20+ Agent 框架的分类对比。
+tags:
+  - "ACL 2025"
+  - "LLM Agent"
+  - "OS Agent"
+  - "GUI automation"
+  - "多模态"
+  - "agent framework"
+  - "强化学习"
+---
+
+# OS Agents: A Survey on MLLM-based Agents for General Computing Devices Use
+
+**会议**: ACL 2025  
+**arXiv**: [2508.04482](https://arxiv.org/abs/2508.04482)  
+**代码**: [https://github.com/OS-Agent-Survey](https://github.com/OS-Agent-Survey) (开源社区维护)  
+**领域**: LLM Agent  
+**关键词**: OS Agent, GUI automation, multimodal LLM, agent framework, reinforcement learning
+
+## 一句话总结
+全面综述了基于多模态大语言模型的操作系统 Agent（OS Agents），系统梳理了其基础概念（环境/观察/动作空间）、核心能力（理解/规划/动作落地）、构建方法（基础模型+Agent框架）和评估体系，涵盖 30+ 基础模型和 20+ Agent 框架的分类对比。
+
+## 研究背景与动机
+
+**领域现状**：从 Siri、Cortana 到 Alexa，虚拟助手已展示了 AI 自动操作计算设备的潜力。随着 GPT-4o、Gemini、Claude 等多模态大模型的突破，Anthropic Computer Use、Apple Intelligence、AutoGLM 等产品/研究涌现，OS Agent 领域进入快速增长期。
+
+**现有痛点**：OS Agent 研究散布在 Web 导航、移动端自动化、桌面操作等子领域，缺乏统一的概念框架和分类体系。研究者面临碎片化的基准、不一致的评估协议和缺乏全局视角的困境。
+
+**核心矛盾**：OS Agent 需要同时具备 GUI 理解（像素级视觉+文本语义）、长链规划（多步骤任务分解）和精准的动作落地（坐标级点击/输入），这三者对模型能力的要求截然不同，如何在一个统一框架内协调是核心挑战。且安全隐私、个性化适配等工程问题尚需系统化讨论。
+
+**本文目标** (1) 为 OS Agent 建立统一的概念体系和分类框架；(2) 系统梳理基础模型构建（架构+预训练+SFT+RL）和 Agent 框架设计两条技术路线；(3) 总结评估基准和未来方向（安全/个性化/自进化）。
+
+**切入角度**：以"操作系统"为统一抽象——无论 PC、手机还是 Web，都通过 OS 提供的环境、输入输出接口交互，将分散的子领域纳入同一框架。
+
+**核心 idea**：首个以 OS 为统一视角的 MLLM-based Agent 综述，从基础概念到构建方法到评估体系的全景式梳理。
+
+## 方法详解
+
+### 整体框架
+综述组织为 5 大模块：(1) 基础定义——环境、观察空间、动作空间 + 理解、规划、落地三大能力；(2) 基础模型构建——架构选择 + 预训练/SFT/RL 训练策略；(3) Agent 框架——感知/规划/记忆/动作模块的非训练组装；(4) 评估基准综述；(5) 挑战与未来方向。
+
+### 关键设计
+
+1. **三维能力体系（Understanding / Planning / Grounding）**:
+
+    - 功能：定义 OS Agent 必须具备的三大核心能力
+    - 核心思路：**理解**——处理 HTML、GUI 截图等多模态观察，应对高分辨率、信息密集的界面；**规划**——将复杂任务分解为子任务序列，基于环境反馈动态调整（如 ReAct、CoAT 策略）；**落地**——将自然语言指令映射为可执行动作（坐标、输入值等），在大量可选元素中精准定位
+    - 设计动机：三者形成"感知→决策→执行"的完整闭环，缺一不可，且对模型能力的要求各不相同
+
+2. **基础模型构建路线分类（Foundation Model Taxonomy）**:
+
+    - 功能：梳理 OS Agent 基础模型的 4 种架构和 3 种训练策略
+    - 核心思路：**架构**——直接用 LLM（T5/LLaMA 读 HTML）、直接用 MLLM（LLaVA/Qwen-VL 读截图）、拼接式 MLLM（编码器+LLM 组合）、修改式 MLLM（加高分辨率编码器，如 CogAgent 的 1120×1120 视觉编码器）。**训练**——预训练（GUI grounding + 屏幕理解 + OCR）、SFT（轨迹收集+动作标注）、RL（从环境奖励中学习纠错和规划）。AutoGLM 是三者兼具的代表
+    - 设计动机：30+ 模型的系统分类让研究者快速定位自己的方法在技术栈中的位置
+
+3. **Agent 框架四模块架构（Perception-Planning-Memory-Action）**:
+
+    - 功能：总结非训练方式构建 OS Agent 的工程范式
+    - 核心思路：**感知**——文本描述 / GUI 截图 / 视觉定位 / 语义定位 / 双通道定位；**规划**——全局规划（一次性分解）vs 迭代规划（逐步调整）；**记忆**——自动探索积累经验、历史经验增强、管理机制；**动作**——输入操作/导航操作/扩展操作（调外部工具）。20+ 框架按这 4 维度分类（如 Agent S: GS+SG 感知 + 全局规划 + 经验增强+自动探索+管理记忆 + 输入+导航动作）
+    - 设计动机：Agent 框架是"不改模型、改工程"的快速迭代路线，表格化分类便于选型
+
+### 未来方向
+- 安全与隐私：Agent 操作涉及用户敏感数据（密码、个人信息），需行动约束和权限管理
+- 个性化与自进化：学习用户习惯偏好，在使用中持续提升
+
+## 实验关键数据
+
+### 基础模型对比（综述汇总）
+
+| 模型 | 架构 | 预训练 | SFT | RL | 代表特点 |
+|------|------|--------|-----|-----|----------|
+| OS-Atlas | 已有 MLLM | ✓ | ✓ | - | 跨平台 GUI grounding 数据合成 |
+| AutoGLM | 已有 LLM | ✓ | ✓ | ✓ | 自进化在线课程式 RL |
+| CogAgent | 修改 MLLM | ✓ | ✓ | - | 高分辨率视觉编码器 1120×1120 |
+| SeeClick | 已有 MLLM | ✓ | ✓ | - | 文本+坐标双向 grounding 预训练 |
+| Ferret-UI | 已有 MLLM | - | ✓ | - | Any-resolution 分割+缩放策略 |
+
+### Agent 框架对比
+
+| 框架 | 感知 | 规划 | 记忆 | 动作 |
+|------|------|------|------|------|
+| Agent S | 截图+语义定位 | 全局 | 探索+经验+管理 | 输入+导航 |
+| OS-Copilot | 文本描述 | - | - | 输入+导航+扩展 |
+| ClickAgent | 截图 | 迭代 | 探索 | 输入+导航 |
+| OSCAR | 截图+双通道定位 | 迭代 | 探索 | 扩展操作 |
+
+### 关键发现
+- 纯 LLM（仅读 HTML/文本）实际可完成大量 OS 任务，但视觉信息对减少幻觉和提升泛化至关重要
+- 高分辨率处理（1120×1120 或 any-resolution）是 GUI 理解的关键瓶颈——标准 224×224 无法识别小图标和文字
+- RL 的引入（如 AutoGLM）是从"模仿人"到"自主探索"的质变，但目前仅少数工作采用
+- 跨平台动作空间统一是一个容易被忽视但关键的工程问题（OS-Atlas 发现不统一会导致 SFT 冲突）
+
+## 亮点与洞察
+- "OS"作为统一抽象的视角很精巧——将 Web、Mobile、Desktop 三个分散社区的工作纳入同一框架，建立了共同的概念语言（环境/观察/动作三元组）
+- 基础模型 vs Agent 框架的双轨分类法清晰实用——前者改模型，后者改工程，对研究者选路线有指导意义
+- 表格化的特征向量分类（Table 1 和 Table 2）是很好的参考工具，可快速定位技术空白
+
+## 局限与展望
+- ACL 2025 接收的是 9 页精简版，压缩导致部分技术细节（如各基准的具体指标对比）不够深入
+- 综述截止到 2024 年 12 月，2025 年的最新进展（如 Claude 3.5 Computer Use 的大规模实践反馈）未覆盖
+- 对失败案例和安全事故的讨论停留在展望层面，缺少实际 case study
+- 评估基准部分仅列举未深入分析各基准的局限性和相互关系
+
+## 相关工作与启发
+- **vs WebAgent (Gur et al.)**: 早期 Web 导航工作，用 HTML-T5 从零训练；本综述将其定位为"LLM 架构 + 预训练 + SFT"的代表
+- **vs Computer Use (Anthropic)**: 工业界最具影响力的 OS Agent 产品，综述将其作为"OS Agent 梦想接近现实"的标志性事件引用
+- **vs Cradle**: 扩展到游戏环境的 Agent 框架，展现了 OS Agent 概念的泛化潜力
+- 对研究者的价值：快速了解 OS Agent 全景、定位自己的技术方向、发现未被充分探索的空白
+
+## 评分
+- 新颖性: ⭐⭐⭐ 综述本身不提出新方法，但"OS"统一视角和双轨分类有贡献
+- 实验充分度: ⭐⭐⭐ 综述类论文，无自有实验，但分类对比表格详尽
+- 写作质量: ⭐⭐⭐⭐ 结构清晰、图表丰富，9 页浓缩版仍保持了良好的可读性
+- 价值: ⭐⭐⭐⭐ OS Agent 领域首个系统综述，对入门和选题有很高参考价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] OS-Kairos: Adaptive Interaction for MLLM-Powered GUI Agents](os-kairos_adaptive_interaction_for_mllm-powered_gui_agents.md)
+- [\[ACL 2025\] GUI Agents: A Survey](gui_agents_a_survey.md)
+- [\[ACL 2025\] GUICourse: From General Vision Language Model to Versatile GUI Agent](guicourse_from_general_vision_language_model_to_versatile_gui_agent.md)
+- [\[ACL 2025\] OS-Genesis: Automating GUI Agent Trajectory Construction via Reverse Task Synthesis](os_genesis_gui_agent_trajectory.md)
+- [\[ACL 2025\] Caution for the Environment: Multimodal LLM Agents are Susceptible to Environmental Distractions](caution_environment_gui_agent_distractions.md)
+
+</div>
+
+<!-- RELATED:END -->

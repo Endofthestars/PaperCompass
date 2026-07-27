@@ -1,0 +1,135 @@
+---
+title: >-
+  [论文解读] 3D Convex Splatting: Radiance Field Rendering with 3D Smooth Convexes
+description: >-
+  [CVPR 2025 (Highlight)][3D视觉][3D Gaussian Splatting] 用3D光滑凸体（Smooth Convex）替代高斯基元进行辐射场渲染，通过点集定义凸包+LogSumExp平滑化+自定义CUDA光栅化器，在T&T和Deep Blending上超越3DGS，且所需基元更少。
+tags:
+  - "CVPR 2025 (Highlight)"
+  - "3D视觉"
+  - "3D Gaussian Splatting"
+  - "凸形基元"
+  - "Smooth Convex"
+  - "可微渲染"
+  - "新视角合成"
+---
+
+# 3D Convex Splatting: Radiance Field Rendering with 3D Smooth Convexes
+
+**会议**: CVPR 2025 (Highlight)  
+**arXiv**: [2411.14974](https://arxiv.org/abs/2411.14974)  
+**代码**: [https://convexsplatting.github.io/](https://convexsplatting.github.io/)  
+**领域**: 3D视觉 / 新视角合成 / 辐射场  
+**关键词**: 3D Gaussian Splatting, 凸形基元, Smooth Convex, 可微渲染, 新视角合成  
+
+## 一句话总结
+用3D光滑凸体（Smooth Convex）替代高斯基元进行辐射场渲染，通过点集定义凸包+LogSumExp平滑化+自定义CUDA光栅化器，在T&T和Deep Blending上超越3DGS，且所需基元更少。
+
+## 背景与动机
+3DGS用百万级3D高斯基元实现了实时新视角合成，但高斯基元有两个固有局限：(1) 没有明确的物理边界，无法准确表示平面或尖锐边缘；(2) 其对称扩散特性类似椭球体，要填充角落/平面需要大量基元，类似球体填充问题——用球形物体填充空间总留有间隙。GES用广义指数函数改进了边缘表达，2DGS用2D盘片改进了表面表达，但都没根本解决基元形状灵活性不足的问题。
+
+## 核心问题
+能否用比高斯更灵活的基元来表示辐射场——一种能同时表达尖锐边缘、平面和稠密体积的基元——同时保持实时渲染能力？
+
+## 方法详解
+
+### 整体框架
+3D Convex Splatting管线：SfM点云初始化 → 每个凸体由$K$个3D点定义（默认$K=6$）→ 透视投影到2D → Graham Scan算法计算2D凸包 → 从凸包线段定义signed distance → LogSumExp平滑化 → Sigmoid得到指示函数/alpha值 → tile-based $\alpha$-blending渲染 → L1+D-SSIM+mask正则化优化。
+
+### 关键设计
+1. **点集凸体表示**: 不用CvxNet的平面法向量定义凸体，而是用$K$个3D点的凸包来隐式定义（点可自由移动，形状灵活变形）。投影到2D后用Graham Scan算法高效求凸包，得到线段集合来定义指示函数。每个点有完整的梯度，允许通过反向传播优化凸体形状，这比平面参数化更自然。
+
+2. **平滑度$\delta$和锐度$\sigma$控制**: $\delta$控制凸体顶点的软硬程度（大→尖锐边角，小→圆润），$\sigma$控制辐射场边界的扩散程度（大→密实，小→弥散）。这两个参数使凸体既能模拟尖锐多面体也能退化为类高斯形状，表达能力严格优于高斯。
+
+3. **自适应凸体致密化**: 不同于3DGS的clone/split策略，3DCS观察到$\sigma$损失大的区域对应欠重建或过重建区域。将每个凸体直接分裂为$K$个子凸体（6点凸体→6个缩小版凸体），子凸体中心对应原凸体的$K$个定义点，确保空间覆盖完整。分裂时提高$\sigma$以鼓励更密实的重建。
+
+4. **透视感知缩放**: 将$\delta$和$\sigma$乘以距离$d$进行缩放，确保远处和近处的凸体在2D投影中保持一致的视觉效果。
+
+### 损失函数 / 训练策略
+- 损失: $\mathcal{L} = (1-\lambda)\mathcal{L}_1 + \lambda\mathcal{L}_{D-SSIM} + \beta\mathcal{L}_m$，$\lambda=0.2$, $\beta=0.0005$
+- Fibonacci球面算法初始化点分布，初始球半径=1.2×最近3邻居平均距离
+- 训练约60-87分钟（比3DGS的42分钟略慢，但远快于MipNeRF360的48小时）
+- 每个凸体69个参数（vs 3DGS每个高斯59个参数）
+- 初始$\delta=0.1$, $\sigma=0.00095$，选择较弥散的初始值让凸体先覆盖再逐步锐化
+- 致密化从500次迭代开始，每200次迭代致密化+剪枝，9000次后停止致密化但继续剪枝
+- 剪枝标准：opacity<0.03或尺寸>0.3×场景尺寸
+- 高质量版用32bit精度，轻量版用16bit精度+更高的致密化阈值
+
+## 实验关键数据
+
+| 数据集 | 指标 | 3DCS | 3DGS | 提升 | 内存 |
+|--------|------|------|------|------|------|
+| T&T | LPIPS/PSNR/SSIM | 0.157/23.95/0.851 | 0.183/23.14/0.841 | -0.026/+0.81/+0.01 | 282 vs 411MB |
+| Deep Blending | LPIPS/PSNR/SSIM | 0.237/29.81/0.902 | 0.243/29.41/0.903 | -0.006/+0.40/-0.001 | 332 vs 676MB |
+| Mip-NeRF360 | LPIPS/PSNR/SSIM | 0.207/27.29/0.802 | 0.214/27.21/0.815 | -0.007/+0.08/-0.013 | 666 vs 734MB |
+| Mip-NeRF360(室内) | LPIPS/PSNR | 0.166/31.33 | 0.189/30.41 | -0.023/+0.92 | - |
+
+### 消融实验要点
+- **定义点数$K$**: $K=4$即超越3DGS，$K=6$为最优性价比，$K>6$收益递减
+- **致密化分裂数**: 分裂为6个新凸体效果最佳（vs 分裂为2或3个）
+- **透视缩放**: 不缩放PSNR降5-6dB，$\sqrt{d}$缩放最优
+- **室内vs室外**: 室内场景（平面/边角多）凸体优势更大（+0.9 PSNR），室外自然场景优势较小。这与直觉一致：室内场景的几何结构更规则，凸体的尖锐边角和平面表达能力能更好发挥。室内场景具体数据：LPIPS 0.166 vs 3DGS 0.189，PSNR 31.33 vs 30.41，SSIM 0.927 vs 0.920
+- **训练收敛行为**: 3DCS前5K迭代较慢（凸体初始化为球形需时间变形），但5K后快速赶超并最终超越3DGS，说明凸体的更强表达力在后期让拟合更充分
+- **透视感知缩放**: 不缩放PSNR降5-6dB；$\sqrt{d}$缩放最优（Truck 25.65, Train 22.23），线性$d$缩放次之，$d^2$缩放过度导致PSNR崩溃至7-9dB
+- **PSNR与感知质量不一致**: Flower场景3DCS PSNR 20.17低于3DGS的21.65，但视觉质量明显更接近GT。这是因为PSNR对pixel-level差异敏感，倾向于奖励模糊图像
+
+### 每场景详细结果
+
+| 场景 | 3DCS LPIPS | 3DGS LPIPS | 3DCS PSNR | 3DGS PSNR |
+|------|-----------|-----------|----------|----------|
+| Truck | 0.125 | 0.148 | 25.65 | 25.18 |
+| Train | 0.187 | 0.218 | 22.23 | 21.09 |
+| DrJohnson | 0.238 | 0.244 | 29.54 | 28.76 |
+| Playroom | 0.237 | 0.241 | 30.08 | 30.04 |
+| Bonsai | 0.182 | 0.205 | 32.50 | 31.98 |
+| Kitchen | 0.117 | 0.129 | 31.96 | 30.31 |
+
+## 亮点
+- 类比球体填充问题来解释高斯基元局限性——直觉优雅
+- 凸体的$\delta$-$\sigma$双参数控制使其能从尖锐多面体到弥散高斯连续变化，表达能力是高斯的严格超集
+- 分裂为$K$个子凸体的致密化策略比3DGS的clone/split更自然，保证空间覆盖
+- 轻量版3DCS（16bit精度）用<15%内存即接近3DGS的视觉质量
+- Figure 11展示凸体能将树桩分解为有物理意义的凸形部件——不只是渲染技巧，还是场景理解的基础
+
+## 局限与展望
+- 渲染速度（25-33 FPS）低于3DGS（134 FPS），虽仍实时但差距明显，主要因为Graham Scan和凸包线段计算开销。每帧需要对所有可见凸体做2D凸包计算，复杂度$O(K\log K)$乘以凸体数量
+- 训练时间比3DGS长40-107%，主要开销在反向传播时需要对凸包计算做微分
+- 在室外自然场景（植被/天空等无明确边角的区域）SSIM/PSNR优势不大
+- 凸体无法表示凹形结构，需要多个凸体组合才能近似，这在复杂几何（如镜框、拱形结构）处可能增加基元数量
+- 未与后续3DGS改进方法（如Mini-Splatting、Scaffold-GS等）对比，这些方法已显著提升了原版3DGS性能
+- 初始化依赖SfM点云质量，Fibonacci球面算法的初始球半径=1.2×最近3邻居平均距离，稀疏/低质量点云将直接降低初始凸体覆盖
+- → 探索方向：凸-凹混合基元、自适应$K$值（不同区域用不同点数）、结合压缩技术进一步减小内存
+
+## 与相关工作的对比
+
+| 对比方法 | 关键区别 |
+|----------|----------|
+| 3DGS | 高斯是凸体的特例（$\delta$小+$\sigma$小），3DCS有更强表达力+更少基元 |
+| 2DGS | 2DGS把3D高斯坍缩为2D盘片，相当于$K=3$的退化凸体；3DCS全3D体积建模 |
+| GES | GES用广义指数函数增加边缘锐度，但仍是对称分布；凸体可任意不对称 |
+| CvxNet | CvxNet用超平面定义凸体+神经网络优化，不支持实时渲染；3DCS用点集+光栅化器 |
+
+## 启发与关联
+- 基元形状的灵活性直接影响表示效率——这个思路可迁移到其他基于基元的3D表示
+- 凸体可作为场景分解的语义基础（每个凸体对应一个有意义的物理部件），潜在应用于可编辑场景表示
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 首次将光滑凸形基元引入实时辐射场渲染，是新范式
+- 实验充分度: ⭐⭐⭐⭐ 3个标准数据集+丰富消融+合成实验，但缺少与更多GS改进方法对比
+- 写作质量: ⭐⭐⭐⭐⭐ 概念清晰，图示优秀（特别是Fig.2的椅子对比和Fig.4的$\delta$-$\sigma$可视化）
+- 价值: ⭐⭐⭐⭐ 有望成为3DGS之后的新标准基元，但渲染速度降幅需解决
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2025\] Sparse Voxels Rasterization: Real-time High-fidelity Radiance Field Rendering](sparse_voxels_rasterization_real-time_high-fidelity_radiance_field_rendering.md)
+- [\[CVPR 2025\] Geometry Field Splatting with Gaussian Surfels](geometry_field_splatting_with_gaussian_surfels.md)
+- [\[CVPR 2025\] Depth-Guided Bundle Sampling for Efficient Generalizable Neural Radiance Field Reconstruction](depth-guided_bundle_sampling_for_efficient_generalizable_neural_radiance_field_r.md)
+- [\[ICLR 2026\] Augmented Radiance Field: A General Framework for Enhanced Gaussian Splatting](../../ICLR2026/3d_vision/augmented_radiance_field_a_general_framework_for_enhanced_gaussian_splatting.md)
+- [\[CVPR 2025\] NeRFPrior: Learning Neural Radiance Field as a Prior for Indoor Scene Reconstruction](nerfprior_learning_neural_radiance_field_as_a_prior_for_indoor_scene_reconstruct.md)
+
+</div>
+
+<!-- RELATED:END -->

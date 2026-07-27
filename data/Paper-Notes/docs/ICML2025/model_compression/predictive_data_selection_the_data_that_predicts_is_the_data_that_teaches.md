@@ -1,0 +1,143 @@
+---
+title: >-
+  [论文解读] Predictive Data Selection: The Data That Predicts Is the Data That Teaches
+description: >-
+  [ICML2025][模型压缩][预训练数据选择] 提出 PreSelect 方法，基于"能预测模型能力的数据就是能教会模型的数据"这一假设，利用多模型损失排名相关性量化文档预测强度，训练 fastText 分类器实现高效数据选择，在 1B 模型上用 30B tokens 超越随机选取 300B tokens 的性能，实现 10 倍计算节省。
+tags:
+  - "ICML2025"
+  - "模型压缩"
+  - "预训练数据选择"
+  - "压缩即智能"
+  - "预测强度"
+  - "fastText分类器"
+  - "数据质量"
+---
+
+# Predictive Data Selection: The Data That Predicts Is the Data That Teaches
+
+**会议**: ICML2025  
+**arXiv**: [2503.00808](https://arxiv.org/abs/2503.00808)  
+**代码**: [hkust-nlp/PreSelect](https://github.com/hkust-nlp/PreSelect)  
+**领域**: 数据选择  
+**关键词**: 预训练数据选择, 压缩即智能, 预测强度, fastText分类器, 数据质量
+
+## 一句话总结
+
+提出 PreSelect 方法，基于"能预测模型能力的数据就是能教会模型的数据"这一假设，利用多模型损失排名相关性量化文档预测强度，训练 fastText 分类器实现高效数据选择，在 1B 模型上用 30B tokens 超越随机选取 300B tokens 的性能，实现 10 倍计算节省。
+
+## 研究背景与动机
+
+大语言模型预训练需要在海量网络数据上训练，数据质量直接影响 scaling law 效率。现有数据选择方法主要依赖人工启发式规则：
+
+- **规则过滤**：FineWeb-Edu 用 LLM 打教育质量分，偏好教育类文档
+- **参考数据对齐**：DCLM 以 SFT 数据为正例训练 fastText 分类器
+- **困惑度过滤**：CCNet 保留低困惑度文档
+
+这些方法都引入了较强的人为先验，可能偏离最优选择。本文另辟蹊径，从 Huang et al. (2024) 的发现出发：不同模型在特定文本上的压缩效率（归一化损失）与下游性能高度相关。例如 GitHub 代码上的损失与代码任务近线性相关，Common Crawl 上的损失与知识密集型任务相关。由此提出核心假设：**在某数据上的压缩越能反映模型能力，该数据就越有助于学习该能力**。
+
+## 方法详解
+
+### 预测强度定义
+
+给定 $N$ 个开源预训练模型 $\{M_1, M_2, \ldots, M_N\}$ 及其下游平均分 $\{S_1 < S_2 < \ldots < S_N\}$，对文档 $d$ 计算各模型的归一化字符损失 $\{C_1, C_2, \ldots, C_N\}$，定义预测强度：
+
+$$\mathbf{S} = \sum_{1 \le i < N} \sum_{i < j \le N} \mathbb{I}\{C_i > C_j\} / Z$$
+
+其中 $Z = \frac{N^2 - N}{2}$ 为归一化因子，确保 $\mathbf{S} \in [0, 1]$。直觉上，当模型损失排名与下游性能排名逆向对齐（能力越强损失越低）时，得分越高。$\mathbf{S}=1$ 表示该文档的损失可完美预测模型能力排名。
+
+### 与 Pearson 相关系数的对比
+
+作者选择基于排名的匹配分数而非 Pearson 相关，原因是单文档损失计算对噪声敏感（特别是短文档），数值相关估计容易被异常值影响，排名相关更鲁棒。
+
+### 整体流程
+
+1. **采样计算集**：从预训练语料中按最频繁 3000 个域名各采样 300 条，共 ~90 万文档
+2. **计算预测强度**：使用 Llama 1/2 系列 6 个模型（7B-65B）计算各文档的归一化损失，结合 12 个基准的平均分排名算出预测强度
+3. **构建训练集**：选最高预测强度的 ~20 万文档为正例，最低的 ~20 万为负例
+4. **训练 fastText 分类器**：基于正负例训练轻量级 fastText 评分器
+5. **大规模筛选**：用 fastText 对全量语料打分，选取 top-10% 文档用于预训练
+
+### 关键设计选择
+
+- **同族模型**：仅用 Llama 系列 6 个模型，避免跨模型族的评估噪声（不同族模型对 prompt 敏感度差异大）
+- **文档级粒度**：直接在文档级操作，而非先按域分组再选择（域级粒度太粗）
+- **仅需 fastText 部署**：无需使用大模型推理，易于扩展到万亿级语料
+
+## 实验关键数据
+
+### 主实验：RefinedWeb 语料（1B 模型，30B tokens，选 10%）
+
+| 方法 | ARC-E | ARC-C | MMLU | LAMBADA | RACE | SciQ | BBH | 平均 |
+|------|-------|-------|------|---------|------|------|-----|------|
+| Random (300B) | 42.2 | 27.8 | 24.5 | 27.6 | 22.3 | 70.9 | 12.8 | 31.3 |
+| Random (30B) | 39.2 | 24.4 | 26.0 | 19.0 | 21.9 | 64.8 | 7.8 | 28.1 |
+| PPL Filtering | 42.5 | 24.6 | 25.8 | 18.8 | 22.6 | 67.5 | 8.5 | 29.1 |
+| FineWeb-Edu | 48.3 | 26.1 | 26.0 | 18.2 | 24.4 | 69.0 | 12.8 | 31.1 |
+| DCLM | 45.2 | 24.8 | 26.3 | 22.2 | 24.3 | 70.0 | 12.6 | 31.2 |
+| **PreSelect** | **48.0** | **26.8** | 26.0 | **23.5** | **27.7** | **71.5** | **16.2** | **33.4** |
+
+核心发现：
+
+- PreSelect 用 30B tokens 训练的模型（33.4）超越 Random 用 300B tokens（31.3），**实现 10 倍计算节省**
+- 比最强基线 DCLM 高出 **+2.2%** 绝对值
+- 在 BBH 上优势最大（16.2 vs 12.6），表明选出的数据对推理能力提升显著
+
+### 3B 模型（100B tokens）
+
+| 方法 | ARC-E | SciQ | BBH | 平均 | Math (BPC↓) | Code (BPC↓) |
+|------|-------|------|-----|------|-------------|-------------|
+| Random | 51.2 | 79.5 | 15.3 | 34.7 | 0.818 | 0.726 |
+| DCLM | 55.7 | 82.5 | 20.5 | 37.8 | 0.712 | 0.664 |
+| **PreSelect** | **61.2** | **85.6** | **23.3** | **39.5** | **0.694** | **0.648** |
+
+在更大规模上优势保持，比 DCLM 高出 +1.7%。
+
+### C4 语料验证（410M Pythia 模型）
+
+与 DSIR、DsDm、QuRating、MATES 等方法对比，PreSelect 在 C4 上同样表现最优，验证了跨语料的泛化性。
+
+## 亮点与洞察
+
+1. **理论洞察独到**："能预测就能教"的假设将数据选择从启发式规则提升到信息论视角，建立了压缩-智能-数据质量的三角关系
+2. **极致轻量**：仅需 6 个开源模型的推理 + fastText 训练，无需训练任何深度模型，部署仅需 fastText，远优于需要 LLM 推理的方法
+3. **10 倍计算节省**：30B tokens 超越 300B tokens 随机训练，实用价值巨大
+4. **同族模型设计**：发现跨模型族评估噪声是关键障碍，仅用 Llama 系列有效避免此问题
+5. **文档级 vs 域级**：实验证明文档级粒度显著优于域级（PPL Correlation DD/DP），验证了细粒度选择的必要性
+
+## 局限与展望
+
+1. **模型族依赖**：仅用 Llama 1/2 系列计算预测强度，可能引入该模型族的偏见，不确定换用其他模型族效果如何
+2. **基准依赖**：下游排名基于 12 个固定基准的平均分，选择不同基准组合可能导致不同的数据偏好
+3. **英文为主**：实验仅在英文语料（RefinedWeb、C4）上验证，多语言场景下效果未知
+4. **静态选择**：一次性选择后固定训练，未与动态数据选择（如 MATES）结合
+5. **规模天花板**：实验最大到 3B 模型，在 7B+ 规模上是否保持优势有待验证
+
+## 相关工作与启发
+
+- **Huang et al. (2024)**：压缩效率与下游性能相关性的实证发现，本文核心灵感来源
+- **Thrush et al. (2024) Perplexity Correlation**：域级相关性数据选择先驱，但本文在文档级粒度和模型选择策略上有本质改进
+- **DCLM (Li et al., 2024a)**：当前最强基线，用 SFT 数据指导 fastText 训练
+- **FineWeb-Edu**：教育质量评分路线，与本文的无监督路线形成对比
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 假设新颖，将压缩-智能关联转化为数据选择原则
+- 实验充分度: ⭐⭐⭐⭐⭐ 400M/1B/3B 多规模，两种语料，17 个基准，消融充分
+- 写作质量: ⭐⭐⭐⭐ 动机清晰，方法简洁，实验详尽
+- 价值: ⭐⭐⭐⭐⭐ 10 倍计算节省具有极高实用价值，开源了评分器和数据集
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Disentangling the Roles of Representation and Selection in Data Pruning](../../ACL2025/model_compression/disentangling_the_roles_of_representation_and_selection_in_data_pruning.md)
+- [\[ICML 2025\] Lego Sketch: A Scalable Memory-augmented Neural Network for Sketching Data Streams](lego_sketch_a_scalable_memory-augmented_neural_network_for_sketching_data_stream.md)
+- [\[ICML 2025\] Toward Data-centric Directed Graph Learning: An Entropy-driven Approach](toward_data-centric_directed_graph_learning_an_entropy-driven_approach.md)
+- [\[NeurIPS 2025\] Geometric Data Valuation via Leverage Scores](../../NeurIPS2025/model_compression/geometric_data_valuation_via_leverage_scores.md)
+- [\[ICML 2025\] WildChat-50m: A Deep Dive Into the Role of Synthetic Data in Post-Training](wildchat-50m_a_deep_dive_into_the_role_of_synthetic_data_in_post-training.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,139 @@
+---
+title: >-
+  [论文解读] RigAnyFace: Scaling Neural Facial Mesh Auto-Rigging with Unlabeled Data
+description: >-
+  [NeurIPS 2025][3D视觉][面部绑定] 提出RigAnyFace（RAF），一个可扩展的面部网格自动绑定框架，通过2D监督策略利用无标注中性网格扩大训练规模，实现对多种拓扑和断连组件（如眼球）的高质量FACS混合形状绑定。 面部绑定（Facial Rigging）是将一个静态中性面部网格变为可动画角色的关键步骤…
+tags:
+  - "NeurIPS 2025"
+  - "3D视觉"
+  - "面部绑定"
+  - "自动绑定"
+  - "FACS"
+  - "混合形状"
+  - "2D监督"
+---
+
+# RigAnyFace: Scaling Neural Facial Mesh Auto-Rigging with Unlabeled Data
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2511.18601](https://arxiv.org/abs/2511.18601)  
+**代码**: [GitHub](https://wenchao-m.github.io/RigAnyFace.github.io)  
+**领域**: 3D视觉  
+**关键词**: 面部绑定, 自动绑定, FACS, 混合形状, 2D监督
+
+## 一句话总结
+
+提出RigAnyFace（RAF），一个可扩展的面部网格自动绑定框架，通过2D监督策略利用无标注中性网格扩大训练规模，实现对多种拓扑和断连组件（如眼球）的高质量FACS混合形状绑定。
+
+## 研究背景与动机
+
+面部绑定（Facial Rigging）是将一个静态中性面部网格变为可动画角色的关键步骤，广泛应用于数字角色动画、虚拟形象等领域。传统做法通常需要专业美术师花费数十小时手工完成一个面部资产的绑定，成本极高。
+
+**现有方法的痛点**：
+
+**依赖模板混合形状**：大多数自动绑定方法需要将预定义模板网格的混合形状迁移到目标网格，当目标和模板形状差异较大时准确度会下降。
+
+**拓扑限制**：现有方法（如NFR）虽然已经实现了无模板的FACS驱动绑定，但仅适用于单一连通的人形面部，无法处理包含断连组件（如眼球、牙齿）的网格。
+
+**训练数据稀缺**：高质量3D绑定标注极其昂贵，仅靠有限的带标注数据训练，模型泛化能力受限。
+
+**本文的切入角度**：既然3D标注数据稀缺但2D面部动画技术已经非常成熟，能否利用2D生成模型为无标注网格提供监督信号？核心idea是设计一套2D监督策略——结合外观引导（RGB图像）和运动引导（2D位移场），从而大幅扩展训练数据，提升模型对多样拓扑面部网格的泛化能力。
+
+## 方法详解
+
+### 整体框架
+
+RAF以一个中性面部网格 $M_0=(V_0, F)$ 和一个FACS姿态向量 $A_i$ 作为输入，预测形变位移 $\hat{d_i}$，将中性网格变形为对应FACS姿态 $\hat{M_i} = (V_0 + \hat{d_i}, F)$。所有FACS姿态组合在一起形成一个线性混合形状绑定。训练分为两阶段：第一阶段在大规模混合数据集上仅用2D损失，第二阶段在有标注数据上结合2D和3D监督进行精调。
+
+### 关键设计
+
+1. **条件扩散块（Conditional Diffusion Block）**：基于DiffusionNet构建形变网络，DiffusionNet通过模拟热扩散处理网格表面特征，具有三角剖分无关性。原始DiffusionNet无法接收额外条件输入，本文修改扩散块使其接收FACS向量作为条件——将FACS向量 $A_i$ 与全局特征 $G_0$ 拼接，在每个扩散块中复制到顶点维度后与块输出特征融合，再通过小型MLP精炼。核心公式为热扩散：$h_t(u_0) = (M + tL)^{-1}Mu_0$。
+
+2. **全局编码器（Global Encoder）**：DiffusionNet的扩散机制无法在断连组件之间传播信息。为此设计一个2层小型DiffusionNet分支处理输入中性网格，通过全局平均池化生成一个单一向量 $G_0$，编码整个网格的全局信息，包括断连组件的位置和存在信息。实验证明该特征能有效避免组件穿透并实现准确形变。
+
+3. **2D监督策略**：包括两类信号——（a）**外观监督**：用可微渲染生成正面RGB图像和二值掩码，计算图像损失 $\mathcal{L}_{img}$ 和掩码损失 $\mathcal{L}_{mask}$；（b）**2D位移监督**：定义类光流的2D位移场 $d_i^{2d}$，表示中性和姿态图像间每个像素的偏移量。相比RGB差异，2D位移对微表情（如颌骨侧移）提供更密集的反馈，在纹理均匀区域（如脸颊）尤其有效。
+
+4. **2D监督生成**：对于无标注网格，利用基于MegActor的2D面部动画扩散模型生成posed图像，用RAFT光流估计模型预测2D位移。通过在少量有标注数据上微调这些生成模型，提升对风格化面部的效果。
+
+### 损失函数 / 训练策略
+
+**两阶段训练**：
+
+- **第一阶段**（粗糙）：在有标注+无标注混合数据上，仅用2D损失训练：$\mathcal{L}_{s1} = \alpha_1\mathcal{L}_{img} + \alpha_2\mathcal{L}_{mask} + \alpha_3\mathcal{L}_{dis-2d} + \alpha_4\mathcal{L}_{reg}$
+
+- **第二阶段**（精细）：仅在有标注数据上用2D+3D损失微调：$\mathcal{L}_{s2} = \alpha_1\mathcal{L}_{img} + \alpha_2\mathcal{L}_{mask} + \alpha_3\mathcal{L}_{mse-3d} + \alpha_4\mathcal{L}_{lmk} + \alpha_5\mathcal{L}_{ec}$
+
+模型仅有5.4M参数，在8×A100上训练约2天。推理时在Apple M2 Max CPU上约8.7秒、Nvidia T4 GPU上约3.1秒即可生成完整绑定。
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | MAE (mm) ↓ | MAE Q95 (mm) ↓ | 备注 |
+|------|-----------|----------------|------|
+| Deformation Transfer | 2.93 | 8.41 | 需额外模板+对应点 |
+| NFR | 2.77 | 7.21 | 仅支持人形 |
+| **RAF (Ours)** | **1.01** | **2.94** | 无需额外输入 |
+
+RAF在12个人形头部上的MAE比NFR降低了63%，比Deformation Transfer降低了65%。
+
+### 消融实验
+
+| 配置 | MAE (mm) ↓ | MAE Q95 (mm) ↓ | 说明 |
+|------|-----------|----------------|------|
+| w/o Global Encoder | 2.14 | 6.64 | 断连组件穿透 |
+| w/o 2D Loss | 2.08 | 5.84 | 无2D损失 |
+| w/o Unrigged Data | 2.01 | 5.81 | 无无标注数据 |
+| w/o 2D Displacement | 1.95 | 5.89 | 无位移监督 |
+| **Full Model** | **1.92** | **5.63** | 全部组件 |
+
+### 关键发现
+
+- Global Encoder使穿透顶点比例从0.377降至0.166，有效解决断连组件交叉问题
+- 2D位移损失对微表情（如Jaw Left）改善显著，比纯外观损失捕获更多运动信息
+- 无标注数据的加入使模型在动物等分布外面部网格上也能良好泛化
+- 在ICT FaceKit、Objaverse和CGTrader的野外样本上，RAF一致优于NFR
+
+## 亮点与洞察
+
+- **2D蒸馏3D**的思路非常巧妙：利用成熟的2D面部动画生成模型为3D形变网络提供监督，绕过了3D标注数据稀缺的瓶颈
+- 2D位移场作为监督信号的设计很有洞察力——在纹理均匀区域，RGB差异几乎为零，但位移场仍能提供有效梯度
+- 全局编码器用一个低维向量编码断连组件的空间关系，简洁有效
+- 模型仅5.4M参数，非常轻量
+
+## 局限与展望
+
+- 对偏离训练分布的壳状网格（缺乏几何细节）效果下降
+- 当面部网格因离散化不佳而自然断裂为多个组件时，形变后空间一致性无法保证
+- 目前仅支持FACS线性混合形状，不支持非线性表情空间
+- 2D监督生成依赖于MegActor的质量，风格差异过大时可能失效
+
+## 相关工作与启发
+
+- **NFR**：首个无模板FACS绑定方法，但仅限人形、单连通网格
+- **DiffusionNet**：本文的backbone，三角剖分无关的表面学习网络
+- **MegActor**：2D面部动画扩散模型，用于生成2D监督信号
+- 启发：2D生成模型蒸馏3D任务的范式可能推广到其他3D形变任务
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ 2D监督策略新颖，特别是2D位移场的引入
+- **实验充分度**: ⭐⭐⭐⭐ 消融全面，多数据源评估，含野外和非人形测试
+- **写作质量**: ⭐⭐⭐⭐ 结构清晰，图示丰富
+- **价值**: ⭐⭐⭐⭐ 对面部动画产业有直接应用价值，可扩展性强
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2025\] Category-Agnostic Neural Object Rigging](../../CVPR2025/3d_vision/category-agnostic_neural_object_rigging.md)
+- [\[CVPR 2025\] Scaling Mesh Generation via Compressive Tokenization](../../CVPR2025/3d_vision/scaling_mesh_generation_via_compressive_tokenization.md)
+- [\[CVPR 2026\] Lifting Unlabeled Internet-level Data for 3D Scene Understanding](../../CVPR2026/3d_vision/lifting_unlabeled_internet-level_data_for_3d_scene_understanding.md)
+- [\[CVPR 2025\] MegaSynth: Scaling Up 3D Scene Reconstruction with Synthesized Data](../../CVPR2025/3d_vision/megasynth_scaling_up_3d_scene_reconstruction_with_synthesized_data.md)
+- [\[ICCV 2025\] DeepMesh: Auto-Regressive Artist-Mesh Creation with Reinforcement Learning](../../ICCV2025/3d_vision/deepmesh_auto-regressive_artist-mesh_creation_with_reinforcement_learning.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,123 @@
+---
+title: >-
+  [论文解读] ELSPR: Evaluator LLM Training Data Self-Purification on Non-Transitive Preferences
+description: >-
+  [AAAI 2026][预训练][LLM评估] ELSPR 将 LLM 评估器的成对偏好建模为锦标赛图，通过强连通分量 (SCC) 识别非传递偏好，提出归一化有向图结构熵指标，并基于图重构过滤有问题的训练数据——过滤后的评估器非传递性降低 13.8%、结构熵降低 0.088，且丢弃数据的人类一致性仅 34.4%（vs 保留数据 52.6%）。
+tags:
+  - "AAAI 2026"
+  - "预训练"
+  - "LLM评估"
+  - "非传递偏好"
+  - "锦标赛图"
+  - "数据清洗"
+  - "结构熵"
+---
+
+# ELSPR: Evaluator LLM Training Data Self-Purification on Non-Transitive Preferences
+
+**会议**: AAAI 2026  
+**arXiv**: [2505.17691](https://arxiv.org/abs/2505.17691)  
+**代码**: [https://github.com/yy0525/ELSPR](https://github.com/yy0525/ELSPR)  
+**领域**: LLM预训练  
+**关键词**: LLM评估, 非传递偏好, 锦标赛图, 数据清洗, 结构熵
+
+## 一句话总结
+ELSPR 将 LLM 评估器的成对偏好建模为锦标赛图，通过强连通分量 (SCC) 识别非传递偏好，提出归一化有向图结构熵指标，并基于图重构过滤有问题的训练数据——过滤后的评估器非传递性降低 13.8%、结构熵降低 0.088，且丢弃数据的人类一致性仅 34.4%（vs 保留数据 52.6%）。
+
+## 研究背景与动机
+
+**领域现状**：LLM 作为评判者 (LLM-as-judge) 广泛用于评估其他模型。成对比较是常用方式，但可能出现非传递偏好(A>B, B>C, C>A)。
+
+**现有痛点**：(1) 非传递偏好破坏排名可靠性；(2) 现有头对头评估忽略了传递性约束；(3) 非传递性的根源——来自低质量/模糊训练数据——未被系统解决。
+
+**核心矛盾**：训练数据中的模糊比较对使评估器学到矛盾的偏好模式。
+
+**本文目标** 自动识别并清除导致非传递偏好的训练数据。
+
+**切入角度**：将偏好建模为图论问题——锦标赛图+SCC分析。
+
+**核心 idea**：通过锦标赛图的 SCC 识别非传递关系，重构为 DAG 后过滤不一致的训练样本。
+
+## 方法详解
+
+### 整体框架
+(1) 对每个问题构建锦标赛图（位置交换去偏）；(2) Tarjan 算法找 SCC；(3) 按入度排序将 SCC 展开为 DAG→过滤不一致训练样本（"Cleaned" vs "Discarded"）；(4) 在清洗数据上 LoRA 微调评估器。
+
+### 关键设计
+
+1. **非传递性检测**：SCC 中 $|S|>2$ 且存在无双向边的节点对→非传递 SCC
+2. **归一化结构熵**：$\tau(G) = H^2(G) / \log_2 n$，衡量图的层次不确定性
+3. **SCC→DAG 重构**：按入度排序（能力估计），去除 SCC 内部矛盾边
+4. **LoRA 微调**：rank=8, 3 epochs, lr=1e-4, batch=16, 教师模型 Qwen2.5-Max
+
+### 损失函数 / 训练策略
+标准偏好学习损失。Qwen2.5-7B-Instruct 和 LLaMA3.1-8B-Instruct 为基座模型。
+
+## 实验关键数据
+
+### 主实验（交叉验证非传递率，5个测试集平均）
+
+| 数据类型 | $\rho_{\text{non-trans}}$↓ | $\tau_{\text{avg}}$↓ |
+|---------|--------------------------|---------------------|
+| Raw | 64.3% | 0.811 |
+| **Cleaned** | **50.5%** | **0.723** |
+| Δ | **-13.8%** | **-0.088** |
+
+### 人类验证
+
+| 指标 | Cleaned | Discarded |
+|------|---------|-----------|
+| 人类一致性 | **52.6%** | 34.4% |
+| 模型-人类一致 | **80.6%** | 51.2% |
+
+### 消融实验
+- 随机过滤（去除等量数据）→非传递性反而更高，确认定向过滤必要
+- 跨模型验证：LLaMA3.1 上同样有效（Helpful_Base: 40.2% vs 59.0%）
+- ~80% 训练数据保留——最小数据损失获得最大质量提升
+
+### 关键发现
+- 丢弃数据的人类一致性仅 34.4%——这些确实是低质量数据
+- 非传递偏好多发生在质量差异低于"恰可辨差"的响应对上（Self-BLEU 更高）
+- Cleaned 模型在 MT-bench 上区分度更强（SD 提升 2-4%）
+
+## 亮点与洞察
+- **图论视角处理偏好数据**是优雅的设计——SCC 精确捕获"互相矛盾的评价圈"
+- **丢弃数据质量验证**很有说服力——34.4% 人类一致性证明不是误伤好数据，且模型-人类一致性从 80.6% 降到 51.2%（接近随机）
+- **结构熵指标**为偏好评估提供了新的量化工具，可以推广到任何需要评估偏好一致性的场景
+- 从图论角度看，非传递偏好本质上是"评价循环"——SCC 正好是捕获循环的标准工具，方法选择非常自然
+
+## 局限与展望
+- 需要在多个温度下反复推理以构建图（计算成本），对于大规模偏好数据集可能不实际
+- 教师模型质量上限了 Cleaned 数据的质量——如果教师模型本身偏好不一致，清洗效果会打折
+- 仅处理二元偏好，未扩展到评分制或多候选排序场景——但实际 LLM 评估中 K-wise 比较越来越常见
+- SCC→DAG 重构时按入度排序作为能力估计，这个启发式在极端不平衡的图上可能不准确
+- 假设非传递性主要来自数据质量而非评估任务本身的固有复杂性——某些主观任务可能确实不存在全序关系
+- 过滤掉 ~20% 数据后训练数据量减少——对于本身数据就稀缺的场景可能造成过度过滤
+
+## 相关工作与启发
+- 对 RLHF 数据清洗有直接启示——偏好数据的非传递性可能是 reward hacking 的来源之一，清洗偏好数据可能从根本上改善奖励模型质量
+- **vs Xu et al. (2025)**：他们发现 GPT-4 评估中存在非传递性但未提出解决方案，ELSPR 给出了系统的图论解法
+- **vs 传统数据去噪方法**：通用方法缺乏偏好数据的结构先验，ELSPR 利用锦标赛图的数学特性进行有针对性的过滤
+- **vs Canoe (AAAI 2026)**：Canoe 解决的是忠实度问题（模型不遵循上下文），ELSPR 解决的是评估器自身的一致性问题——两者互补，前者改善被评估模型、后者改善评估器
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 图论+结构熵+偏好数据清洗的组合高度原创，SCC 分析精确捕获非传递偏好
+- 实验充分度: ⭐⭐⭐⭐ 5个测试集交叉验证、人类验证、跨模型验证，设计严谨
+- 写作质量: ⭐⭐⭐⭐ 形式化严谨，锦标赛图到 DAG 的推导清晰
+- 价值: ⭐⭐⭐⭐⭐ 对LLM评估系统可靠性和RLHF数据质量有直接实践意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2026\] Demystifying Data Organization for Enhanced LLM Training](../../ACL2026/llm_pretraining/demystifying_data_organization_for_enhanced_llm_training.md)
+- [\[ACL 2025\] CritiQ: Mining Data Quality Criteria from Human Preferences](../../ACL2025/llm_pretraining/critiq_mining_data_quality_criteria_from_human_preferences.md)
+- [\[ICLR 2026\] Common Corpus: The Largest Collection of Ethical Data for LLM Pre-Training](../../ICLR2026/llm_pretraining/common_corpus_the_largest_collection_of_ethical_data_for_llm_pre-training.md)
+- [\[ICLR 2026\] Scaling with Collapse: Efficient and Predictable Training of LLM Families](../../ICLR2026/llm_pretraining/scaling_with_collapse_efficient_and_predictable_training_of_llm_families.md)
+- [\[ICLR 2026\] Token-level Data Selection for Safe LLM Fine-tuning](../../ICLR2026/llm_pretraining/token-level_data_selection_for_safe_llm_fine-tuning.md)
+
+</div>
+
+<!-- RELATED:END -->

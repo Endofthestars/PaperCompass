@@ -1,0 +1,152 @@
+---
+title: >-
+  [论文解读] Optimal Transport-Based Token Weighting for Enhanced Preference Optimization
+description: >-
+  [ACL 2025][LLM对齐][DPO] OTPO 利用无平衡最优传输（UOT）在 chosen/rejected 回复的 token 表示之间计算语义对齐权重，使偏好优化聚焦于关键差异 token 而非均等对待所有 token，在 AlpacaEval2 上将 DPO 的 LC WR 从 48.14% 提升至 55.84%，并将 DPO/SimPO/SamPO/LDDPO 统一为 token 加权的特例。
+tags:
+  - "ACL 2025"
+  - "LLM对齐"
+  - "DPO"
+  - "optimal transport"
+  - "token weighting"
+  - "preference optimization"
+  - "length bias"
+---
+
+# Optimal Transport-Based Token Weighting for Enhanced Preference Optimization
+
+**会议**: ACL 2025  
+**arXiv**: [2505.18720](https://arxiv.org/abs/2505.18720)  
+**代码**: [https://github.com/Mimasss2/OTPO](https://github.com/Mimasss2/OTPO)  
+**领域**: LLM对齐 / 偏好优化  
+**关键词**: DPO, optimal transport, token weighting, preference optimization, length bias
+
+## 一句话总结
+
+OTPO 利用无平衡最优传输（UOT）在 chosen/rejected 回复的 token 表示之间计算语义对齐权重，使偏好优化聚焦于关键差异 token 而非均等对待所有 token，在 AlpacaEval2 上将 DPO 的 LC WR 从 48.14% 提升至 55.84%，并将 DPO/SimPO/SamPO/LDDPO 统一为 token 加权的特例。
+
+## 研究背景与动机
+
+**DPO 的 token 均等问题**：标准 DPO 对序列中所有 token 赋予相同权重计算对数概率，但人类判断偏好时更关注关键语义部分（如论点质量、信息准确性），而非填充词或格式 token。
+
+**长度偏差是均等权重的副产品**：更长的回复有更多 token 贡献损失，导致 DPO 系统性偏向选择更长的回复——即使内容质量相当。这已被多项工作（SimPO、SamPO）证实。
+
+**已有修正方法缺乏统一框架**：SimPO 用长度归一化、SamPO 用采样概率加权、LDDPO 用长度差异修正——这些方法各自提出启发式解决方案，但缺乏理论上的统一视角和对 token 级语义信息的利用。
+
+**语义对齐的缺失**：chosen 和 rejected 回复的 token 之间存在语义对应关系（如回答同一问题的不同段落），但现有方法完全忽略了这种跨序列的 token 级语义结构。
+
+**最优传输的天然适配**：OT 正是解决两个分布之间最优匹配的数学工具，可以自然地在 chosen/rejected 的 token 之间建立语义对应关系并从中导出权重。
+
+**核心创新**：用 UOT 的传输计划的边际分布作为 token 权重，语义上被匹配到对方重要 token 的 token 获得高权重，无关 token 获得低权重。
+
+## 方法详解
+
+### 整体框架
+
+在标准 DPO 的基础上增加一个 token 权重计算模块：(1) 用当前模型的最后一层 hidden representation 提取 chosen 和 rejected 序列每个 token 的语义表示；(2) 计算 token 对之间的欧氏距离构造代价矩阵 C；(3) 求解 UOT 问题获得传输计划；(4) 从传输计划的行/列边际分布导出 chosen/rejected 各 token 的权重；(5) 用加权对数概率替换 DPO 中的均匀对数概率。
+
+### 关键设计
+
+**1. 代价矩阵构建**
+
+- **功能**：为 chosen（m 个 token）和 rejected（n 个 token）序列的每对 token 计算语义距离
+- **核心思路**：提取最后一层 hidden states，计算欧氏距离得到 m x n 的代价矩阵
+- **设计动机**：最后一层表示包含最丰富的语义信息；欧氏距离简单高效且在高维空间中区分度好
+
+**2. 无平衡最优传输求解**
+
+- **功能**：在 chosen 和 rejected 的 token 之间寻找最优的语义匹配方案
+- **核心思路**：求解带熵正则化和 KL 边际松弛的传输问题，允许边际分布偏离均匀分布
+- **设计动机**：使用 UOT 而非标准 OT，因为 chosen/rejected 序列长度通常不同，UOT 允许部分传输（不要求总量守恒），自然处理长度差异
+
+**3. Token 权重导出**
+
+- **功能**：从传输计划中提取每个 token 的重要性权重
+- **核心思路**：chosen 的 token i 的权重为传输计划第 i 行的边际和，rejected 类似。归一化后应用于 DPO 的对数概率计算
+- **设计动机**：传输计划中被大量"传输"到对方 token 的 token 是语义上与偏好差异最相关的——它们代表了 chosen/rejected 之间的关键区分点
+
+**4. 统一框架解释**
+
+- **功能**：证明 DPO/SimPO/SamPO/LDDPO 都是 OTPO 在特定权重退化下的特例
+- **核心思路**：DPO = 均匀权重 1/m；SimPO = 长度归一化权重；SamPO = 采样概率权重；LDDPO = 长度差异调制权重。OTPO 是最一般的上下文感知权重
+- **设计动机**：统一视角不仅提升了理论理解，也表明之前方法的启发式修正都可以被 OT 的最优解"自动发现"
+
+### 损失函数 / 训练策略
+
+加权 DPO 损失，其中权重由 UOT 求解器每步动态计算。训练中 UOT 不产生额外梯度（权重作为常数）。
+
+## 实验关键数据
+
+### 主实验
+
+| 模型 | 方法 | AlpacaEval2 LC WR | MT-Bench |
+|------|------|-------------------|----------|
+| Llama-3-8B | DPO | 48.14% | 7.65 |
+| Llama-3-8B | SimPO | 52.67% | 7.72 |
+| Llama-3-8B | SamPO | 51.43% | 7.68 |
+| Llama-3-8B | LDDPO | 53.21% | 7.70 |
+| Llama-3-8B | **OTPO** | **55.84%** | **7.81** |
+| 提升幅度 | OTPO vs DPO | **+7.70%** | **+0.16** |
+
+### 消融实验
+
+| 消融项 | AlpacaEval2 LC WR | 影响 |
+|--------|-------------------|------|
+| UOT → 标准 OT | 53.12% | 严格质量守恒削弱了对长度差异的适应力 |
+| 欧氏距离 → 余弦距离 | 54.91% | 效果接近但略低 |
+| 最后一层 → 中间层 | 53.78% | 浅层表示语义区分度不足 |
+| 均匀权重（=DPO） | 48.14% | 退化到基线 |
+| 固定权重（不更新） | 52.30% | 动态权重的优势明显 |
+
+### 关键发现
+
+- OTPO 在 AlpacaEval2 上比 DPO 提升 7.7% LC WR，比最佳启发式方法 LDDPO 仍高 2.6%
+- UOT 比标准 OT 更适合偏好优化——长度不等序列之间的部分传输比强制全匹配更合理
+- token 权重可视化显示：OTPO 自动学会关注包含关键论点、事实信息的 token，忽略连接词和格式 token
+- 随训练进行权重分布趋于稳定，说明 OT 发现了稳定的语义结构
+- 框架与基础偏好优化方法正交，理论上可与 KTO/IPO 等其他方法结合
+
+## 亮点与洞察
+
+- **最优传输与偏好优化的理论优雅性**：OT 天然建模两个离散分布间的最优匹配，恰好对应 chosen/rejected token 之间的语义对齐——这不是强行嫁接，而是问题结构与数学工具的完美匹配
+- **统一框架的解释力**：将多种启发式修正统一为 token 权重的特例，既有理论洞察又有实践指导——未来新的偏好优化方法可以直接在权重设计空间中探索
+- **即插即用**：OTPO 只需在 DPO 训练循环中加一个 UOT 求解步骤，额外计算开销可控
+
+## 局限与展望
+
+- UOT 求解器（Sinkhorn 迭代）增加了每步训练的计算成本，对于超长序列可能成为瓶颈
+- 代价矩阵基于当前模型的 hidden states，训练初期模型表示质量不高时权重可能不准确
+- 仅在 UltraFeedback 数据集上验证，数据多样性有限
+- 未探索与 RLHF/PPO 的结合——token 权重是否也能改进在线偏好优化
+- 权重可视化的可解释性分析还不够深入，缺乏定量的语义对齐质量评估
+
+## 相关工作与启发
+
+- **vs SimPO**：SimPO 用长度归一化是 OTPO 权重的特例，无法捕捉 token 级语义差异
+- **vs SamPO**：SamPO 用采样概率加权考虑了 token 的生成难度，但忽略了跨序列的语义对应关系
+- **vs LDDPO**：LDDPO 显式建模长度差异，但仍是序列级调整，不是 token 级
+- **vs TDPO**：TDPO 也做 token 级 DPO 但用规则定义权重，OTPO 用 OT 自动发现最优权重
+- **启发**：OT 在 NLP 中的应用越来越广泛（文档匹配、跨语言对齐），偏好优化是一个新的成功应用场景
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ OT 处理 token 权重有理论优雅性和统一视角
+- 实验充分度: ⭐⭐⭐⭐ 效果显著，消融充分
+- 写作质量: ⭐⭐⭐⭐ 理论推导与实验结合紧密
+- 价值: ⭐⭐⭐⭐⭐ 统一框架 + 强效果 + 即插即用
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Probability-Consistent Preference Optimization for Enhanced LLM Reasoning](probability-consistent_preference_optimization_for_enhanced_llm_reasoning.md)
+- [\[ACL 2025\] T-REG: Preference Optimization with Token-Level Reward Regularization](t-reg_preference_optimization_with_token-level_reward_regularization.md)
+- [\[ICML 2025\] TGDPO: Harnessing Token-Level Reward Guidance for Enhancing Direct Preference Optimization](../../ICML2025/llm_alignment/tgdpo_harnessing_token-level_reward_guidance_for_enhancing_direct_preference_opt.md)
+- [\[ACL 2025\] IOPO: Empowering LLMs with Complex Instruction Following via Input-Output Preference Optimization](iopo_input_output_preference.md)
+- [\[ICLR 2026\] SafeDPO: A Simple Approach to Direct Preference Optimization with Enhanced Safety](../../ICLR2026/llm_alignment/safedpo_preference_optimization_safety.md)
+
+</div>
+
+<!-- RELATED:END -->

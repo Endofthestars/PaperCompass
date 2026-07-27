@@ -1,0 +1,213 @@
+---
+title: >-
+  [论文解读] Addressing Text Embedding Leakage in Diffusion-Based Image Editing
+description: >-
+  [ICCV 2025][图像生成][图像编辑] 揭示了基于扩散模型的文本图像编辑中属性泄露的根本原因——自回归文本编码器中 EOS 嵌入的语义纠缠，并提出 ALE 框架（ORE + RGB-CAM + BB），从嵌入解耦、注意力遮罩和背景混合三个层面彻底消除属性泄露。 核心问题 基于扩散模型的文本驱动图像编辑（如 Promp…
+tags:
+  - "ICCV 2025"
+  - "图像生成"
+  - "图像编辑"
+  - "属性泄露"
+  - "扩散模型"
+  - "文本嵌入"
+  - "交叉注意力"
+---
+
+# Addressing Text Embedding Leakage in Diffusion-Based Image Editing
+
+**会议**: ICCV 2025  
+**代码**: [https://mtablo.github.io/ALE_Edit_page/](https://mtablo.github.io/ALE_Edit_page/)  
+**领域**: 图像生成  
+**关键词**: 图像编辑, 属性泄露, 扩散模型, 文本嵌入, 交叉注意力
+
+## 一句话总结
+
+揭示了基于扩散模型的文本图像编辑中属性泄露的根本原因——自回归文本编码器中 EOS 嵌入的语义纠缠，并提出 ALE 框架（ORE + RGB-CAM + BB），从嵌入解耦、注意力遮罩和背景混合三个层面彻底消除属性泄露。
+
+## 研究背景与动机
+
+### 核心问题
+基于扩散模型的文本驱动图像编辑（如 Prompt-to-Prompt）使用户可以通过自然语言提示修改图像。然而，现有方法普遍存在**属性泄露（Attribute Leakage）**问题：对特定目标对象的编辑意外影响了无关区域或其他目标对象。
+
+### 属性泄露的两种类型
+
+**目标外泄露（TEL, Target-External Leakage）**：编辑目标对象时意外影响非目标区域。例如将"红色甜椒"编辑为"金色苹果"时，旁边的"绿色甜椒"也变成金色
+
+**目标内泄露（TIL, Target-Internal Leakage）**：多对象编辑时，一个目标对象的属性意外影响另一个目标对象。例如编辑"黄色甜椒→红色南瓜"时，另一个应为"金色苹果"的区域呈现出红色南瓜的混合属性
+
+### 为什么现有方法解决不了？
+
+**根本原因分析**（本文核心贡献之一）：
+
+问题出在 CLIP 等自回归文本编码器的 **EOS（End-of-Sequence）嵌入**上。CLIP 将提示填充到固定长度（77 tokens）使用 EOS token，而 EOS 嵌入会**不加区分地聚合整个提示中的所有属性和对象的语义信息**。
+
+例如编码提示 "a red diamond and a golden apple" 时，EOS 嵌入内含 "diamond"、"golden"、"apple" 的混合语义。在交叉注意力层中，这些 EOS 嵌入会在整张图像上不加区分地激活，导致泄露。
+
+**已有方案的不足**：
+- **Object-wise embeddings**（如 Structured Diffusion）：将提示按名词短语分段独立编码，但只解决了原始 token 间的纠缠，EOS 嵌入的纠缠仍未解决
+- **End-Token-Substitution (ETS)**：用无属性的 EOS 嵌入替换原始 EOS，但简化后的 EOS 仍然聚合了多个对象的语义，泄露依然存在
+- **交叉注意力遮罩**：限制 EOS 嵌入的空间注意力范围，但 EOS 本质上缺乏空间特异性（它整合了整个提示的内容），因此空间约束无效
+- **零向量/空提示替换 EOS**：虽然消除了语义纠缠，但严重降低了图像质量和编辑精度——说明扩散模型**内在依赖** EOS 嵌入中的语义信息
+
+**关键洞察**：需要一种策略，既保留 EOS 嵌入的语义内容（保证编辑质量），又防止不同对象属性间的相互影响（消除泄露）。
+
+## 方法详解
+
+### 整体框架
+
+ALE 基于**双分支编辑框架**（Dual-Branch）+ DDCM 虚拟反演方案：
+- **源分支（Source Branch）**：在源提示 $y_{base}^{src}$ 引导下重建源图像 $x_{src}$，捕获结构和空间信息
+- **目标分支（Target Branch）**：在目标提示 $y_{base}^{tgt}$ 引导下去噪，生成编辑后的图像
+- **结构保持**：将源分支的自注意力 Q、K 注入目标分支的对应层
+
+在此基础上引入三个互补组件：**ORE**（嵌入级解耦）、**RGB-CAM**（注意力级空间约束）、**BB**（潜在空间级背景保护）。
+
+### 关键设计
+
+#### 1. DDCM 虚拟反演
+
+采用 Denoising Diffusion Consistent Model (DDCM)，其特殊的方差调度使得任意噪声潜变量 $z_\tau$ 在每个时间步都与干净潜变量 $z_0$ 保持闭式关联。这使得：
+- 无需昂贵的 DDIM/Null-text 反演
+- 可以在仅 4-20 步内完成编辑
+- 兼容 Latent Consistency Models 的多步一致性采样器
+
+**自注意力注入调度 $\mathcal{S}$**：控制结构保持的强度。较短的调度仅在早期去噪步骤注入，允许更大幅度的编辑；较长的调度强制更严格的结构保持。
+
+#### 2. Object-Restricted Embeddings (ORE) — 嵌入级解耦
+
+**核心思想**：将每个目标对象的提示独立编码，使每个嵌入矩阵只包含单个对象的语义。
+
+对每个对象提示 $y_i^{tgt}$ 独立编码得到：
+$$E_i = [e_{BOS}, e_{token_1}, ..., e_{EOS}, ...]$$
+
+例如对 "a red diamond and a golden apple"，$E_1$ 仅从 "a red diamond" 编码而来，$E_2$ 仅从 "a golden apple" 编码。
+
+同时构造基础嵌入 $E_{base}$：编码完整提示 $y_{base}^{tgt}$，并将各对象 $E_i$ 对应的 span 拼接回去。
+
+**为什么 ORE 能解决 EOS 纠缠问题？** 因为 $E_i$ 中的 EOS 嵌入只包含 $y_i^{tgt}$ 单个对象的语义信息，不会聚合其他对象的属性。后续交叉注意力接收到的是语义上完全解耦的嵌入——从**源头**上消除泄露。
+
+#### 3. RGB-CAM (Region-Guided Blending for Cross-Attention Masking) — 注意力级空间约束
+
+**问题**：标准交叉注意力层只接受单个 value 张量 $V$，无法利用多个 ORE。
+
+**解决方案**：用空间混合的张量替代 vanilla 交叉注意力输出：
+$$A = \sum_{i=1}^{K} (M \odot m_i) V_i + (M \odot m_{back}) V_{base}$$
+
+其中：
+- $M$ 是基于 $Q, K$ 的基础交叉注意力图
+- $V_i = W_v(E_i)$ 是第 $i$ 个对象的 value 张量
+- $\{m_i\}$ 和 $m_{back}$ 是由 Grounded-SAM 生成的目标对象和背景分割遮罩
+- 遮罩经过轻微膨胀以处理边界不精确的问题
+
+**空间精确性**：$(M \odot m_i) V_i$ 将每个 ORE 限制在其指定区域，消除 TIL；背景项保护非编辑区域。
+
+**关键**：ORE 和 RGB-CAM 必须**联合使用**才能产生无泄露的结果——单独使用任一组件都不够。
+
+#### 4. Background Blending (BB) — 潜在空间级背景保护
+
+即使有完美的交叉注意力控制，背景仍然脆弱，因为 $\{y_i^{tgt}\}$ 只描述目标对象。在每个时间步 $\tau$，用背景遮罩混合源潜变量：
+$$z_\tau^{tgt} = m_{back} \odot z_\tau^{src} + (1 - m_{back}) \odot z_\tau^{tgt}$$
+
+BB 保证非编辑区域的保真度，抑制 TEL，无需像先前方法（如 P2P）那样进行昂贵的阈值调优。
+
+### 损失函数 / 训练策略
+
+ALE 是一个 **tuning-free** 框架——无需额外训练或微调！整个过程是推理时的编辑流程：
+
+1. 预处理：解析提示、编码 ORE、使用 Grounded-SAM 获取分割遮罩
+2. 初始化：采样初始噪声 $z_T^{src}$，设置 $z_T^{tgt} = z_T^{src}$
+3. 从 $T$ 到 1 迭代：源分支预测噪声→目标分支（含 RGB-CAM）预测噪声→BB 混合潜变量
+4. 解码 $z_0^{tgt}$ 得到编辑图像
+
+推理步数仅需 4-20 步（得益于 DDCM），计算高效。
+
+## 实验关键数据
+
+### 主实验
+
+**在 ALE-Bench 上的对比**：
+
+| 方法 | TELS↓ | TILS↓ | Structure Distance↓ | Editing Performance↑ | PSNR↑ | SSIM↑ |
+|------|-------|-------|---------------------|---------------------|-------|-------|
+| P2P | 21.52 | 17.26 | 0.1514 | 20.67 | 11.15 | 0.5589 |
+| MasaCtrl | 20.18 | 16.74 | 0.0929 | 20.01 | 14.99 | 0.7346 |
+| FPE | 21.07 | 17.38 | 0.1164 | 21.89 | 12.82 | 0.6052 |
+| InfEdit | 19.59 | 16.69 | 0.0484 | 21.78 | 16.74 | 0.7709 |
+| **ALE** | **16.03** | **15.28** | **0.0167** | **22.20** | **30.04** | **0.9228** |
+
+ALE 在所有指标上全面领先：TEL 降低 3.56（vs InfEdit），PSNR 提高 13.3dB，SSIM 从 0.77 提升到 0.92。
+
+### 消融实验
+
+**按编辑对象数量分析**：
+
+| 编辑对象数 | TELS↓ | TILS↓ | Editing Perf↑ | PSNR↑ | SSIM↑ |
+|-----------|-------|-------|---------------|-------|-------|
+| 1 | 16.41 | - | 22.62 | 30.01 | 0.9049 |
+| 2 | 16.00 | 15.42 | 22.06 | 30.06 | 0.9235 |
+| 3 | 15.89 | 15.36 | 22.19 | 30.01 | 0.9426 |
+
+**按编辑类型分析**：
+
+| 编辑类型 | TELS↓ | TILS↓ | Editing Perf↑ | PSNR↑ |
+|---------|-------|-------|---------------|-------|
+| Color | 17.63 | 16.21 | 23.12 | 32.97 |
+| Material | 17.15 | 15.96 | 22.94 | 30.63 |
+| Object | 15.86 | 16.25 | 21.82 | 29.03 |
+| Color+Object | 15.30 | 14.01 | 22.15 | 28.60 |
+| Object+Material | 14.55 | 14.51 | 21.42 | 28.88 |
+
+### 关键发现
+
+1. **多对象编辑性能稳定**：随着编辑对象数从 1 增加到 3，ALE 的泄露指标和背景保留质量保持稳定甚至略有改善（SSIM 从 0.90 提升到 0.94）
+2. **复合编辑类型更具挑战性**：Color+Object 和 Object+Material 的编辑性能略低于单一类型编辑，但泄露指标反而更低
+3. **颜色编辑最容易泄露但也最容易编辑**：TELS=17.63 最高，但 Editing Performance=23.12 也最高
+4. **PSNR 领先幅度惊人**：ALE 的 PSNR = 30.04 远超第二名 InfEdit 的 16.74，说明背景保留极为出色
+5. **结构保持极优**：Structure Distance = 0.0167，仅为 InfEdit (0.0484) 的三分之一
+
+## 亮点与洞察
+
+1. **从源头解决问题**：不是在表层修补（如调整注意力遮罩），而是深入分析到 EOS 嵌入的语义纠缠这个根本原因，并设计针对性解决方案
+2. **三组件互补设计精巧**：ORE 解决嵌入级纠缠，RGB-CAM 解决注意力级空间问题，BB 解决潜在空间级背景问题——三个层面缺一不可
+3. **提出了完整的评估体系**：ALE-Bench + TELS/TILS 指标，填补了多对象编辑评估的空白
+4. **Tuning-free**：无需任何额外训练/微调，直接在预训练模型上运行，通用性强
+5. **高效推理**：DDCM 虚拟反演仅需 4-20 步，避免了 DDIM 反演的计算开销
+6. **EOS 嵌入的处理哲学**：不能简单删除（破坏质量），也不能简单替换（仍有纠缠），而是要**从源头隔离**——这个洞察具有普遍意义
+
+## 局限与展望
+
+1. **仅限刚性编辑**：当前框架仅支持颜色、物体、材质等局部编辑，不支持风格迁移、姿态变化、添加/删除对象等非刚性变换
+2. **Benchmark 规模有限**：ALE-Bench 只有 20 张精心策划的源图像（共 3000 个编辑场景），图像多样性有限
+3. **依赖分割模型**：RGB-CAM 需要 Grounded-SAM 提供分割遮罩，分割质量直接影响编辑质量
+4. **最多支持 K=3 对象**：当前只针对最多 3 个对象的多对象编辑进行了验证
+5. **仅针对 CLIP 编码器**：分析主要基于 CLIP 的自回归文本编码器，对 T5 等双向编码器的 EOS 问题未讨论
+
+## 相关工作与启发
+
+- **Prompt-to-Prompt (P2P)**：通过交叉注意力控制实现编辑，但受 EOS 纠缠影响严重
+- **MasaCtrl**：基于互注意力控制的 tuning-free 方法，保持布局但无法防止泄露
+- **InfEdit**：结合 DDCM 的高效编辑方法，是 ALE 的直接基础框架
+- **ETS (NeurIPS 2024)**：首次关注 EOS 嵌入问题，但方案不够彻底
+- **启发**：EOS 嵌入的语义纠缠问题可能不仅影响图像编辑——在文本到图像生成、文本到视频生成等所有依赖 CLIP 编码的任务中都可能存在类似问题
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ （EOS 纠缠问题的深入分析极具洞察力，ORE+RGB-CAM+BB 三组件设计优雅）
+- 实验充分度: ⭐⭐⭐⭐ （提出了完整 Benchmark，但源图像数量较少）
+- 写作质量: ⭐⭐⭐⭐⭐ （问题分析透彻，可视化丰富，概念定义清晰）
+- 价值: ⭐⭐⭐⭐⭐ （解决了多对象编辑的关键痛点，tuning-free 易于实用化）
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] ALE: Attribute-Leakage-free Editing for Text-based Image Editing](ale_attribute_leakage_free_editing.md)
+- [\[ICCV 2025\] Text Embedding Knows How to Quantize Text-Guided Diffusion Models](text_embedding_knows_how_to_quantize_text-guided_diffusion_models.md)
+- [\[ICCV 2025\] Early Timestep Zero-Shot Candidate Selection for Instruction-Guided Image Editing](early_timestep_zero-shot_candidate_selection_for_instruction-guided_image_editin.md)
+- [\[ICCV 2025\] Fair Generation without Unfair Distortions: Debiasing Text-to-Image Generation with Entanglement-Free Attention](fair_generation_without_unfair_distortions_debiasing_text-to-image_generation_wi.md)
+- [\[ICCV 2025\] StyleKeeper: Prevent Content Leakage using Negative Visual Query Guidance](stylekeeper_prevent_content_leakage_using_negative_visual_query_guidance.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,197 @@
+---
+title: >-
+  [论文解读] Where and What Matters: Sensitivity-Aware Task Vectors for Many-Shot Multimodal In-Context Learning
+description: >-
+  [AAAI 2026][强化学习][多模态上下文学习] 提出 STV 框架，通过激活差值（activation delta）识别对上下文信息敏感的注意力头位置，并利用强化学习从预聚类的激活库中选择最优任务向量进行插入，在不增加输入长度的前提下实现高效的多模态 many-shot 上下文学习。 问题引入 大型多模态模型（LMM…
+tags:
+  - "AAAI 2026"
+  - "强化学习"
+  - "多模态上下文学习"
+  - "任务向量"
+  - "注意力头敏感性"
+  - "激活空间调制"
+---
+
+# Where and What Matters: Sensitivity-Aware Task Vectors for Many-Shot Multimodal In-Context Learning
+
+**会议**: AAAI 2026  
+**arXiv**: [2511.08246](https://arxiv.org/abs/2511.08246)  
+**代码**: [https://github.com/AMAP-ML/STV](https://github.com/AMAP-ML/STV)  
+**领域**: 强化学习  
+**关键词**: 多模态上下文学习, 任务向量, 注意力头敏感性, 强化学习, 激活空间调制
+
+## 一句话总结
+
+提出 STV 框架，通过激活差值（activation delta）识别对上下文信息敏感的注意力头位置，并利用强化学习从预聚类的激活库中选择最优任务向量进行插入，在不增加输入长度的前提下实现高效的多模态 many-shot 上下文学习。
+
+## 研究背景与动机
+
+### 问题引入
+
+大型多模态模型（LMMs）在上下文学习（ICL）方面展现了良好能力，但扩展到 many-shot 场景面临两大核心挑战：
+
+**上下文长度受限**：如 Qwen-VL 最大支持 8192 tokens，但单张图像编码就需消耗 256 tokens，严重限制了可容纳的示例数量
+
+**推理开销巨大**：更多示例意味着更多的内存使用和推理延迟
+
+### 现有方法的局限
+
+基于任务向量（task vector）的方法作为一种有前景的解决方案被提出，它将 many-shot 示例压缩为紧凑表示并插入模型激活中。然而现有方法存在明显不足：
+
+- **值估计方法（Value Estimation）**：如 ICV 使用 PCA 在隐藏状态上计算紧凑向量，但仅在固定位置插入，忽略了插入位置对性能的关键影响，且在复杂多模态任务上泛化困难
+- **位置选择方法（Location Selection）**：如 MTV 使用策略网络优化插入位置，但使用均值激活作为固定任务向量，导致任务信息丢失。且基于采样的策略不稳定，重复运行得到的位置不一致
+
+### 核心发现与动机
+
+作者发现了一个关键现象：**查询-上下文对之间的激活差值呈现一致的结构性模式**。具体而言：
+- 同一模型和任务下，具有较大激活差值的位置分布是一致的（如 Qwen-VL 上的 OK-VQA）
+- 不同模型间（如 Qwen-VL vs idefics-2）和不同任务间（如 VizWiz vs OK-VQA），敏感位置存在显著差异
+
+这表明激活差值可以作为可靠的线索来识别上下文信息的处理路径，从而同时解决"在哪插入"和"插入什么"两个关键问题。
+
+## 方法详解
+
+### 整体框架
+
+STV（Sensitivity-aware Task Vector insertion）框架分为两个阶段：
+1. **敏感位置识别**：通过计算有/无上下文时的激活差值，定位对上下文信息敏感的注意力头
+2. **任务向量选择**：为每个敏感位置构建预聚类的激活库，利用强化学习选择最优任务向量
+
+### 关键设计
+
+#### 1. **激活差值计算与位置选择**
+
+核心思路：量化每个注意力头对上下文信息的敏感程度。
+
+对于查询 $q$，其在注意力头 $(l,h)$ 处的激活为 $A_q^{(l,h)}$；将 $S$ 个上下文示例与查询拼接后的激活为 $A_c^{(l,h)}$。敏感度通过 L2 激活差值衡量：
+
+$$\bar{\Delta}^{(l,h)} = \frac{1}{T} \sum_{t=1}^{T} \|A_{c_t}^{(l,h)} - A_{q_t}^{(l,h)}\|_2$$
+
+其中 $T$ 为采样的查询-上下文对数量，通过平均确保估计稳定性。得到的矩阵 $\bar{\Delta} \in \mathbb{R}^{L \times H}$ 反映了所有注意力头的上下文敏感度分布，选取 Top-K 个最敏感的位置：
+
+$$\Lambda = \text{TopK}(\bar{\Delta}, K)$$
+
+**设计动机**：与 MTV 需要 6000 秒的位置搜索相比，此方法仅需 88 秒（降低 98.53%），且结果更稳定可靠。
+
+#### 2. **预聚类激活库构建**
+
+对于每个敏感位置 $(l_k, h_k)$，收集多个查询-上下文前向传播的激活值，使用 k-means 聚类得到 $M$ 个聚类中心：
+
+$$\text{ClusterBank}[(l_k, h_k)] = \{\mathbf{v}_1^{(k)}, \ldots, \mathbf{v}_M^{(k)}\}$$
+
+**设计动机**：相比均值激活（如 MTV），聚类保留了更丰富的语义多样性，避免了信息平均化损失。实验证实，增加聚类中心数可稳步提升性能，在 32 附近饱和。
+
+#### 3. **基于强化学习的任务向量选择**
+
+将向量选择建模为离散优化问题。对每个位置定义类别分布：
+
+$$\mathbf{p}^{(k)} = \text{softmax}(\boldsymbol{\alpha}^{(k)})$$
+
+其中 $\boldsymbol{\alpha}^{(k)} \in \mathbb{R}^M$ 为可学习的 logits。训练时从分布中采样聚类索引，插入模型并计算奖励：
+
+$$r_i = -\mathcal{L}_{\text{task}}(F(x_i; \Lambda, \mathcal{V}_i), y_i)$$
+
+使用 REINFORCE 算法更新策略：
+
+$$\mathcal{L}_{\text{policy}} = -\sum_{i=1}^{N} \sum_{k=1}^{K} \log p_{i_k}^{(k)} \cdot \frac{r_i - \bar{r}}{\sigma_r + \epsilon}$$
+
+收敛后，取每个位置概率最高的聚类中心作为最终任务向量。
+
+**设计动机**：RL 可以在离散候选空间中高效搜索，避免穷举。使用方差归一化的 baseline 减少梯度方差，加速收敛。
+
+### 推理策略
+
+推理时仅需单次前向传播：在测试输入通过模型时，将预定位置的激活替换为对应的任务向量。无需增加输入长度或引入额外参数，推理开销与零样本推理几乎相同。
+
+## 实验关键数据
+
+### 主实验
+
+在 5 个视觉-语言基准上的表现（Qwen-VL-7B）：
+
+| 数据集 | 指标 | STV (本文) | MTV (之前SOTA) | zero-shot | 4-shot ICL |
+|--------|------|-----------|---------------|-----------|------------|
+| VizWiz | Acc | **58.30** | 45.60 | 35.21 | 42.00 |
+| OK-VQA | Acc | **61.94** | 60.51 | 57.76 | 54.62 |
+| DTD | Acc | **80.45** | 76.50 | 55.07 | 55.50 |
+| Flowers | Acc | **81.51** | 78.10 | 55.24 | 54.67 |
+| CUB | Acc | **82.33** | 80.00 | 56.50 | 56.16 |
+| **平均** | Acc | **72.11** | 68.94 | 51.96 | 52.59 |
+
+在 Idefics2-8B 上同样取得最优：平均 76.04% vs MTV 73.65%。
+
+### 效率对比
+
+| 指标 | MTV | STV | 变化 |
+|------|-----|-----|------|
+| 位置搜索时间 | 6000s | 88s | ↓98.53% |
+| GPU 内存 | 19.8GB | 19.8GB | 持平 |
+| 推理时间 | 0.49s | 0.49s | 持平 |
+| VizWiz性能 | 45.6% | 58.3% | ↑12.7% |
+
+### 消融实验
+
+| 配置 | VizWiz Acc | 说明 |
+|------|-----------|------|
+| Zero-shot 基线 | 35.2% | 无任何增强 |
+| + 敏感位置选择 (K=300) | 49.2% | 位置贡献 +14.0% |
+| + 聚类向量选择 (N=32) | 58.3% | 向量贡献 +9.1% |
+| STV + F.L. 高质量样本 | 61.9% | 样本质量可进一步提升 |
+
+与参数微调方法对比：
+
+| 方法 | VizWiz | OK-VQA | 说明 |
+|------|--------|--------|------|
+| SFT | 62.0 (+26.8) | 25.1 (-33.5) | 过拟合严重 |
+| LoRA | 44.3 (+9.1) | 57.7 (-0.9) | 提升有限 |
+| **STV** | **58.3 (+23.1)** | **61.9 (+3.3)** | 无需参数更新 |
+
+### 关键发现
+
+1. 激活差值呈现任务依赖且模型内一致的结构性模式，为位置选择提供了可靠依据
+2. 聚类数量增加可稳步提升性能（在 32 左右饱和），证明聚类比均值更能保留语义丰富性
+3. STV 使用 400 个样本不会 OOM，而标准 ICL 在 64-shot 时就 OOM
+4. 跨域噪声样本对 STV 的影响（-0.7%）小于对 ICL（-1.0%）的影响，鲁棒性更强
+
+## 亮点与洞察
+
+1. **核心洞察极简但有效**：通过激活差值发现上下文敏感位置，这一观察既直觉又可验证
+2. **两阶段解耦设计**：将"where"和"what"分开处理，各用最适合的方法（统计分析 vs RL），比端到端方法更稳定
+3. **实用性极强**：单 GPU（<20GB）端到端运行，不需要任何模型微调，推理速度等同零样本
+4. **搜索效率提升极大**：位置搜索时间从 100 分钟降至 1.5 分钟，降低 98.5%
+
+## 局限与展望
+
+1. 敏感位置的Top-K 选择需要预先确定 K 值，不同任务的最优 K 可能不同
+2. 聚类是离线一次性完成的，无法动态适应新数据分布
+3. 仅在 7B/8B 规模的开源模型上验证，更大规模模型的效果待确认
+4. 当上下文样本过多时（TT 或 shot 数过大），性能反而下降，存在信息冗余问题
+
+## 相关工作与启发
+
+- **与 MTV 的关系**：STV 直接解决了 MTV 的两个核心问题——不稳定的采样策略和均值激活的信息损失
+- **与 LoRA/SFT 的比较**：展示了激活层面调制的独特优势——无需更新参数即可获得跨任务泛化能力
+- **启发**：激活差值作为一种通用的"结构探针"，或可用于理解其他模型的内部机制
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ — 敏感位置发现的观察新颖，但 RL 选择部分相对常规
+- **实验充分度**: ⭐⭐⭐⭐⭐ — 5 个数据集 × 2 个模型，消融完整，效率对比清晰
+- **写作质量**: ⭐⭐⭐⭐ — 逻辑清晰，图表丰富，动机阐述充分
+- **实用价值**: ⭐⭐⭐⭐⭐ — 资源需求极低，即插即用，工业场景适用性强
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICLR 2026\] Chain-of-Context Learning: Dynamic Constraint Understanding for Multi-Task VRPs](../../ICLR2026/reinforcement_learning/chain-of-context_learning_dynamic_constraint_understanding_for_multi-task_vrps.md)
+- [\[ICLR 2026\] Scalable In-Context Q-Learning](../../ICLR2026/reinforcement_learning/scalable_in-context_q-learning.md)
+- [\[AAAI 2026\] MMhops-R1: Multimodal Multi-hop Reasoning](mmhops-r1_multimodal_multi-hop_reasoning.md)
+- [\[ICLR 2026\] LongRLVR: Long-Context Reinforcement Learning Requires Verifiable Context Rewards](../../ICLR2026/reinforcement_learning/longrlvr_long-context_reinforcement_learning_requires_verifiable_context_rewards.md)
+- [\[ICML 2026\] Safe In-Context Reinforcement Learning](../../ICML2026/reinforcement_learning/safe_in-context_reinforcement_learning.md)
+
+</div>
+
+<!-- RELATED:END -->

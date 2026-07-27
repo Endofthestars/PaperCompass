@@ -1,0 +1,158 @@
+---
+title: >-
+  [论文解读] OmniHuman-1: Rethinking the Scaling-Up of One-Stage Conditioned Human Animation Models
+description: >-
+  [ICCV 2025][视频生成][human animation] 提出 OmniHuman，一种基于 Diffusion Transformer 的多条件人体动画生成框架，通过混合文本/音频/姿态等运动相关条件的全条件训练策略实现数据规模化，首次实现单一模型支持任意身体比例、任意宽高比输入的音频驱动人体视频生成，在肖像和半身动画任务上均达到 SOTA。
+tags:
+  - "ICCV 2025"
+  - "视频生成"
+  - "human animation"
+  - "Transformer"
+  - "audio-driven"
+  - "omni-conditions training"
+  - "data scaling"
+---
+
+# OmniHuman-1: Rethinking the Scaling-Up of One-Stage Conditioned Human Animation Models
+
+**会议**: ICCV 2025  
+**arXiv**: [2502.01061](https://arxiv.org/abs/2502.01061)  
+**代码**: 无（项目页 [https://omnihuman-lab.github.io/](https://omnihuman-lab.github.io/)）  
+**领域**: 视频生成  
+**关键词**: human animation, diffusion transformer, audio-driven, omni-conditions training, data scaling
+
+## 一句话总结
+
+提出 OmniHuman，一种基于 Diffusion Transformer 的多条件人体动画生成框架，通过混合文本/音频/姿态等运动相关条件的全条件训练策略实现数据规模化，首次实现单一模型支持任意身体比例、任意宽高比输入的音频驱动人体视频生成，在肖像和半身动画任务上均达到 SOTA。
+
+## 研究背景与动机
+
+基于 DiT 的通用视频生成已通过大规模数据取得巨大进步（数据量达 O(100M) clips），但人体动画领域的 scaling 效应尚未被有效发掘。现有音频驱动方法面临严重的数据浪费问题：音频主要与面部表情相关，与身体姿态、背景运动等无关，因此原始数据需要经过严格的过滤和裁剪（唇音同步、姿态可见性等），导致不到 10% 的数据被保留。
+
+核心洞察：将多种条件信号（文本、音频、姿态）混合到训练中可以显著减少数据浪费。一方面，被单一条件模型丢弃的数据可在更弱条件（如文本）的任务中被利用；另一方面，不同条件信号可以互补——例如姿态条件可弥补音频对身体动作的弱控制能力。
+
+## 方法详解
+
+### 整体框架
+
+OmniHuman 基于 MMDiT 架构的 text-to-video 预训练模型，通过三阶段渐进式训练引入多条件。模型使用 Causal 3D VAE 将视频投影到紧凑的潜空间。输入为参考图像 + 一种或多种驱动条件（文本/音频/姿态），输出为生成的人体动画视频。
+
+### 关键设计
+
+1. **驱动条件注入**: 
+
+    - **音频条件**: wav2vec 提取多尺度声学特征 → MLP 压缩对齐至 DiT 隐藏维度和 25fps 视频帧率 → 与相邻时间戳音频拼接 → 通过逐帧 cross-attention 注入每个 MMDiT block
+    - **姿态条件**: Pose Guider 编码骨架图序列 → 与相邻帧拼接 → 沿通道维度与 noisy latent 堆叠后输入模型
+    - **文本条件**: 沿用 MMDiT 原始文本分支处理
+
+2. **外观条件注入（极简设计）**: 不使用额外参考网络（避免参数翻倍），而是复用原始 DiT backbone 编码参考图像。将参考图像和噪声视频 latent 展平为 token 序列后打包一起输入 DiT，通过 self-attention 交互。通过将参考图像 token 的 3D RoPE 时间分量置零来区分参考和视频 token，零额外参数开销。
+
+3. **全条件训练策略（核心创新）**: 遵循两个原则：
+
+    - **原则 1**: 强条件任务可利用弱条件任务及其数据来扩展训练数据。例如，因唇音同步过滤掉的数据仍可用于文本+图像→视频任务。Stage 1 仅训练 text+image→video 任务，最大化数据利用。
+    - **原则 2**: 条件越强，训练占比应越低。强条件（如姿态）提供精确控制但可能抑制弱条件（如音频）的学习。Stage 2 引入音频但不用姿态；Stage 3 引入全部条件，文本/音频/姿态训练比例逐步减半（T=90%, A=50%, P=25%），为更具挑战的任务分配更高梯度权重。
+
+### 损失函数 / 训练策略
+
+- 基于 Rectified Flow 的扩散训练
+- 学习率 $5 \times 10^{-5}$，AdamW 优化器，梯度裁剪 1.0，batch size 256，weight decay 0.01
+- 400 个 A100 GPU 训练，每阶段约 10 天
+- 18.7K 小时人体相关数据，其中 13% 满足音频和姿态条件标准
+- 推理时对音频和文本应用 CFG（scale=6.5），不对姿态应用 CFG
+- 长视频生成：前段最后 5 帧作为下一段的 motion frames
+
+## 实验关键数据
+
+### 主实验（音频驱动肖像动画）
+
+| 方法 | CelebV-HQ IQA↑ | CelebV-HQ Sync-C↑ | CelebV-HQ FID↓ | CelebV-HQ FVD↓ | RAVDESS Sync-C↑ | RAVDESS FVD↓ |
+|------|----------------|-------------------|----------------|----------------|----------------|-------------|
+| SadTalker | 2.953 | 3.843 | 36.65 | 171.85 | 4.304 | 22.52 |
+| Hallo | 3.505 | 4.130 | 35.96 | 53.99 | 4.062 | 38.47 |
+| Loopy | 3.780 | 4.849 | 33.20 | 49.15 | 4.814 | 16.13 |
+| Hallo-3 | 3.451 | 3.933 | 38.48 | 42.13 | 4.448 | 26.03 |
+| **OmniHuman** | **3.875** | **5.199** | **31.44** | **46.39** | **5.255** | **15.91** |
+
+**音频驱动半身动画（CyberHost 测试集）**:
+
+| 方法 | IQA↑ | Sync-C↑ | FID↓ | FVD↓ | HKV | HKC↑ |
+|------|------|---------|------|------|-----|------|
+| DiffTED | 2.701 | 0.926 | 95.46 | 58.87 | - | 0.769 |
+| CyberHost | 3.990 | 6.627 | 32.97 | 28.00 | 24.73 | 0.884 |
+| **OmniHuman** | **4.142** | **7.443** | **31.64** | **27.03** | **47.56** | **0.898** |
+
+手部关键点方差（HKV）从 24.73 提升至 47.56，手部运动丰富度近乎翻倍。
+
+### 消融实验（全条件训练策略）
+
+**原则 1 验证（文本数据比例影响）**:
+
+| T-Data 比例 | CelebV-HQ FVD↓ | CelebV-HQ Sync-C↑ | CyberHost HKV | CyberHost HKC↑ |
+|---|---|---|---|---|
+| 0% | 47.86 | 4.299 | 35.82 | 0.871 |
+| 25% | 47.04 | 3.311 | 40.39 | 0.877 |
+| 50% | 46.22 | 3.696 | 40.69 | 0.872 |
+| 100% | 43.74 | 4.987 | 43.54 | 0.882 |
+
+更多文本数据持续改善 FVD、FID、唇音准确率和手势生成质量。
+
+**原则 2 验证（条件引入顺序与比例）**:
+
+| 策略 | CelebV-HQ Sync-C↑ | CelebV-HQ FVD↓ | RAVDESS FVD↓ |
+|------|---|---|---|
+| IA（纯音频） | 4.987 | 43.74 | 15.13 |
+| IPA（先姿态） | 2.788 | 44.70 | 25.05 |
+| IAP, A<P | 4.201 | 44.63 | 17.18 |
+| **IAP, A>P** | **4.934** | **43.36** | **15.66** |
+
+先引入姿态（IPA）显著损害最终性能；保持 A>P 训练比例最优。
+
+### 关键发现
+
+- 文本条件数据不足时唇音指标反而下降，需足够数据量才能正向促进多模态联合建模
+- 混合驱动训练（IAP）能解耦手部运动与音频关联，缓解手势过度夸张问题
+- 全条件训练策略让模型逐渐学会跟随输入图像的质量分布而非训练数据分布
+- 首次实现单一模型支持任意身体比例和图像风格的音频驱动生成
+
+## 亮点与洞察
+
+- "条件越弱训练占比越高"的设计原则具有深刻洞察力，解决了多条件训练中的跷跷板效应
+- 外观条件注入的极简设计（复用 backbone，零额外参数）是规模化的关键
+- 数据规模化策略——通过混合条件减少数据浪费——比单纯扩大数据更有效
+- 支持任意宽高比和身体比例是人体动画领域的重要里程碑
+
+## 局限与展望
+
+- 音频与运动的弱相关性仍导致不协调或过度夸张的动作
+- 物体交互有时不够逼真，因训练数据中此类样本不足
+- 需要较高的 CFG scale（6.5）维持合成稳定性，可能导致一定程度的过拟合
+- 未来可引入更丰富的运动条件（风格、强度、意图）提升自然度
+
+## 相关工作与启发
+
+- 全条件训练策略可推广到其他多模态生成任务（如音乐驱动舞蹈生成）
+- "强条件低占比"原则对其他多任务学习场景具有参考价值
+- 参考图像通过 RoPE 时间分量区分的设计简洁优雅，可用于其他需要条件图像的生成模型
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐⭐ 全条件训练策略的两个原则系统且富有洞察力，首次实现任意比例人体动画
+- **实验充分度**: ⭐⭐⭐⭐ 多数据集多任务对比、完整消融验证两个原则、丰富视觉展示
+- **写作质量**: ⭐⭐⭐⭐ 动机阐述充分，框架描述清晰
+- **价值**: ⭐⭐⭐⭐⭐ 为人体动画扩展提供了范式性方法，工业价值极高
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Multi-identity Human Image Animation with Structural Video Diffusion](multi-identity_human_image_animation_with_structural_video_diffusion.md)
+- [\[ICCV 2025\] STiV: Scalable Text and Image Conditioned Video Generation](stiv_scalable_text_and_image_conditioned_video_generation.md)
+- [\[ICCV 2025\] VACE: All-in-One Video Creation and Editing](vace_all-in-one_video_creation_and_editing.md)
+- [\[ICCV 2025\] X-Dancer: Expressive Music to Human Dance Video Generation](x-dancer_expressive_music_to_human_dance_video_generation.md)
+- [\[CVPR 2026\] One-to-All Animation: Alignment-Free Character Animation and Image Pose Transfer](../../CVPR2026/video_generation/one-to-all_animation_alignment-free_character_animation_and_image_pose_transfer.md)
+
+</div>
+
+<!-- RELATED:END -->

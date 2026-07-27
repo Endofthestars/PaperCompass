@@ -1,0 +1,148 @@
+---
+title: >-
+  [论文解读] RePoseD: Efficient Relative Pose Estimation with Known Depth Information
+description: >-
+  [ICCV 2025][3D视觉][相对位姿估计] 本文提出了一组高效的相对位姿最小求解器，将单目深度估计（MDE）的尺度和仿射参数与相对位姿联合估计，在标定/共焦距/不同焦距三种配置下均超越SOTA深度感知求解器，并通过大规模实验回答了"MDE深度是否有助于相对位姿估计"这一核心问题。 相对位姿估计是SfM、视觉定位和自主…
+tags:
+  - "ICCV 2025"
+  - "3D视觉"
+  - "相对位姿估计"
+  - "单目深度估计"
+  - "最小求解器"
+  - "RANSAC"
+  - "多视图几何"
+---
+
+# RePoseD: Efficient Relative Pose Estimation with Known Depth Information
+
+**会议**: ICCV 2025  
+**arXiv**: [2501.07742](https://arxiv.org/abs/2501.07742)  
+**代码**: 即将公开  
+**领域**: 3D视觉  
+**关键词**: 相对位姿估计, 单目深度估计, 最小求解器, RANSAC, 多视图几何
+
+## 一句话总结
+本文提出了一组高效的相对位姿最小求解器，将单目深度估计（MDE）的尺度和仿射参数与相对位姿联合估计，在标定/共焦距/不同焦距三种配置下均超越SOTA深度感知求解器，并通过大规模实验回答了"MDE深度是否有助于相对位姿估计"这一核心问题。
+
+## 研究背景与动机
+
+相对位姿估计是SfM、视觉定位和自主导航等核心任务的基础。传统方法基于2D-2D点对应关系，使用极线几何约束来估计两相机之间的相对位姿——标定情况下需要5个点对应，共焦距需要6个，不同焦距需要7-8个。在RANSAC框架中，所需点对应数直接决定了迭代次数，因此减少所需对应点数是关键优化方向。
+
+近年来，MDE方法（如Depth Anything v2、MoGe、UniDepth）取得了精度上的飞跃，为利用深度信息辅助位姿估计提供了新契机。然而，现有深度感知求解器面临三个核心挑战：
+
+**深度噪声大**：学习预测的深度远比图像测量噪声更大
+
+**尺度/仿射不变性**：MDE产生的深度通常只定义到未知尺度因子，甚至是未知的尺度+偏移参数
+
+**参数不一致性**：不同图像的尺度/偏移参数可能不同，甚至图像内部不同区域的尺度也可能不同
+
+此前的工作（如Rel3PT、Madpose）要么只利用相对深度信息未充分发挥深度图的价值，要么不建模未知偏移，要么求解器效率不高。因此本文的核心idea是：**充分利用两个深度图的完整信息（而非仅相对深度），联合估计相对位姿与深度的尺度/仿射参数，设计更小更快的求解器**。
+
+## 方法详解
+
+### 整体框架
+
+给定一对图像的2D点对应及其单目深度估计，本文建立统一的参数化公式，将真实深度表示为估计深度的仿射变换：$\eta_i = s_1(\alpha_i + u)$，$\lambda_i = s_2(\beta_i + v)$，其中 $s_1, s_2$ 为尺度参数，$u, v$ 为偏移参数。将其代入投影方程后，得到以相对尺度 $s = s_2/s_1$、偏移 $u, v$、旋转 $\mathbf{R}$ 和平移 $\mathbf{t}$ 为未知数的统一约束方程。
+
+### 关键设计
+
+1. **3PTsuv 求解器（标定情况）**：
+
+    - 功能：使用3个3D-3D点对应估计9-DOF问题（$s, u, v, \mathbf{R}, \mathbf{t}$）
+    - 核心思路：通过成对相减消去平移，再利用旋转保持向量长度的性质消去旋转，得到仅含 $s^2, u, v$ 的3个方程。令 $c = s^2$ 降次后，通过Gauss-Jordan消元得到关于 $u$ 的四次方程，可用封闭解求解
+    - 设计动机：相比Madpose的 $12\times16$ 矩阵GJ消元 + $4\times4$ 特征值分解，本文仅需 $3\times6$ GJ消元 + 封闭解，速度提升 ~3x（1.46μs vs 4.45μs）
+
+2. **4PTfsuv 求解器（共焦距情况）**：
+
+    - 功能：使用4个带深度的点对应，联合估计 $s, u, v, f$（10-DOF问题）
+    - 核心思路：利用4个3D-3D点对应构建6个方程4个未知数的过约束系统，选取4个方程用Gröbner基方法求解
+    - 设计动机：GJ消元矩阵为 $24\times32$（vs Madpose的 $36\times44$），速度快约2倍（12.5μs vs 23.6μs）
+
+3. **4PTf1,2suv 求解器（不同焦距情况）**：
+
+    - 功能：使用4个3D-3D点对应估计 $s, u, v, f_1, f_2$（11-DOF问题）
+    - 核心思路：对6个方程5个未知数的过约束系统，取5个方程求解。通过令 $cf_2 = \tilde{f}_2$ 简化多项式，得到 $20\times24$ GJ消元 + 最多4个解
+    - 设计动机：矩阵尺寸仅为Madpose（$40\times44$）的约一半，速度提升 ~3x（6.45μs vs 20.2μs）
+
+4. **尺度不变性 (zero-shift) 求解器**：
+
+    - 功能：当深度偏移为零时（如对某些MDE方法），使用更简单的P3P求解器或新的3PTfs00求解器
+    - 核心思路：不建模偏移参数，降低问题自由度
+    - 设计动机：实验发现对MoGe、UniDepth等网络，不建模偏移反而更好，与Madpose论文的结论相反
+
+### 损失函数 / RANSAC策略
+
+本文在LO-RANSAC框架（PoseLib）中使用Sampson误差进行评分和局部优化，阈值设为2像素，固定1000次迭代。还与Madpose的Hybrid RANSAC方案进行对比，后者同时使用Sampson误差和重投影误差（阈值分别为2px和16px），但计算成本显著增加。关键发现：**即使对3D点，也建议构造本质/基础矩阵并度量Sampson误差，因为这通常比直接用重投影误差效果更好**。
+
+## 实验关键数据
+
+### 主实验
+
+| 数据集/深度 | 求解器 | 中位误差ε(°)↓ | mAA↑ | 运行时间(ms)↓ |
+|------------|--------|---------------|------|-------------|
+| ETH3D/MoGe/SP+LG | 5PT | 0.91 | 87.67 | 48.14 |
+| ETH3D/MoGe/SP+LG | P3P | 0.91 | 87.67 | 25.72 |
+| ETH3D/MoGe/SP+LG | 3PTsuv(M) | 0.89 | 87.71 | 33.45 |
+| ETH3D/MoGe/SP+LG | **3PTsuv(ours)** | **0.89** | 87.67 | **22.41** |
+| ETH3D/MoGe/SP+LG | 3PTsuv(ours)+H | **0.85** | **88.24** | 554.79 |
+| ETH3D/Real/SP+LG | **3PTsuv(ours)+H** | **0.52** | **91.42** | 543.48 |
+| ETH3D/UniDepth/RoMA | 3PTsuv(ours) | **0.55** | 91.01 | **83.72** |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|---------|------|
+| 建模偏移(suv) vs 不建模(s00) | MoGe: s00更优 | 好的MDE不需要建模偏移 |
+| Sampson vs 重投影误差 | Sampson通常更优 | 深度噪声大时Sampson更鲁棒 |
+| PoseLib vs Hybrid RANSAC | Hybrid更准但慢10-30x | 精度-速度权衡 |
+| 不同MDE网络对比 | MoGe/UniDepth最佳 | 优于MiDas/DA v2 |
+| SP+LG vs RoMA vs Mast3r | RoMA整体最优 | 稠密匹配提供更好的对应 |
+
+### 关键发现
+
+- 当有好的深度估计（MoGe/UniDepth）时，深度感知求解器显著优于5PT
+- 对metric depth（UniDepth），不建模偏移（zero-shift）的P3P和3PTfs00反而更优
+- 对scale/affine-invariant depth（MiDas/DA v2），建模偏移有助于提升精度
+- Mast3r尽管使用昂贵的非线性优化，当有好的深度或匹配时反而不如RANSAC方案
+
+## 亮点与洞察
+
+1. **统一框架分析6种深度参数组合**：系统化地讨论了已知/未知/相同尺度和偏移的所有情况，给出了可行求解器的完整目录
+2. **更小更快的求解器**：通过代数化简，求解器矩阵尺寸显著减小（最大约为Madpose的一半），实际速度快2-3倍
+3. **挑战已有结论**：通过测试Madpose未覆盖的zero-shift求解器，证明"建模偏移总是有益"的结论并不成立
+4. **全面的实验覆盖**：5种MDE × 3种匹配器 × 3种数据集 × 2种RANSAC框架，给出了实际使用建议
+
+## 局限与展望
+
+- 假设深度的尺度在图像内一致，但实际上某些MDE在图像不同区域可能存在不同的尺度
+- Hybrid RANSAC显著增加了计算成本（10-30x），需要更高效的实现
+- 仅针对两视图情况，未扩展到多视图联合优化
+- 可以将P3P求解器纳入Hybrid RANSAC方案，可能获得更大提升
+
+## 相关工作与启发
+
+- Madpose [Yu et al.] 是最接近的并发工作，本文的求解器在效率上显著优于Madpose
+- DUSt3R/Mast3r 代表了端到端3D重建的方向，但精度在某些情况下不如传统的RANSAC+求解器方案
+- 启示：单目深度估计已经足够好，可以实际用于改进几何估计，但需要正确选择求解器配置
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 求解器推导技术扎实，但核心思路（联合估计pose和depth参数）在并发工作中已有
+- 实验充分度: ⭐⭐⭐⭐⭐ 覆盖极广，5种MDE×3种匹配器×3种数据集×2种RANSAC，实验设计堪称标杆
+- 写作质量: ⭐⭐⭐⭐ 逻辑清晰，数学推导详尽
+- 价值: ⭐⭐⭐⭐ 对"MDE深度是否有助于位姿估计"给出了实用指南，有实际工程价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Single-Scanline Relative Pose Estimation for Rolling Shutter Cameras](single-scanline_relative_pose_estimation_for_rolling_shutter_cameras.md)
+- [\[CVPR 2025\] Relative Pose Estimation through Affine Corrections of Monocular Depth Priors](../../CVPR2025/3d_vision/relative_pose_estimation_through_affine_corrections_of_monocular_depth_priors.md)
+- [\[ICCV 2025\] FiffDepth: Feed-forward Transformation of Diffusion-Based Generators for Detailed Depth Estimation](fiffdepth_feed-forward_transformation_of_diffusion-based_generators_for_detailed.md)
+- [\[ICCV 2025\] Amodal Depth Anything: Amodal Depth Estimation in the Wild](amodal_depth_anything_amodal_depth_estimation_in_the_wild.md)
+- [\[ICCV 2025\] BoxDreamer: Dreaming Box Corners for Generalizable Object Pose Estimation](boxdreamer_dreaming_box_corners_for_generalizable_object_pose_estimation.md)
+
+</div>
+
+<!-- RELATED:END -->

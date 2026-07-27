@@ -1,0 +1,131 @@
+---
+title: >-
+  [论文解读] ORBIT -- Open Recommendation Benchmark for Reproducible Research with Hidden Tests
+description: >-
+  [NeurIPS 2025][LLM安全][推荐系统] 提出ORBIT统一推荐系统基准，包含5个标准化公开数据集评估和基于真实浏览历史构建的隐私安全ClueWeb-Reco隐藏测试集，系统评估了12个推荐模型并引入LLM-QueryGen基线，揭示了现有方法在大规模真实推荐场景中的局限性。 现有痛点 现有痛点：领域现状：推荐…
+tags:
+  - "NeurIPS 2025"
+  - "LLM安全"
+  - "推荐系统"
+  - "benchmark"
+  - "隐私保护数据集"
+  - "网页推荐"
+  - "LLM推荐"
+---
+
+# ORBIT -- Open Recommendation Benchmark for Reproducible Research with Hidden Tests
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.26095](https://arxiv.org/abs/2510.26095)  
+**代码**: [官网](https://www.open-reco-bench.ai)  
+**领域**: AI安全  
+**关键词**: 推荐系统, benchmark, 隐私保护数据集, 网页推荐, LLM推荐
+
+## 一句话总结
+
+提出ORBIT统一推荐系统基准，包含5个标准化公开数据集评估和基于真实浏览历史构建的隐私安全ClueWeb-Reco隐藏测试集，系统评估了12个推荐模型并引入LLM-QueryGen基线，揭示了现有方法在大规模真实推荐场景中的局限性。
+
+## 研究背景与动机
+
+### 现有痛点
+
+**现有痛点**：**领域现状**：推荐系统是当前最具影响力的AI应用之一，但其研究评测面临两大核心问题：
+
+**数据集问题**：现有公开数据集（如Amazon Reviews、Yelp）主要捕捉评论/评分行为，而非更真实的浏览行为——评论行为仅占用户交互的1-2%，存在严重的流行度偏差。一些新数据集（如PixelRec、Tenrec）未经用户同意收集，引发隐私和伦理争议。
+
+**评测不一致问题**：不同研究在数据划分、推理时候选池策略（全排序 vs 采样候选）、评估指标等方面差异巨大，导致结果无法公平比较。已有多项研究指出这些不一致性会改变方法排名，阻碍领域进步。
+
+作者认为需要一个同时解决数据真实性和评测一致性的统一基准，且数据收集必须满足用户知情同意和隐私保护的要求。这直接催生了ORBIT——一个包含标准化公开评测和基于真实浏览行为的隐藏测试的统一推荐基准。
+
+## 方法详解
+
+### 整体框架
+
+ORBIT由两个核心组件构成：（1）在5个公开数据集上的标准化可复现评估；（2）ClueWeb-Reco隐藏测试集，基于真实美国用户浏览数据构建，用于测试推荐模型的泛化能力。
+
+### 关键设计
+
+1. **标准化公开评测**：选取MovieLens-1M和Amazon Reviews四个类别（Beauty/Toys/Sports/Books），统一采用leave-one-out划分策略——对长度为 $n$ 的用户序列，前 $n-2$ 项用于训练，第 $n-1$ 项为验证目标，第 $n$ 项为测试目标。所有模型在全量候选池上进行排序评估，报告Recall@K和NDCG@K（$K \in \{1,10,50,100\}$），消除了采样候选带来的评测偏差。
+
+2. **ClueWeb-Reco数据集构建**：通过两阶段流水线实现真实性与隐私的平衡。第一阶段在Amazon Mechanical Turk和Prolific.co上收集用户浏览历史（1,747名用户同意参与，经IRB审批），经在线和离线质量控制后保留1,024个session共12,282条记录。第二阶段进行语义软匹配（Soft Matching）——使用MiniCPM-Embedding-Light编码器将收集到的网页与ClueWeb22-B EN（8,700万公开网页）进行语义匹配，用DiskANN近似最近邻搜索找到最相似的公开页面替代原始URL。关键设计包括：移除精确命中（11.07%的URL有精确匹配，改用Top-2替代）、保证一对一映射（同URL映射到同页面，不同URL映射到不同页面），确保最终数据集完全由合成序列组成。
+
+3. **LLM-QueryGen基线**：将推荐问题重构为检索任务——提示LLM根据用户浏览的网页标题生成查询，然后用ANN索引从ClueWeb22中检索最相关的网页作为推荐。这一设计利用了LLM的语义理解能力和零样本泛化能力，无需在推荐数据上训练。
+
+### 损失函数 / 训练策略
+
+- 公开数据集上的12个模型沿用各自原始训练策略，固定最大历史长度为50（HLLM为10）
+- ClueWeb-Reco上采用零样本评估，测试模型在8,700万候选中的泛化能力
+- 质量控制分两级：在线移除诈骗和格式错误数据，离线移除不当和无信息量内容，最终保留率约30%
+
+## 实验关键数据
+
+### 主实验（公开数据集 Recall@10/NDCG@10）
+
+| 模型 | ML-1M (NDCG) | Beauty (NDCG) | Books (NDCG) | 平均NDCG |
+|------|-------------|--------------|-------------|---------|
+| GRU4Rec | 0.1438 | 0.0065 | 0.0473 | 0.0447 |
+| SASRec | 0.0967 | 0.0630 | 0.0384 | 0.0464 |
+| BERT4Rec | 0.1820 | 0.0254 | 0.0325 | 0.0532 |
+| HSTU | 0.1838 | 0.0343 | 0.0375 | 0.0589 |
+| TASTE | 0.1505 | 0.0122 | 0.0386 | 0.0490 |
+| **HLLM** | **0.1880** | 0.0027 | **0.0663** | **0.0641** |
+
+### ClueWeb-Reco隐藏测试（零样本）
+
+| 模型 | Recall@10 | NDCG@10 | Recall@100 | NDCG@100 |
+|------|-----------|---------|------------|----------|
+| TASTE | 0.0020 | 0.0015 | 0.0039 | 0.0019 |
+| HLLM | 0.0088 | 0.0041 | 0.0176 | 0.0059 |
+| GPT-3.5-Turbo-QG | 0.0088 | 0.0058 | 0.0254 | 0.0089 |
+| GPT-4.1-QG | 0.0107 | 0.0050 | 0.0254 | 0.0077 |
+| **DeepSeek-V3-QG** | **0.0127** | **0.0082** | **0.0371** | **0.0129** |
+
+### 关键发现
+
+- **内容模型优于ID模型**：在高稀疏数据集（Amazon Books）上优势尤为明显，因为内容模型能利用商品元信息构建更准确的用户画像
+- **HLLM整体最优**：利用LLM构建物品和用户表示带来显著增益，但在小数据集（Beauty）上因训练量不足表现不佳
+- **ClueWeb-Reco暴露真实困难**：所有模型在8,700万候选池中表现急剧下降，传统推荐模型几乎失效，而LLM-QueryGen展现出更好的零样本泛化能力
+- **软匹配质量**：人工标注显示检索分数与相关性正相关，Top-1匹配获得最高相关性评分，88%的人工注释通过了有效性检查
+
+## 亮点与洞察
+
+- **隐私保护数据集构建范式**：软匹配方法在保留用户行为模式的同时完全消除PII，比直接匿名化更彻底，可推广到其他隐私敏感场景
+- **隐藏测试防止数据泄露**：访问ClueWeb22内容需与CMU签署许可协议，有效防止对测试集的过拟合
+- **将推荐重构为生成式检索**：LLM-QueryGen将推荐问题重新定义为"生成查询-检索文档"的流程，开辟了LLM融入推荐系统的新途径
+
+## 局限与展望
+
+- ClueWeb-Reco规模有限（仅1,024个session），用户群体限于美国成年人
+- 软匹配会损失约20%的低相关性映射，对细粒度用户兴趣建模存在信息丢失
+- 公开数据集仅覆盖电影和电商两个领域，缺少新闻、社交、音乐等场景
+- LLM-QueryGen基线虽有前景但推理成本高，实际部署有挑战
+- 极高稀疏度（99.999%+）下评估指标值普遍很低，可能难以区分方法差异
+
+## 相关工作与启发
+
+- MSMARCO和TREC的隐私处理策略为本工作的软匹配方法提供了直接启发
+- RecBole、BARS等评测工具在标准化方面做了先驱性工作，但缺少基于真实行为的隐藏测试
+- 本工作揭示了一个重要趋势：随着推荐候选池扩大到数千万级别，传统基于协同过滤的范式可能需要向基于语义理解的范式转型
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ 软匹配构建隐私安全推荐数据集的思路新颖，但公开数据集部分的贡献偏工程化
+- **实验充分度**: ⭐⭐⭐⭐⭐ 12个模型、5个数据集加隐藏测试，评估非常全面；人工标注验证了软匹配质量
+- **写作质量**: ⭐⭐⭐⭐ 结构清晰，数据收集和隐私保护流程描述详尽，案例分析直观
+- **价值**: ⭐⭐⭐⭐⭐ 为推荐系统领域提供了急需的标准化基准和真实评测场景，LLM-QueryGen开辟了新的研究方向
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Stop DDoS Attacking the Research Community with AI-Generated Survey Papers](stop_ddos_attacking_the_research_community_with_ai-generated_survey_papers.md)
+- [\[NeurIPS 2025\] On the Empirical Power of Goodness-of-Fit Tests in Watermark Detection](on_the_empirical_power_of_goodness-of-fit_tests_in_watermark_detection.md)
+- [\[NeurIPS 2025\] CPRet: A Dataset, Benchmark, and Model for Retrieval in Competitive Programming](cpret_a_dataset_benchmark_and_model_for_retrieval_in_competitive_programming.md)
+- [\[ACL 2026\] Membership Inference Attacks on In-Context Learning Recommendation](../../ACL2026/llm_safety/membership_inference_attacks_on_llm-based_recommender_systems.md)
+- [\[NeurIPS 2025\] Unlearning as Ablation: Toward a Falsifiable Benchmark for Generative Scientific Discovery](unlearning_as_ablation_toward_a_falsifiable_benchmark_for_generative_scientific_.md)
+
+</div>
+
+<!-- RELATED:END -->

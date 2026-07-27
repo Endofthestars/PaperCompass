@@ -1,0 +1,160 @@
+---
+title: >-
+  [论文解读] Erasing More Than Intended? How Concept Erasure Degrades the Generation of Non-Target Concepts
+description: >-
+  [ICCV 2025][图像生成][概念擦除] 系统分析了文本到图像模型中概念擦除技术对非目标概念的意外负面影响（溢出退化），提出EraseBench基准测试框架覆盖视觉相似、二项关联、语义关联等多维度，揭示当前SOTA擦除方法在保留非目标概念的生成质量方面仍不可靠。 概念擦除（Concept Erasure）技术旨在从文本…
+tags:
+  - "ICCV 2025"
+  - "图像生成"
+  - "概念擦除"
+  - "EraseBench"
+  - "概念纠缠"
+  - "溢出退化"
+  - "文本到图像安全"
+---
+
+# Erasing More Than Intended? How Concept Erasure Degrades the Generation of Non-Target Concepts
+
+**会议**: ICCV 2025  
+**arXiv**: [2501.09833](https://arxiv.org/abs/2501.09833)  
+**代码**: 无  
+**领域**: 扩散模型/图像生成安全  
+**关键词**: 概念擦除, EraseBench, 概念纠缠, 溢出退化, 文本到图像安全
+
+## 一句话总结
+
+系统分析了文本到图像模型中概念擦除技术对非目标概念的意外负面影响（溢出退化），提出EraseBench基准测试框架覆盖视觉相似、二项关联、语义关联等多维度，揭示当前SOTA擦除方法在保留非目标概念的生成质量方面仍不可靠。
+
+## 研究背景与动机
+
+概念擦除（Concept Erasure）技术旨在从文本到图像（T2I）模型中移除不良概念（如NSFW内容、版权内容等），被视为模型安全部署的重要手段。然而，本文发现当前方法存在一个被严重忽视的问题——**概念纠缠（Concept Entanglement）**。
+
+具体而言，擦除一个概念时，与其视觉相似、语义关联或二项配对的其他概念也会受到意外影响，表现为：
+
+**过度擦除（Over-Erasure）**：非目标概念的T2I对齐度下降，例如擦除"cat"后模型也无法正确生成"tiger"
+
+**图像失真（Artifacts）**：非目标概念生成的图像出现身体部位错位、概念被裁剪、文字扭曲等问题
+
+**风格泄露（Style Leakage）**：擦除一个艺术家风格后，相近风格的艺术家也无法被正确渲染
+
+**概念泄露（Concept Leakage）**：在retain set中引入过多相关概念时，已擦除概念会部分恢复
+
+论文的核心论点是：**现有的概念擦除评估框架过于简化，仅关注目标概念是否被成功移除，而忽视了对相关概念的连锁影响。** 实际部署中，这种不受控的溢出退化使得"sanitized"模型的可靠性存疑。
+
+## 方法详解
+
+### 整体框架
+
+本文不提出新的擦除方法，而是构建了一个全面的评估基准**EraseBench**并用它来系统评测5种SOTA擦除技术（ESD、UCE、Receler、MACE、AdvUnlearn）。EraseBench的设计流程为：概念收集 → 人工验证 → 多样化Prompt构建 → 多维度评估。
+
+### 关键设计
+
+1. **EraseBench多维度评估框架**：定义了四种概念间关系维度来测试擦除的副作用：
+
+    - **视觉相似性（Visual Similarity）**：擦除"cat"后测试"tiger""cheetah"等视觉近似概念
+    - **艺术风格相似性（Artistic Similarity）**：擦除Van Gogh后测试Cézanne、Bernard等相近风格
+    - **子集-超集关系（Subset-Superset）**：擦除"goldfish"后测试"guppy""koi"等同类概念
+    - **二项关联（Binomial Relations）**：擦除"sun"后测试紧密关联的"moon"
+
+   每个维度包含多个主概念（用于擦除）和相关非目标概念（用于评估副作用）。概念收集利用LLM和ImageNet层级分类，经过人工验证确保T2I模型能成功生成。
+
+2. **三维评估指标体系**：
+
+    - **Efficacy (Eff.)** ↓：目标概念擦除的有效性（CLIP零样本分类准确率）
+    - **Generality (Gen.)** ↓：对改述/同义概念的擦除泛化性
+    - **Sensitivity (Sens.)** ↑：非目标但相关概念的保留度（新指标，本文核心贡献）
+    - 同时使用RAHF（美学+伪影评分）和Gecko（VQA-based对齐评分）进行多维质量评估
+
+3. **Gecko VQA评估流程**：使用Gemini 1.5模型进行两步VQA评估——先根据文本prompt生成相关问题，再根据生成图像回答问题。最终分数为正确回答比例的均值，支持回溯分析具体哪些文本方面与图像失配。
+
+### 损失函数 / 训练策略
+
+本文为评估工作，不涉及新模型训练。五种基线方法涵盖了概念擦除的主要技术路线：
+- **ESD**：微调模型权重
+- **UCE**：引入目标权重扰动
+- **Receler**：对抗训练+参数高效微调
+- **MACE**：参数高效微调（LoRA）
+- **AdvUnlearn**：对抗训练+文本嵌入优化
+
+## 实验关键数据
+
+### 主实验
+
+四个维度的CLIP零样本分类结果（平均10+概念）：
+
+| 维度 | 方法 | Eff. ↓ | Gen. ↓ | Sens. ↑ | HM ↑ |
+|------|------|--------|--------|---------|------|
+| Visual Sim. | Original | 86.5 | 90.2 | 85.0 | 15.97 |
+| Visual Sim. | ESD | 24.5 | 50.5 | 65.9 | 61.70 |
+| Visual Sim. | UCE | 41.8 | 68.3 | **82.7** | 49.32 |
+| Visual Sim. | Receler | **8.1** | **20.0** | 65.4 | 77.58 |
+| Visual Sim. | MACE | 15.6 | 37.7 | 66.4 | 69.83 |
+| Visual Sim. | AdvUnlearn | 8.7 | 39.1 | 64.3 | 69.88 |
+| Binomial | UCE | 18.9 | 31.4 | **86.1** | **77.88** |
+| Binomial | Receler | 10.3 | **12.6** | 57.5 | 75.04 |
+
+UCE在Sensitivity上表现最好（非目标概念保留最多），但Efficacy不如其他方法。
+
+### 消融实验
+
+Gecko VQA评估结果（6246对文本-图像评估）：
+
+| 技术 | 已擦除概念 ↓ | 非擦除概念 ↑ | 下降幅度 |
+|------|-------------|-------------|---------|
+| Original | 84.1 | 77.6 | — |
+| UCE | 57.6 (−26.4) | 74.3 (−3.4) | 最小 |
+| MACE | 38.2 (−45.9) | 67.9 (−9.8) | 最大 |
+| AdvUnlearn | 43.1 (−41.0) | 68.6 (−9.0) | 中等 |
+
+非擦除概念的得分下降虽小但统计显著（Wilcoxon秩和检验 α=0.01）。
+
+### 关键发现
+
+- **核心发现**：所有5种SOTA擦除方法都导致非目标概念的Sensitivity下降，表明概念擦除不可避免地产生溢出效应
+- **Retain set困境**：在retain set中加入视觉相似概念可部分缓解过度擦除，但代价是增加概念泄露风险——已擦除概念部分恢复
+- **Anchor概念效果有限**：使用锚点概念（如Post-Impressionism作为Van Gogh的锚点）并不能一致性地改善非目标概念质量
+- **Intra-type多概念擦除优于Inter-type**：同时擦除多个相关概念比擦除不相关概念更有效减少artifacts（78.3% vs 71.4%）
+- 人类偏好实验（1650+响应）验证了自动化指标的结论
+
+## 亮点与洞察
+
+- 首次系统化地揭示了概念擦除的溢出退化问题，填补了评估空白
+- EraseBench的多维度设计（视觉/风格/子集超集/二项）为后续研究提供了标准化测试框架
+- Sensitivity指标的引入是关键创新，将评估从"擦得干不干净"扩展到"有没有误伤"
+- Retain set的两难困境（缓解过度擦除 vs. 概念泄露）揭示了当前方法的根本性张力
+
+## 局限与展望
+
+- 仅在Stable Diffusion v1.4上测试，未覆盖SD3、Flux.1等新架构
+- 概念选择仍依赖人工策展，自动化概念空间搜索可提升可扩展性
+- 未提出具体的改进方案来解决概念纠缠问题（纯评估工作）
+- 缺少对擦除技术的理论分析，未解释为什么会发生概念纠缠
+
+## 相关工作与启发
+
+- 与Pham et al.的概念恢复攻击不同，本文关注的是合法非目标概念的退化而非对抗性恢复
+- EraseBench可作为未来概念擦除方法的标准评测基准
+- 启示：未来的擦除方法可能需要在概念表示空间中进行更精细的解耦，而不是简单的权重修改
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ 问题formulation新颖且重要，EraseBench设计全面
+- **实验充分度**: ⭐⭐⭐⭐⭐ 5种方法、4个维度、3种指标、人类评估，极为全面
+- **写作质量**: ⭐⭐⭐⭐ 结构清晰，发现有条理，图表丰富
+- **价值**: ⭐⭐⭐⭐⭐ 对AI安全领域有重要警示意义，基准测试具有持久价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2026\] Erasing Thousands of Concepts: Towards Scalable and Practical Concept Erasure for Text-to-Image Diffusion Models](../../CVPR2026/image_generation/erasing_thousands_of_concepts_towards_scalable_and_practical_concept_erasure_for.md)
+- [\[ICCV 2025\] Less-to-More Generalization: Unlocking More Controllability by In-Context Generation](less-to-more_generalization_unlocking_more_controllability_by_in-context_generat.md)
+- [\[ICCV 2025\] Meta-Unlearning on Diffusion Models: Preventing Relearning Unlearned Concepts](meta-unlearning_on_diffusion_models_preventing_relearning_unlearned_concepts.md)
+- [\[ICCV 2025\] TRCE: Towards Reliable Malicious Concept Erasure in Text-to-Image Diffusion Models](trce_towards_reliable_malicious_concept_erasure_in_text-to-image_diffusion_model.md)
+- [\[NeurIPS 2025\] More Than Generation: Unifying Generation and Depth Estimation via Text-to-Image Diffusion Models](../../NeurIPS2025/image_generation/more_than_generation_unifying_generation_and_depth_estimation_via_text-to-image_.md)
+
+</div>
+
+<!-- RELATED:END -->

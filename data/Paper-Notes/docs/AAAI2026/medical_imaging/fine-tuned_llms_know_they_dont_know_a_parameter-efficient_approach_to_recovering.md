@@ -1,0 +1,206 @@
+---
+title: >-
+  [论文解读] Fine-Tuned LLMs Know They Don't Know: A Parameter-Efficient Approach to Recovering Honesty
+description: >-
+  [AAAI 2026][医学图像][LLM 诚实性] 揭示了 SFT 导致 LLM 不诚实的根源是**自我表达能力受损**（而非自我认知被破坏），基于此提出 HCNR 框架，通过 Fisher 信息识别诚实关键神经元并恢复到预训练状态 + Hessian 引导补偿，仅用 256 条数据和 20% 参数即可恢复 33.25% 的诚实性，实现 2.23 倍以上加速。
+tags:
+  - "AAAI 2026"
+  - "医学图像"
+  - "LLM 诚实性"
+  - "监督微调"
+  - "知识边界"
+  - "神经元恢复"
+  - "参数高效"
+---
+
+# Fine-Tuned LLMs Know They Don't Know: A Parameter-Efficient Approach to Recovering Honesty
+
+**会议**: AAAI 2026  
+**arXiv**: [2511.12991](https://arxiv.org/abs/2511.12991)  
+**代码**: 无  
+**领域**: 医学图像 / LLM 对齐  
+**关键词**: LLM 诚实性, 监督微调, 知识边界, 神经元恢复, 参数高效
+
+## 一句话总结
+
+揭示了 SFT 导致 LLM 不诚实的根源是**自我表达能力受损**（而非自我认知被破坏），基于此提出 HCNR 框架，通过 Fisher 信息识别诚实关键神经元并恢复到预训练状态 + Hessian 引导补偿，仅用 256 条数据和 20% 参数即可恢复 33.25% 的诚实性，实现 2.23 倍以上加速。
+
+## 研究背景与动机
+
+### LLM 诚实性的重要性与脆弱性
+
+LLM 的诚实性包含两个维度：
+
+**自我认知（self-knowledge）**：识别自身知识边界的能力
+
+**忠实自我表达（self-expression）**：基于认知如实回答的能力
+
+诚实性通常在对齐阶段（如 RLHF）中建立，但**监督微调（SFT）会严重损害这一特性**。例如：
+- 法律 QA 微调后 LLM 开始自信地编造法律条文
+- 医学诊断微调后 LLM 对超出知识范围的问题仍给出看似合理的回答
+- 这些"幻觉"在高风险领域可能造成严重后果
+
+### 现有方法的假设与局限
+
+现有诚实性恢复方法（如 RAIT、DPO、ORPO）都基于一个隐含假设：SFT 深度破坏了模型的知识边界能力，因此需要**大规模数据 + 全参数调整**来修复。这导致：
+- 需要数千条特制 IDK 数据
+- 训练时间长（30-40分钟）
+- 可能导致下游任务的灾难性遗忘
+
+### 关键观察：不诚实是"虚假现象"
+
+本文通过两个实验揭示了一个反直觉的发现：
+
+**观察 1**：在 RAIT 诚实性增强训练中，模型的诚实性仅需约 60 个梯度步就能迅速恢复——暗示核心知识边界能力并未被破坏。
+
+**观察 2**：在微调后 LLM 的隐藏状态上训练线性探针（逻辑回归），可高准确率区分可回答/不可回答问题（高 AUROC）。甚至将基础模型训练的探针直接迁移到微调模型上，AUROC 仍保持高水平——说明 SFT 未改变知识边界的几何结构。
+
+**结论**：SFT 造成的不诚实是**自我表达失败**，而非**自我认知丧失**。
+
+## 方法详解
+
+### 整体框架
+
+HCNR（Honesty-Critical Neurons Restoration）分两个阶段：
+
+**阶段 1：识别并恢复诚实关键神经元**
+- 基于 Fisher 信息评估每个神经元对诚实性和下游任务的重要性
+- 选择"诚实重要性高、任务重要性低"的神经元
+- 从中筛选 SFT 扰动最大的层/神经元
+- 将这些神经元恢复到预训练状态
+
+**阶段 2：Hessian 引导补偿**
+- 恢复后的神经元与未恢复的任务神经元产生协调失调
+- 通过 Hessian 矩阵计算最优补偿向量，最小化激活差异
+
+### 关键设计
+
+#### 1. **层内重要性评估（Intra-layer Sensitivity Assessment）**
+
+核心思想：用 Fisher 信息矩阵（FIM）的对角元素作为神经元重要性的无偏估计。
+
+对于第 $j$ 层第 $k$ 个神经元，其在任务 $D$ 上的重要性：
+
+$$s_{j,k} = \mathbb{E}_{(x,y)\sim D}[(\partial_{W_{j,k}}\mathcal{L})^2]$$
+
+分别在诚实数据 $D^{hon}$ 和任务数据 $D^{task}$ 上计算 $s_{j,k}^{hon}$ 和 $s_{j,k}^{task}$，定义优先级：
+
+$$r_{j,k} = s_{j,k}^{hon} \cdot \log\frac{s_{j,k}^{hon}}{s_{j,k}^{task}}$$
+
+高 $r_{j,k}$ 意味着该神经元对诚实性至关重要但对下游任务影响小——这正是应保护的神经元。选取每层前 $R_{IW}$ 比例的神经元作为候选集。
+
+设计动机：直接恢复所有神经元会破坏任务性能，因此需要精准识别"只关乎诚实、不影响任务"的神经元。使用 KL 散度形式的优先级比简单差值更能区分两类神经元。
+
+#### 2. **跨层扰动分析（Cross-layer Perturbation Analysis）**
+
+SFT 对不同层的扰动程度不同（LLM 的层级化专门化），因此需要优先处理扰动最大的层：
+
+$$d_j = \frac{\|(W_j - W_j') \odot M_j\|_2}{\|W_j \odot M_j\|_2}$$
+
+选取前 $R_{CW}$ 比例的高扰动层。将候选层和候选神经元取交集得到最终的诚实关键神经元集 $A^{hc}$。
+
+设计动机：不加区分地保护所有层会过度约束下游性能。实际上某些层（如中间层）的诚实神经元扰动更大，需要优先修复。
+
+#### 3. **Hessian 引导补偿**
+
+简单恢复神经元到预训练状态会引入新的失调——因为 SFT 过程中所有参数的更新是协调的。恢复部分神经元打破了这种协调，导致诚实任务损失反弹。
+
+补偿向量通过 OBS 框架推导：
+
+$$c_{j,k} = \frac{W_{j,k}^{sft} - W_{j,k}^{orig}}{[H^{-1}]_{kk}} \cdot H_{:,k}^{-1}$$
+
+最终权重更新规则：
+
+$$W_{j,i}^{HCNR} = \begin{cases} W_{j,i}^{orig} + [\sum_{k \in A_j^{task}} c_{j,k}]_i & \text{if } i \in A_j^{hc} \\ W_{j,i}^{sft} & \text{if } i \in A_j^{task} \end{cases}$$
+
+设计动机：仅恢复不补偿会导致诚实性反弹（消融实验中 F1 从 72.84 降至 65.96），Hessian 补偿精准弥合了恢复神经元与任务神经元之间的协调断裂。
+
+### 损失函数 / 训练策略
+
+- HCNR 是 **training-free** 的——不需要额外训练，只需少量数据计算 Fisher/Hessian
+- 仅需 $|D^{hon}| = |D^{task}| = 128$ 条数据
+- 超参数：$R_{IW} = 0.5$（层内选取 50% 神经元），$R_{CW} = 0.4$（选取 40% 的层）
+- 修改参数仅占总参数的 20%
+- 实验重复 3 次取平均
+- 在 Nvidia A800-80GB GPU 上运行
+
+## 实验关键数据
+
+### 主实验
+
+在 Llama-3.1-8B-Instruct 上，分别用 HotpotQA 和 MedMCQA 微调后恢复诚实性：
+
+| 方法 | FalseQA F1 | NEC F1 | RefuNQ F1 | KUQ F1 | SelfAware F1 | 任务精度 |
+|------|-----------|--------|-----------|--------|-------------|---------|
+| Fine-tuned | 56.51 | 35.46 | 32.43 | 68.50 | 67.01 | 30.65 |
+| RAIT | 68.59 | 68.28 | 71.21 | 80.38 | 64.46 | 27.05 |
+| DPO | 69.12 | 69.52 | 72.91 | 80.96 | 64.76 | 29.00 |
+| ORPO | 65.83 | 70.03 | 71.26 | 79.21 | 65.21 | 29.60 |
+| **HCNR** | **68.30** | **71.90** | **71.70** | **82.90** | **69.40** | **30.30** |
+
+效率对比（HotpotQA 微调后恢复）：
+
+| 方法 | 数据量 | 参数比例 | 时间 | 平均 F1 | 平均 RF Δ |
+|------|--------|---------|------|---------|----------|
+| RAIT | 5000 | 100% | 8.76 min | 70.58 | +33.40 |
+| DPO | 5000 | 100% | 42.78 min | 71.45 | +37.41 |
+| ORPO | 9000 | 100% | 30.97 min | 70.31 | +39.94 |
+| **HCNR** | **256** | **20%** | **3.93 min** | **72.84** | **+42.64** |
+
+### 消融实验
+
+| 阶段 1 配置 | 阶段 2 配置 | 平均 F1 | 平均 RF Δ | 任务精度 |
+|------------|-----------|---------|----------|---------|
+| Random | Ours | 65.44 | +36.31 | 29.60 |
+| w/o Task | Ours | 70.43 | +33.24 | 28.30 |
+| Ours | w/o Compensation | 65.96 | +33.09 | 30.37 |
+| Random | w/o Compensation | 54.21 | +23.04 | 29.70 |
+| **Ours** | **Ours** | **72.84** | **+42.64** | **30.30** |
+
+### 关键发现
+
+1. **HCNR 在 5 个诚实基准中的 3-4 个上达到最优**，同时保持最高任务精度
+2. **效率优势极其显著**：仅用 256 条数据（20 倍节省）、20% 参数、3.93 分钟（2.23 倍加速），超越所有 baseline
+3. **F1 从 128 条数据即饱和**：进一步增加数据量无明显收益，证实了"诚实性退化是局部问题"的假设
+4. **Hessian 补偿不可或缺**：去除补偿后 F1 从 72.84 降至 65.96，RF Δ 从 42.64 降至 33.09
+5. **ICL 恢复效果最差**：说明微调破坏了 in-context learning 能力
+6. **跨模型泛化**：在 Llama-3、Qwen2/3、Mistral 等 5 个 LLM 家族上均有效
+
+## 亮点与洞察
+
+1. **核心洞察极具价值**："SFT 不诚实是表达失败而非认知丧失"——这个发现改变了人们对 SFT 副作用的理解
+2. **线性探针迁移实验设计精巧**：在基础模型上训练的线性探针直接迁移到微调模型仍有效，有力证明了知识边界表征的鲁棒性
+3. **training-free 方案**：不像 RAIT/DPO/ORPO 需要额外训练，HCNR 仅需计算统计量然后直接修改权重
+4. **$R_{IW}$ 与 $R_{CW}$ 的不对称行为**：$R_{IW}$ 快速饱和（层内神经元选择不太敏感），$R_{CW}$ 有明确最优值 0.3-0.4（说明跨层选择更关键）
+5. **Pareto 前沿超越**：在任务-诚实性权衡图上，HCNR 的 Pareto 前沿严格优于所有 baseline
+
+## 局限与展望
+
+1. **恢复到预训练状态的假设**：假设预训练状态的诚实性最优，但对齐后的状态可能更好
+2. **Fisher/Hessian 计算的近似**：使用对角 Fisher 近似和有限数据计算 Hessian，精度受数据量影响
+3. **仅验证 LoRA 和全参微调**：未测试其他 PEFT 方法（如 Prefix Tuning、Adapter）
+4. **诚实性的定义局限**：仅考虑"拒绝回答不知道的问题"，未涉及事实性错误、不确定性校准等更广泛的诚实性维度
+5. **安全性隐患**：恢复诚实性是否可能同时恢复某些已被 SFT 有意抑制的行为，需进一步分析
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ — "不诚实是表达失败"的洞察极具创新性，HCNR 框架设计精巧
+- 实验充分度: ⭐⭐⭐⭐⭐ — 5 个 LLM 家族、4 个微调数据集、5 个诚实基准、详细消融
+- 写作质量: ⭐⭐⭐⭐⭐ — 叙事流畅，从观察到方法到验证逻辑清晰
+- 价值: ⭐⭐⭐⭐⭐ — 对 LLM 安全部署有直接实用价值，方法高效实用
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[AAAI 2026\] G2L: From Giga-Scale to Cancer-Specific Large-Scale Pathology Foundation Models via Efficient Fine-Tuning](g2lfrom_giga-scale_to_cancer-specific_large-scale_pathology_foundation_models_vi.md)
+- [\[AAAI 2026\] Unsupervised Multi-Parameter Inverse Solving for Reducing Ring Artifacts in 3D X-Ray CBCT](unsupervised_multi-parameter_inverse_solving_for_reducing_ring_artifacts_in_3d_x.md)
+- [\[AAAI 2026\] qa-FLoRA: Data-free Query-Adaptive Fusion of LoRAs for LLMs](qa-flora_data-free_query-adaptive_fusion_of_loras_for_llms.md)
+- [\[AAAI 2026\] Training-Free Policy Violation Detection via Activation-Space Whitening in LLMs](training-free_policy_violation_detection_via_activation-space_whitening_in_llms.md)
+- [\[AAAI 2026\] Note2Chat: Improving LLMs for Multi-Turn Clinical History Taking Using Medical Notes](note2chat_improving_llms_for_multi-turn_clinical_history_taking_using_medical_no.md)
+
+</div>
+
+<!-- RELATED:END -->

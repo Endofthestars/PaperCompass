@@ -1,0 +1,154 @@
+---
+title: >-
+  [论文解读] DMesh++: An Efficient Differentiable Mesh for Complex Shapes
+description: >-
+  [ICCV 2025][3D视觉][可微网格] 本文提出DMesh++，通过Minimum-Ball算法替代加权Delaunay三角剖分实现可微网格的tessellation函数，将计算复杂度从 $O(N)$ 降至 $O(\log N)$，在处理复杂形状时速度提升最高32倍，同时保持无自交叉和少薄三角形的优良特性。
+tags:
+  - "ICCV 2025"
+  - "3D视觉"
+  - "可微网格"
+  - "三角剖分"
+  - "点云重建"
+  - "多视图重建"
+  - "Minimum-Ball算法"
+---
+
+# DMesh++: An Efficient Differentiable Mesh for Complex Shapes
+
+**会议**: ICCV 2025  
+**arXiv**: [2412.16776](https://arxiv.org/abs/2412.16776)  
+**代码**: 项目页面提供  
+**领域**: 3D视觉  
+**关键词**: 可微网格, 三角剖分, 点云重建, 多视图重建, Minimum-Ball算法
+
+## 一句话总结
+本文提出DMesh++，通过Minimum-Ball算法替代加权Delaunay三角剖分实现可微网格的tessellation函数，将计算复杂度从 $O(N)$ 降至 $O(\log N)$，在处理复杂形状时速度提升最高32倍，同时保持无自交叉和少薄三角形的优良特性。
+
+## 研究背景与动机
+
+三角网格因其效率、灵活性和可控性，是下游任务（渲染、仿真等）中最常用的形状表示。然而网格的连接关系（connectivity）本质上是离散的，且可能的连接关系随顶点数呈指数增长，使其难以成为可微的形状表示。
+
+现有解决方案及其局限性：
+- **神经隐式表示**（如SDF/UDF + Marching Cubes）：高效但通常不能处理开放表面和非可定向几何
+- **数据驱动方法**（如MeshGPT, SpaceMesh）：基于Transformer预测连接关系，但对outlier和自交叉不鲁棒
+- **DMesh**：Son et al.提出的概率方法，通过加权Delaunay三角剖分（WDT）为每个面计算存在概率，避免自交叉和outlier，但WDT的计算复杂度为 $O(N)$，且难以GPU并行化，N=100K时在3D中需800ms
+
+核心矛盾：**DMesh的概率化方法在理论上优雅，但WDT的计算瓶颈严重限制了其处理复杂形状的能力**。
+
+本文的核心idea：**设计Minimum-Ball条件替代WDT，不仅保持了DMesh无自交叉和少薄三角形的优势，还将复杂度降低到 $O(\log N)$，实现高效的GPU并行化**。
+
+## 方法详解
+
+### 整体框架
+
+DMesh++延续DMesh的概率化思想：每个点用 $(d+1)$ 维向量表示（$d$ 维位置 + $\psi$ real值），不再需要WDT权重 $w$。面 $F$ 的存在概率为 $\Lambda(F) = \Lambda_{min}(F) \times \Lambda_{real}(F)$，其中 $\Lambda_{min}$ 判断面是否满足Minimum-Ball条件，$\Lambda_{real}$ 判断面的顶点是否在形状表面上。
+
+重建过程采用多阶段优化：(1) 初始化点特征；(2) 优化点位置；(3) 优化real值；(4) 细分网格增加细节；(5) 迭代上述过程。
+
+### 关键设计
+
+1. **Minimum-Ball条件（Definition 3.1）**：
+
+    - 功能：定义面 $F$ 的最小包围球 $B_F$（过 $F$ 所有顶点的最小半径球），如果 $B_F$ 内部不包含 $\mathbb{P}$ 中的其他点，则 $F \in \mathbb{F}_{min}$
+    - 核心思路：将判断面是否合法转化为最近邻搜索问题。计算 $B_F$ 的中心 $B_F^c$ 和半径 $B_F^r$，然后查找 $B_F^c$ 在 $\mathbb{P}-F$ 中的最近邻：
+    $d(B_F, \mathbb{P}) = \min_{p \in \mathbb{P}-F} ||p - B_F^c|| - B_F^r$
+      $F \in \mathbb{F}_{min} \Leftrightarrow d(B_F, \mathbb{P}) > 0$
+    - 设计动机：最近邻搜索可高度并行化（GPU上利用KD-tree），而WDT由于固有的竟态条件几乎无法并行化
+
+2. **可微概率计算**：
+
+    - 功能：将离散的Minimum-Ball条件用sigmoid函数软化为连续概率
+    - 核心思路：
+    $\Lambda_{min}(F) = \sigma(d(B_F, \mathbb{P}) \cdot \alpha_{min})$
+      其中 $\alpha_{min}$ 是控制sharpness的常数。$B_F$ 的中心和半径可通过解几何方程以可微方式计算
+    - 设计动机：保持梯度可传播，使得优化点位置时网格拓扑可以动态变化
+
+3. **理论保证**：
+
+    - $\mathbb{F}_{min} \subseteq \mathbb{F}_{dt}$（Minimum-Ball面集是Delaunay三角化面集的子集），因此继承无自交叉特性
+    - 虽然 $\mathbb{F}_{min}$ 不一定tessellate整个凸包，但这恰好有利于形状重建（不强制填充不应存在的"imaginary"面）
+    - Minimum-Ball最小化薄三角形的出现（继承自Delaunay三角化的性质）
+
+4. **重建流程优化**：
+
+    - 多阶段优化：分别优化位置和real值，避免同时优化导致的不稳定
+    - 网格细分：通过在现有面上插入新点来增加细节
+    - 损失函数：点云重建使用Chamfer Distance；多视图重建使用可微渲染损失
+
+### 损失函数 / 训练策略
+
+- 点云重建：主要最小化Chamfer Distance loss
+- 多视图重建：可微渲染loss + 每阶段分步优化（位置→real值→颜色）
+- 周期性缓存最近邻加速优化过程
+- 所有实验在AMD EPYC 7R32 CPU + NVIDIA A10 GPU上进行
+
+## 实验关键数据
+
+### 主实验（3D点云重建，50个手选模型）
+
+| 方法 | CD(×10⁻³)↓ | F1↑ | NC↑ | AR↓ | SI↓ | 顶点数 | 面数 | 时间(s) |
+|------|-----------|-----|-----|-----|-----|--------|------|---------|
+| VoroMesh | 19.591 | 0.352 | 0.855 | 145.7 | 0 | 64561 | 129338 | 11 |
+| PSR | 10.164 | 0.392 | 0.943 | 5.218 | 0 | 139857 | 279739 | 4 |
+| PoNQ | 1.578 | 0.402 | 0.934 | 2.288 | 0 | 47254 | 94664 | 32 |
+| DMesh | 0.154 | 0.289 | 0.921 | 1.961 | 0 | 5815 | 13088 | 1147 |
+| **DMesh++** | **0.033** | **0.480** | **0.938** | **1.814** | 0 | 25396 | 55546 | **282** |
+
+### 消融实验（tessellation效率对比）
+
+| 配置 | 2D速度 | 3D速度 | GPU内存 |
+|------|--------|--------|---------|
+| DMesh (WDT) | 基准 | 基准 | 基准 |
+| DMesh++ (Minimum-Ball) | **16x快** | **32x快** | **减少75-96%** |
+| N=200K, 3D | DMesh: ~800ms | DMesh++: **168ms** | 显著更少 |
+
+### 关键发现
+
+- DMesh++ 在CD (Chamfer Distance) 指标上相比DMesh提升约5倍（0.033 vs 0.154），同时重建时间减少约4倍（282s vs 1147s）
+- 在500个随机Thingi10K模型上，DMesh++在闭合/开放表面的CD均显著优于所有基线
+- GPU内存使用大幅降低：2D下减少96%，3D下减少75%
+- DMesh在处理复杂2D绘图时GPU显存耗尽而失败，DMesh++可以成功重建
+- 与基于隐式表示的方法（PSR, PoNQ）相比，DMesh++在CD和F1上更优，且能处理开放表面
+
+## 亮点与洞察
+
+1. **算法替换的巧妙性**：Minimum-Ball条件在数学上优雅地替代了WDT，不仅保持了所有理论保证（无自交叉、少薄三角形），还将问题转化为高度可并行的最近邻搜索
+2. **渐进式的拓扑变化**：在优化连续点特征的过程中，离散的网格拓扑会自然地动态变化（如Figure 3所示的花瓶重建过程），这种连续-离散结合的方式非常吸引人
+3. **通用的2D/3D适配**：同一框架可以处理2D线段网格和3D三角网格，展示了方法的理论通用性
+4. **实用价值**：作为ML pipeline中可微网格的基础组件，可被生成模型（如MeshGPT变体）直接采用
+
+## 局限与展望
+
+- $\mathbb{F}_{min}$ 是 $\mathbb{F}_{dt}$ 的严格子集，因此生成的网格可能有"空洞"（某些Delaunay面不在Minimum-Ball集中）
+- 多视图重建的质量与NeuS等隐式方法仍有差距
+- 重建时间（282秒/模型）在实际应用中仍然较慢
+- 需要以点云或多视图图像作为输入，不支持从单图/文本直接生成
+- 尚未将DMesh++与大规模生成模型结合验证
+
+## 相关工作与启发
+
+- DMesh [Son et al., NeurIPS 2024] 是直接前身，本文解决了其核心计算瓶颈
+- FlexiCubes [Shen et al.] 和 DMTet [Shen et al.] 是基于可微等值面提取的替代方案，但不能处理开放表面
+- 启示：在机器学习中使用mesh表示时，关键不是让mesh本身可微，而是让**决定mesh存在的条件**可微
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ Minimum-Ball条件是对WDT的精妙替代，理论贡献清晰
+- 实验充分度: ⭐⭐⭐⭐ 500+模型验证充分，但多视图重建的对比方法较少
+- 写作质量: ⭐⭐⭐⭐⭐ 层次分明，从理论到实现到实验逻辑严密
+- 价值: ⭐⭐⭐⭐ 解决了DMesh的核心瓶颈，使可微网格在复杂形状上变得实用
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] χ: Symmetry Understanding of 3D Shapes via Chirality Disentanglement](kh_symmetry_understanding_of_3d_shapes_via_chirality_disentanglement.md)
+- [\[ICCV 2025\] Representing 3D Shapes with 64 Latent Vectors for 3D Diffusion Models](representing_3d_shapes_with_64_latent_vectors_for_3d_diffusion_models.md)
+- [\[ICCV 2025\] Radiant Foam: Real-Time Differentiable Ray Tracing](radiant_foam_real-time_differentiable_ray_tracing.md)
+- [\[ICCV 2025\] MeshAnything V2: Artist-Created Mesh Generation with Adjacent Mesh Tokenization](meshanything_v2_artist-created_mesh_generation_with_adjacent_mesh_tokenization.md)
+- [\[ICCV 2025\] REPARO: Compositional 3D Assets Generation with Differentiable 3D Layout Alignment](reparo_compositional_3d_assets_generation_with_differentiable_3d_layout_alignmen.md)
+
+</div>
+
+<!-- RELATED:END -->

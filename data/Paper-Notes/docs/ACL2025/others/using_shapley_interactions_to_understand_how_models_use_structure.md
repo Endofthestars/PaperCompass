@@ -1,0 +1,133 @@
+---
+title: >-
+  [论文解读] Using Shapley Interactions to Understand How Models Use Structure
+description: >-
+  [ACL 2025][Shapley交互] 利用Shapley Taylor交互指数（STII）跨模态（文本+语音）系统分析语言模型如何通过非线性交互编码句法结构、非组合语义和语音协同发音，发现自回归模型在句法编码上显著优于遮蔽模型。 领域现状 领域现状：领域现状： Shapley值等特征归因方法是理解神经网络的重要工具…
+tags:
+  - "ACL 2025"
+  - "Shapley交互"
+  - "句法结构"
+  - "多词表达"
+  - "语音模型"
+  - "非线性表征"
+---
+
+# Using Shapley Interactions to Understand How Models Use Structure
+
+**会议**: ACL 2025  
+**arXiv**: [2403.13106](https://arxiv.org/abs/2403.13106)  
+**代码**: 无  
+**领域**: 其他  
+**关键词**: Shapley交互, 句法结构, 多词表达, 语音模型, 非线性表征
+
+## 一句话总结
+
+利用Shapley Taylor交互指数（STII）跨模态（文本+语音）系统分析语言模型如何通过非线性交互编码句法结构、非组合语义和语音协同发音，发现自回归模型在句法编码上显著优于遮蔽模型。
+
+## 研究背景与动机
+
+### 领域现状
+
+**领域现状**：**领域现状**: Shapley值等特征归因方法是理解神经网络的重要工具，但其假设特征独立线性可加，忽略了非线性交互。**现有痛点**: 已有Shapley交互工作仅限于LSTM等旧架构和简单分类任务，未扩展到现代Transformer和多模态场景。**核心矛盾**: 语言数据高度结构化，线性归因无法揭示模型如何编码结构中的依赖关系。**本文目标**: 验证STII能否跨模态捕获模型对语言结构的编码。**切入角度**: 将STII与三种已知语言结构（句法、语义组合性、语音协同发音）关联分析。**核心idea**: 结构上关联紧密的特征对应展现更强的非线性交互。
+
+## 方法详解
+
+### 整体框架
+
+使用STII测量成对特征的非线性交互强度，在控制位置距离的条件下，检验句法距离、多词表达归属、音素类型等与STII的关系。
+
+### 关键设计
+
+1. **STII计算与位置控制**:
+    - 功能：计算成对特征的Shapley Taylor交互指数并控制位置效应
+    - 核心思路：$\text{STII}_{A,B} = \frac{\| \phi(\emptyset) - \phi(A) - \phi(B) + \phi(A,B) \|_2}{\| \phi(\emptyset) \|_2}$，用Monte Carlo排列采样近似。定义交互对距离 $d_i$ 和预测距离 $d_p$ 做分层控制
+    - 设计动机：STII测量联合影响超出独立之和的部分——正是非线性结构编码信号。分层控制消除位置效应混淆
+
+2. **三层结构关联分析**:
+    - 功能：将STII分别与句法结构、非组合语义（MWE）、语音协同发音关联
+    - 核心思路：(a)句法：spaCy依存树+Spearman相关；(b)语义：AMALGrAM标注强/弱MWE，比较MWE内外STII差异；(c)语音：Wav2Vec 2.0+蒙特利尔对齐器，比较辅音-元音vs辅音-辅音边界STII
+    - 设计动机：三层面都验证通过则证明STII作为通用可解释性工具的价值
+
+3. **自回归vs遮蔽模型对比**:
+    - 功能：GPT-2和BERT-base做相同实验对比
+    - 核心思路：相同STII分析下对比两种训练目标对句法的敏感性
+    - 设计动机：验证训练目标是否导致模型以不同方式编码句法关系
+
+### 损失函数 / 训练策略
+
+分析性研究，使用预训练模型直接分析，不涉及训练。输入截断到20 token，logit输出应用softmax确保可比。
+
+## 实验关键数据
+
+### 主实验
+
+| 实验 | GPT-2（自回归） | BERT（遮蔽） |
+|------|:---:|:---:|
+| 位置效应 | STII随距离单调递减 ✓ | STII随距离单调递减 ✓ |
+| 句法距离vs STII | 所有显著cell均为**负相关** | 正负混合不一致 |
+| 强MWE交互增强 | 强MWE > 弱MWE > 一般对 ✓ | 强MWE > 弱MWE > 一般对 ✓ |
+
+语音模型（Wav2Vec 2.0）：
+
+| 比较 | 平均STII |
+|------|:---:|
+| 辅音-元音边界 | **显著更高** |
+| 辅音-辅音边界 | 较低 |
+| 高响度辅音 | 更高（类似元音）|
+| 低响度辅音 | 较低 |
+
+### 消融实验
+
+位置效应基线：
+
+| 距离类型 | GPT-2 | BERT |
+|---------|:---:|:---:|
+| $d_i$ ↑ | STII单调↓ | STII单调↓ |
+| $d_p$ ↑ | STII急剧↓ | STII急剧↓ |
+
+### 关键发现
+
+1. **自回归 vs 遮蔽差异**：GPT-2中句法距离与STII一致负相关，BERT不一致——自回归训练目标更倾向学习句法
+2. **非组合语义体现为非线性交互**：强MWE（如kick the bucket）交互强于弱MWE——且在两种模型中均成立
+3. **语音模型捕获协同发音**：辅音-元音交互强于辅音-辅音，高响度辅音STII更高——完美印证语音学理论
+
+## 亮点与洞察
+
+- **跨模态统一分析**：文本+语音、生成+识别——STII作为通用可解释性工具
+- **揭示训练目标对结构编码的深层影响**——不是性能差异，是编码机制差异
+- **语音实验用IPA辅音图作为热力图layout**——使语音学规律直观呈现
+
+## 局限与展望
+
+- 仅GPT-2/BERT-base等小模型，结论可能不适用于大模型
+- 仅成对交互，未探索更高阶交互对应的层级结构
+- 相关性而非因果分析
+
+## 相关工作与启发
+
+- **vs 线性探针（structural probe）**：检测可线性提取的结构信息；STII检测非线性编码——互补
+- **vs Saphra & Lopez (2020)**：本文扩展到Transformer + 多种语言结构 + 语音
+- **启发**：模型的非线性处理是可解释性的核心缺失——线性分析只能触及冰山一角
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 首次系统地将Shapley交互与多种语言结构关联
+- 实验充分度: ⭐⭐⭐ 分析深入但模型规模有限
+- 写作质量: ⭐⭐⭐⭐ 理论框架清晰，实验设计巧妙
+- 价值: ⭐⭐⭐⭐ 为NLP可解释性提供了新方法论视角
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] ProxAnn: Use-Oriented Evaluations of Topic Models and Document Clustering](proxann_topic_model_eval.md)
+- [\[ACL 2025\] LaTIM: Measuring Latent Token-to-Token Interactions in Mamba Models](latim_measuring_latent_token-to-token_interactions_in_mamba_models.md)
+- [\[AAAI 2026\] HyperSHAP: Shapley Values and Interactions for Explaining Hyperparameter Optimization](../../AAAI2026/others/hypershap_shapley_values_and_interactions_for_explaining_hyperparameter_optimiza.md)
+- [\[AAAI 2026\] How to Marginalize in Causal Structure Learning?](../../AAAI2026/others/how_to_marginalize_in_causal_structure_learning.md)
+- [\[ACL 2025\] The Harmonic Structure of Information Contours](the_harmonic_structure_of_information_contours.md)
+
+</div>
+
+<!-- RELATED:END -->

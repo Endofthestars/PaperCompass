@@ -1,0 +1,165 @@
+---
+title: >-
+  [论文解读] Track, Inpaint, Resplat: Subject-driven 3D and 4D Generation with Progressive Texture Infilling
+description: >-
+  [NeurIPS 2025][图像生成][主体驱动生成] 提出TIRE（Track, Inpaint, REsplat）三阶段管线，通过视频跟踪定位未观测区域、主体驱动修复模型渐进式填充纹理、多视图一致性反投影回3D，实现身份保持的3D/4D生成。 当前3D/4D生成方法（如LGM、L4GM、TRELLIS、Hunyuan3…
+tags:
+  - "NeurIPS 2025"
+  - "图像生成"
+  - "主体驱动生成"
+  - "3D/4D生成"
+  - "身份保持"
+  - "纹理填充"
+  - "视频跟踪"
+---
+
+# Track, Inpaint, Resplat: Subject-driven 3D and 4D Generation with Progressive Texture Infilling
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.23605](https://arxiv.org/abs/2510.23605)  
+**代码**: [项目页面](https://zsh2000.github.io/track-inpaint-resplat.github.io/)  
+**领域**: 扩散模型 / 图像生成  
+**关键词**: 主体驱动生成, 3D/4D生成, 身份保持, 纹理填充, 视频跟踪
+
+## 一句话总结
+
+提出TIRE（Track, Inpaint, REsplat）三阶段管线，通过视频跟踪定位未观测区域、主体驱动修复模型渐进式填充纹理、多视图一致性反投影回3D，实现身份保持的3D/4D生成。
+
+## 研究背景与动机
+
+当前3D/4D生成方法（如LGM、L4GM、TRELLIS、Hunyuan3D等）主要关注逼真度、效率和美观性，但在多视角下**语义身份(identity)一致性**方面表现很差。给定一张参考图，生成的3D/4D资产在侧面和背面往往出现颜色偏差、纹理不一致等问题。
+
+**现有方案的局限**：
+
+**SDS优化方法**：时间开销极大，且优化过程中外观和动作会被平均化
+
+**多视图扩散模型**：在新视角上存在系统性颜色和外观偏差（训练数据偏差导致）
+
+**原生3D生成**（TRELLIS、Hunyuan3D-v2.5等）：虽然效率高，但仍无法满意地保持参考图的身份特征
+
+**核心矛盾**：高效3D生成与身份保持之间的矛盾。现有方法在forward pass中只能根据有限的输入视角幻想未见区域，缺乏对主体身份的精确控制。
+
+**本文切入角度**：不直接改进3D生成模型，而是将其作为起点，用强大的2D视频跟踪和修复工具来渐进式修补3D资产中不正确的区域，属于与现有前馈式3D生成方法**正交互补**的方向。
+
+## 方法详解
+
+### 整体框架
+
+TIRE以现有3D/4D生成模型（如LGM、L4GM）的输出作为起点，渲染多视角观测，然后经过三个阶段：Track（追踪需修补区域）→ Inpaint（渐进式身份保持修复）→ Resplat（反投影回3D）。
+
+### 关键设计
+
+1. **Track（追踪阶段）— 反向追踪定位修补区域**：
+
+    - 将多视角渲染帧按相机运动顺序拼成视频
+    - 使用CoTracker视频跟踪模型寻找源视角与目标视角的对应关系
+    - **关键创新**：采用**反向追踪 (backward tracking)**而非正向追踪。从目标视角追踪到源视角，因为源视角包含最丰富的主体身份信息，能建立尽可能多的对应关系
+    - 正向追踪会导致零碎的小修补区域，产生颗粒状伪影；反向追踪生成更准确、更适合修复的mask
+    - 此方法对3D表示类型无关，通用性强
+
+2. **Inpaint（修复阶段）— 渐进式身份保持纹理填充**：
+
+    - 在预训练Stable Diffusion修复模型中注入LoRA权重
+    - 损失函数仅在前景有效区域内计算：$\mathcal{L} = m_v \odot [\epsilon_\theta(x_t, t, p, m_i, (1-m_i) \odot x) - \epsilon]$
+    - **渐进式策略**的关键设计：
+        - 第一步：只用原始源视角图+数据增强（翻转+15°小旋转）训练
+        - 第二步：先修复"甜蜜点" $\pm 20°$ 视角（探索与利用的平衡）
+        - 第三步：以 $\pm 20°$ 作为锚点，通过反向追踪扩展到 $\pm 90°$
+        - 第四步：以 $\pm 90°$ 作为锚点，继续修复到 $\pm 180°$
+    - 去噪只使用前30%的schedule，避免过度改变原有结构
+    - 设计动机：远离源视角的视图与源视角差异巨大，直接修复效果差，渐进式拓展确保每一步的修复都有可靠的上下文
+
+3. **Resplat（反投影阶段）— 多视图一致性3D重建**：
+
+    - 各帧独立修复可能存在跨视角不一致
+    - 引入多视图扩散模型进行一致性精炼，采用mask-aware的潜变量更新：$z_{t-1} = \tilde{z}_{t-1} \odot M + \hat{z}_{t-1} \odot (1-M)$
+    - 源视角的潜变量保持不变（$M=0$），仅更新其他视角（$M=1$），强制保持源视角身份
+    - 同样只用前30%的去噪schedule
+    - 最后用LGM/L4GM将多视图观测反投影为3D高斯
+
+### 损失函数 / 训练策略
+
+- 训练损失为标准修复损失，但限制在有效前景mask内
+- LoRA注入预训练修复模型，参数高效
+- 固定文本提示 "A photo of sks"
+- 不需要额外3D数据或大规模微调
+
+## 实验关键数据
+
+### 主实验 — DINO身份相似度 (Video-to-4D)
+
+| 方法 | DINO (ViT-S/16) ↑ | DINO (ViT-B/16) ↑ |
+|------|-------|-------|
+| Customize-It-3D | 0.5773 | 0.6087 |
+| SV4D | 0.5213 | 0.5426 |
+| STAG4D | 0.5287 | 0.5592 |
+| L4GM | 0.5506 | 0.5694 |
+| **TIRE (本文)** | **0.5665** | **0.5815** |
+
+### VLM多维度身份保持评估 (Image-to-3D)
+
+| 方法 | GPT-4o | o4-mini | Gemma 3 27B | Gemini 2.0 | Qwen2.5-VL | Mistral | **平均** |
+|------|--------|---------|-------------|------------|------------|---------|----------|
+| TRELLIS | 1.332 | 1.426 | 1.870 | 1.402 | 1.596 | 1.228 | 1.476 |
+| Hunyuan3D-v2.5 | 1.614 | 1.690 | 2.098 | 1.533 | 1.780 | 1.501 | 1.703 |
+| **TIRE (本文)** | **1.777** | **1.834** | **2.103** | **1.793** | **1.880** | **1.739** | **1.854** |
+
+### 消融实验
+
+| 配置 | 效果 |
+|------|------|
+| w/o 渐进式修复 | 模型在所有视角都填充源视角的正面纹理（如侧面出现猫脸胡须） |
+| 去噪schedule 15% | 部分区域未被修改 |
+| 去噪schedule 30% (默认) | 最佳平衡 |
+| 去噪schedule 50% | 纹理变化过于剧烈，真实感降低 |
+
+### 关键发现
+
+- 即使是最先进的TRELLIS和Hunyuan3D-v2.5，在身份保持上仍然表现不佳，说明该问题尚未被解决
+- 用户研究(18人×10样本)显示TIRE在整体质量上得分最高，且未提前告知评估重点
+- TIRE不仅改善了外观身份保持，还附带改善了几何质量（减少了跨视角不一致导致的伪影）
+- 所有方法的VLM评分都远低于满分4分，说明主体驱动3D/4D生成远未解决
+
+## 亮点与洞察
+
+- **方法通用性强**：只需操作2D渲染帧，不依赖特定3D表示，可适配任何3D/4D生成方法
+- **渐进式策略设计精巧**："甜蜜点"概念很好地平衡了探索(看到更多未见区域)和利用(修复质量可靠)
+- **反向追踪的洞察**：源视角信息最丰富，从目标反追回源能最大化利用已知信息
+- **发现DINO指标的局限**：Customize-It-3D的DINO分最高但定性效果最差，揭示了传统评估指标对3D身份保持评估的不适用
+
+## 局限与展望
+
+- 依赖现有3D生成模型的初始质量——如果初始3D资产几何严重错误则难以补救
+- 多阶段管线，流程较复杂，端到端推理速度受限于修复模型微调
+- 固定的去噪schedule比例(30%)可能对不同场景不是最优
+- 背面区域完全靠幻想，严重遮挡场景可能效果有限
+- 渐进修复的"甜蜜点"角度选择($\pm 20°$)是经验值，缺乏自适应机制
+
+## 相关工作与启发
+
+- 与DreamBooth3D相比，TIRE不依赖image-to-image translation而是利用更精准的视频跟踪+修复
+- RealFill的主体驱动修复思想被扩展到3D场景
+- 提供了一个与前馈式3D/4D生成正交的研究方向，两者可以协同进步
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ — 将2D视频跟踪+修复巧妙组合用于3D身份保持是新颖的思路
+- **实验充分度**: ⭐⭐⭐⭐ — 涵盖image-to-3D和video-to-4D，包含VLM评估和用户研究
+- **写作质量**: ⭐⭐⭐⭐ — 动机清晰，方法描述详尽，图示直观
+- **价值**: ⭐⭐⭐⭐ — 作为现有3D生成的后处理增强方案有实际意义，通用性好
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Diffusion-Driven Progressive Target Manipulation for Source-Free Domain Adaptation](diffusion-driven_progressive_target_manipulation_for_source-free_domain_adaptati.md)
+- [\[CVPR 2026\] FlowFixer: Towards Detail-Preserving Subject-Driven Generation](../../CVPR2026/image_generation/flowfixer_towards_detail-preserving_subject-driven_generation.md)
+- [\[NeurIPS 2025\] OmniVCus: Feedforward Subject-driven Video Customization with Multimodal Control Conditions](omnivcus_feedforward_subject-driven_video_customization_with_multimodal_control_.md)
+- [\[NeurIPS 2025\] Mind-the-Glitch: Visual Correspondence for Detecting Inconsistencies in Subject-Driven Generation](mind-the-glitch_visual_correspondence_for_detecting_inconsistencies_in_subject-d.md)
+- [\[ECCV 2024\] HybridBooth: Hybrid Prompt Inversion for Efficient Subject-Driven Generation](../../ECCV2024/image_generation/hybridbooth_hybrid_prompt_inversion_for_efficient_subject-driven_generation.md)
+
+</div>
+
+<!-- RELATED:END -->

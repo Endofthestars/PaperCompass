@@ -1,0 +1,145 @@
+---
+title: >-
+  [论文解读] LESA: Learnable LLM Layer Scaling-Up
+description: >-
+  [ACL 2025][LLM 其他][模型扩展] 提出 LESA，一种基于 SVD 发现层间潜在模式并通过神经网络预测中间层参数的可学习深度扩展方法，相比启发式层复制方法获得更好的初始化和更快的收敛速度，训练成本降低一半以上。 从头训练大语言模型（LLM）需要巨大的计算资源，模型扩展（Model Scaling-Up）通过利…
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "模型扩展"
+  - "深度扩展"
+  - "SVD"
+  - "层间模式"
+  - "持续预训练"
+---
+
+# LESA: Learnable LLM Layer Scaling-Up
+
+**会议**: ACL 2025  
+**arXiv**: [2502.13794](https://arxiv.org/abs/2502.13794)  
+**代码**: [github.com/yangyifei729/LESA](https://github.com/yangyifei729/LESA)  
+**领域**: LLM/NLP  
+**关键词**: 模型扩展, 深度扩展, SVD, 层间模式, 持续预训练
+
+## 一句话总结
+
+提出 LESA，一种基于 SVD 发现层间潜在模式并通过神经网络预测中间层参数的可学习深度扩展方法，相比启发式层复制方法获得更好的初始化和更快的收敛速度，训练成本降低一半以上。
+
+## 研究背景与动机
+
+从头训练大语言模型（LLM）需要巨大的计算资源，模型扩展（Model Scaling-Up）通过利用小模型的参数来构建大模型，是一种降低成本的可行方案。现有的深度扩展方法主要分为两类：
+
+**插值法（Interpolation）**：在每一层之后插入该层的副本，如 LLaMA Pro
+
+**堆叠法（Stack）**：将连续的层作为一个组进行复制，如 SOLAR
+
+这些方法都依赖启发式规则进行层复制，存在以下局限性：
+- 忽视了层间参数变化的模式，新扩展的层只是简单复制之前的层
+- 无法实现层的专门化（layer specialization），导致模型初始化性能不佳
+- 在持续预训练中收敛速度慢，未能充分利用扩展后的容量
+
+作者首次观察到，通过对 Transformer 各层的参数进行拼接并做 SVD 分解后，层间参数在 SVD 空间中呈现出连续性等潜在模式，这启发了用神经网络来学习这些模式的思路。
+
+## 方法详解
+
+### 整体框架
+
+LESA 的核心流程分为三步：
+1. **SVD 分解**：提取各层的权重矩阵（q_proj, k_proj, v_proj, o_proj, up_proj, down_proj, gate_proj），水平拼接后做 SVD 分解，将每层的参数映射到统一的正交基空间中
+2. **训练预测网络**：在 SVD 空间中训练一个 MLP 网络 $\mathcal{G_W}$，输入相邻层的 SVD 系数，预测中间层的 SVD 系数
+3. **插入预测层**：用训练好的 $\mathcal{G_W}$ 预测相邻层之间的中间层参数，通过 $U\Sigma$ 重构回原始参数空间，插入模型中完成深度扩展
+
+### 关键设计
+
+**SVD 层间模式发现**：将 L 层模型的某一类权重矩阵 $\mathcal{W}_1, ..., \mathcal{W}_L$ 水平拼接为 $\mathcal{W} \in \mathbb{R}^{d_1 \times Ld_2}$，做 SVD 分解得到 $U, \Sigma, V^T$。每层 $\mathcal{W}_i$ 可以表示为 $U\Sigma V_i$，其中 $V_i$ 是该层在正交基 $U\Sigma$ 上的系数。通过 t-SNE 可视化 $V_i$ 的 top-1 特征向量，发现层间呈现出明显的连续性模式。
+
+**预测网络设计**：$\mathcal{G_W}$ 是一个三层 MLP（隐藏维度 256，ReLU 激活），对每种权重矩阵单独训练。输入 $[V_{i-1}, V_{i+1}]$（相隔一层的两层的 SVD 系数），目标是预测 $V_i$。训练样本来自连续三层的组合，例如 32 层模型可产生 30 个样本。
+
+### 损失函数 / 训练策略
+
+总损失由两部分组成：
+
+$$\mathcal{L} = (1-\lambda)\mathcal{L}_1 + \lambda \mathcal{L}_2$$
+
+- **MSE 损失** $\mathcal{L}_1$：预测值与真实 $V_i$ 之间的均方误差
+- **Norm 损失** $\mathcal{L}_2$：预测值的 L2 范数与真实 $V_i$ 的 L2 范数之间的均方误差
+
+加入 Norm 损失是为了防止直接用 $\mathcal{L}_1$ 训练时预测参数的范数趋近于零（参数退化问题）。超参数 $\lambda$ 设为 5e-5。
+
+训练 $\mathcal{G_W}$ 仅需 5 个 epoch，用时不到 5 分钟，计算开销可忽略不计。
+
+## 实验关键数据
+
+### 主实验
+
+在 Llama3-8B 上将 32 层扩展到 48 层（11.5B 参数），使用 Wikipedia 2024.11 数据做持续预训练：
+
+| 指标 | LESA-3k | LESA-6k | LLaMA Pro-6k | SOLAR-6k |
+|------|---------|---------|--------------|----------|
+| PPL | 5.27 | **5.13** | 5.44 | 8.09 |
+| 平均分 | **64.11** | **64.30** | 62.67 | 47.86 |
+| 训练时间 | - | **45.6h** | 56.4h(124%) | 75.6h(166%) |
+
+关键发现：
+- LESA-3k（仅用一半数据）已超过两个基线用全量数据训练的 6k 步结果
+- LESA 的初始 loss 最低，且在 2k 步就稳定，而 LLaMA Pro 需要 5k 步才达到相同水平
+- SOLAR 甚至无法收敛到较低的 loss 水平
+
+**SFT 后性能**：LESA-SFT 平均分 31.57（100%），LLaMA Pro-SFT 仅达到 77%，SOLAR-SFT 仅达到 84%
+
+### 消融实验
+
+1. **跨模型家族泛化性**：在 Llama3-8B/70B、Qwen2.5-1.5B/7B/32B、Mistral-Small-24B 上做 1.5x 扩展，LESA 的 PPL 始终优于 SOLAR。特别是 Qwen2.5-32B 上 SOLAR 出现 PPL 爆炸（INF），而 LESA 保持稳定
+2. **SVD 的作用**：去掉 SVD 后性能下降但仍优于 LLaMA Pro，证明 SVD 分解是有益的但非必需的
+3. **冻结层的作用**：不冻结原始参数时 loss 收敛更慢且有波动，验证了冻结策略的重要性
+4. **代码领域**：在 BigCode 上预训练后 HumanEval 得分：LESA 25.00 vs Pro 10.98 vs SOLAR 2.44
+
+### 关键发现
+
+- $\mathcal{G_W}$ 的测试 loss 与训练 loss 持平，说明确实学习到了层间的潜在模式，而非过拟合
+- 跨多个 Llama3 变体（含微调版本）训练时，150 个样本（120 训练/30 测试）也能有效学习
+- 预测网络的训练成本极低（<5 分钟），相比持续预训练几乎可以忽略
+
+## 亮点与洞察
+
+1. **首次发现层间模式**：通过 SVD 分解揭示了 Transformer 层间参数在低维空间中的连续性，这是一个有价值的理论发现
+2. **从复制到预测的范式转变**：不再简单复制层，而是通过学习层间关系来预测新层参数，获得了更好的初始化
+3. **极低的额外开销**：预测网络训练仅需 5 分钟，却能节省超过一半的持续预训练成本
+4. **广泛的适用性**：在不同模型家族和尺寸上都有效，且对特定领域（代码）预训练同样有效
+
+## 局限与展望
+
+- 尚未探索超过 3 倍参数量的大规模扩展，实际中大幅增加层数通常还需配合宽度扩展
+- 对 MoE 模型的研究尚处于初步阶段（预测层的路由器构建困难）
+- 层间连续性模式目前主要在 gate_proj 上通过 t-SNE 可视化观察到，其他参数矩阵的规律可能需要更先进的分析方法
+- 未探索与宽度扩展方法的结合
+
+## 相关工作与启发
+
+- **LLaMA Pro**（Wu et al., 2024）和 **SOLAR**（Kim et al., 2023）是两个主要的深度扩展基线
+- **Net2Net**（Chen et al., 2015）和 **LiGO**（Wang et al., 2023）是宽度扩展方法
+- SVD 在模型压缩和模型合并中已有应用，本文将其用于分析层间关系是一个新角度
+- 启发思考：是否可以将类似的层间模式发现方法应用于模型剪枝（反向操作）
+
+## 评分
+
+- **创新性**：⭐⭐⭐⭐ — SVD 发现层间模式 + 可学习扩展是新颖的思路
+- **实验完整性**：⭐⭐⭐⭐⭐ — 消融实验非常充分，跨模型、跨领域均有验证
+- **实用价值**：⭐⭐⭐⭐⭐ — 成本极低，效果显著，可直接用于实际的 LLM 扩展训练
+- **写作质量**：⭐⭐⭐⭐ — 逻辑清晰，图表丰富
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Genetic Instruct: Scaling up Synthetic Generation of Coding Instructions for Large Language Models](genetic_instruct_scaling_up_synthetic_generation_of_coding_instructions_for_larg.md)
+- [\[NeurIPS 2025\] Scaling Up Active Testing to Large Language Models](../../NeurIPS2025/llm_nlp/scaling_up_active_testing_to_large_language_models.md)
+- [\[ACL 2025\] TrimLLM: Progressive Layer Dropping for Domain-Specific LLMs](trimllm_layer_dropping.md)
+- [\[ACL 2025\] Reversal of Thought: Enhancing Large Language Models with Preference-Guided Reverse Reasoning Warm-up](reversal_of_thought_enhancing_large_language.md)
+- [\[ACL 2025\] Growing Through Experience: Scaling Episodic Grounding in Language Models](episodic_grounding_experience.md)
+
+</div>
+
+<!-- RELATED:END -->

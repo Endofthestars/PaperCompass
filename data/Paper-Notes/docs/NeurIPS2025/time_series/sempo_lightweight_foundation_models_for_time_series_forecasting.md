@@ -1,0 +1,158 @@
+---
+title: >-
+  [论文解读] SEMPO: Lightweight Foundation Models for Time Series Forecasting
+description: >-
+  [NeurIPS 2025][时间序列][时间序列基础模型] 提出SEMPO——仅用6.5M参数和83M时间点预训练的轻量级时间序列基础模型，通过能量感知频谱分解和混合提示Transformer，在零样本和少样本预测中超越参数量百倍以上的大型基础模型。 时间序列基础模型（FM）通过在大规模多领域数据上预训练…
+tags:
+  - "NeurIPS 2025"
+  - "时间序列"
+  - "时间序列基础模型"
+  - "轻量级"
+  - "频谱分解"
+  - "混合提示"
+  - "零样本/少样本预测"
+---
+
+# SEMPO: Lightweight Foundation Models for Time Series Forecasting
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.19710](https://arxiv.org/abs/2510.19710)  
+**代码**: [https://github.com/mala-lab/SEMPO](https://github.com/mala-lab/SEMPO)  
+**领域**: 时间序列预测  
+**关键词**: 时间序列基础模型, 轻量级, 频谱分解, 混合提示, 零样本/少样本预测
+
+## 一句话总结
+
+提出SEMPO——仅用6.5M参数和83M时间点预训练的轻量级时间序列基础模型，通过能量感知频谱分解和混合提示Transformer，在零样本和少样本预测中超越参数量百倍以上的大型基础模型。
+
+## 研究背景与动机
+
+时间序列基础模型（FM）通过在大规模多领域数据上预训练，实现零样本/少样本泛化，正在引领预测领域的范式转变。现有方法（如Chronos 710M参数、Time-MoE 453M参数、Moment 385M参数）依赖庞大的网络架构和海量预训练数据（数十亿甚至数千亿时间点），严重阻碍了在资源受限环境中的部署。
+
+**核心痛点**：
+
+**数据利用效率低**：现有FM的预训练对低能量频率信号存在偏差——Transformer的self-attention天然倾向于高能量频率分量，而低能量但携带稳定时间动态的信号被忽视（如Figure 1左图所示ChronosS完全忽略了低能量信号）
+
+**模型架构臃肿**：为容纳跨领域异构时间模式，大多数方案选择大型Transformer + MoE，参数量动辄数亿
+
+**核心矛盾**：通用性 vs 可负担性——能否在大幅缩减模型规模和预训练数据量的同时，保持甚至提升泛化能力？
+
+**本文切入角度**：双管齐下——
+1. 通过能量感知频谱分解（EASD）显著提升预训练数据的**利用效率**
+2. 通过混合提示Transformer（MoPFormer）用小型数据集特定提示替代大型MoE，实现**轻量化架构**
+
+## 方法详解
+
+### 整体框架
+
+SEMPO采用encoder-decoder架构，包含四个核心组件：EASD模块→Patchify & Project→MoPFormer骨干→重建/预测头。训练分为两阶段：能量感知预训练 + MoP调优。
+
+### 关键设计
+
+1. **能量感知频谱分解（EASD）**：
+
+    - **能量维度分割**：对输入时序做FFT变换到频域，计算每个频率的频谱能量 $\text{Energy}[f]=|Z[f]|^2$。用可学习阈值 $\tau$ 将频谱分为高能量分量 $Z_{\text{Hec}}$ 和低能量分量 $Z_{\text{Lec}}$，防止低能量被高能量淹没
+    - **频率维度掩码**：在高/低能量两个分支中，独立采样频率阈值 $\delta_i$ 和方向指示器 $d_i$，生成多组频段掩码 $M_i$，分别选择性抑制高频或低频段。两分支使用独立的采样参数（解耦设计）促进频谱多样性
+    - 最终融合：$X_{\text{mask}} = \text{iFFT}(Z_{\text{Hec}} \odot M_{\text{Hec}} + Z_{\text{Lec}} \odot M_{\text{Lec}})$
+
+2. **混合提示Transformer（MoPFormer）**：
+
+    - **提示专家池**：随机初始化 $I=128$ 个轻量级提示向量 $\mathbf{e}_i \in \mathbb{R}^{D_p}$
+    - **自适应路由器**：通过Linear+Softmax对每个token计算门控分数 $\mathbf{s}_{i,p}$，对提示专家进行加权融合：$\tilde{\mathbf{e}}_p = \text{Reshape}(\text{MLP}(\sum_i \mathbf{s}_{i,p} \cdot \mathbf{e}_i))$
+    - **注入self-attention**：融合后的提示拆分为key和value对，拼接到原始K、V矩阵中：$\text{SA} = \text{Attention}(Q=B, K=\text{Concat}(E_{\text{mix}}^K, B), V=\text{Concat}(E_{\text{mix}}^V, B))$
+    - 这样在不增大基础Transformer规模的前提下，注入数据集特定的知识，参数量极少
+
+3. **两阶段训练**：
+
+    - **预训练**：在多领域数据上用自监督重建目标（MSE），不使用MoP
+    - **MoP调优**：冻结Transformer骨干，仅训练MoP模块和预测头，使用多分辨率预测策略
+
+### 损失函数 / 训练策略
+
+- 预训练损失：$\mathcal{L}_{\text{pretrain}} = \|X_{1:L} - \hat{X}_{1:L}\|_2^2$
+- 调优损失：$\mathcal{L}_{\text{tuning}} = \sum_{H_r} \|X_{L+1:L+H_r} - \hat{X}_{L+1:L+H_r}\|_2^2 + \|X_{1:L} - \hat{X}_{1:L}\|_2^2$
+- 仅需4张A6000 GPU训练10小时，BF32精度，batch_size=2048
+
+## 实验关键数据
+
+### 主实验
+
+**零样本预测 - TSLib基准（平均MSE，H∈{96,192,336,720}）**
+
+| 模型 (参数/数据) | ETTh1 | ETTh2 | ETTm2 | Weather | Electricity |
+|-----------------|-------|-------|-------|---------|-------------|
+| SEMPO (6.5M/83M) | **0.410** | **0.341** | **0.286** | **0.248** | **0.196** |
+| Time-MoE-B (113M/309B) | 0.445 | 0.566 | 0.538 | 0.279 | - |
+| ChronosL (710M/84B) | 0.541 | 0.385 | 0.315 | 0.292 | 0.326 |
+| Moment (385M/1.13B) | 0.708 | 0.392 | 0.319 | 0.291 | 0.861 |
+| MoiraiB (91M/27B) | 0.433 | 0.360 | 0.339 | 0.312 | 0.207 |
+
+**少样本预测 (5%训练数据) - TSLib基准**
+
+| 模型 | ETTh1 | ETTh2 | ETTm1 | Weather | Traffic |
+|------|-------|-------|-------|---------|---------|
+| SEMPO | **0.406** | **0.320** | **0.363** | **0.230** | **0.410** |
+| TTM | 0.382 | 0.333 | 0.389 | 0.236 | 0.427 |
+| Time-LLM | 0.627 | 0.382 | 0.425 | 0.260 | 0.423 |
+| PatchTST | 0.694 | 0.827 | 0.526 | 0.269 | 0.418 |
+
+### 消融实验
+
+| 配置 | ETTh1 MSE | ETTh2 MSE | Weather MSE | Electricity MSE |
+|------|-----------|-----------|-------------|-----------------|
+| SEMPO (完整) | 0.410 | 0.341 | 0.248 | 0.196 |
+| A.1 多频段掩码(无能量分割) | 0.462 | 0.423 | 0.261 | 0.204 |
+| A.2 随机patch掩码 | 0.446 | 0.400 | 0.261 | 0.243 |
+| B.1 稀疏MoE(3专家,8.5M参数) | 0.441 | 0.358 | 0.253 | 0.223 |
+| B.2 前缀调优(替代MoP) | 0.430 | 0.359 | 0.268 | 0.217 |
+
+### 关键发现
+
+- SEMPO用6.5M参数+83M数据在零样本中平均MSE降低23.1%，超越参数量100倍+数据量1000倍以上的大型FM
+- 能量感知频谱分解是关键：替换为普通多频段掩码后MSE平均上升14%
+- MoP模块（6.5M参数）优于参数更多的稀疏MoE（8.5M参数），证明轻量化提示方案的高效性
+- 频谱可视化显示SEMPO能有效捕捉低能量但持续的频率信号，而ChronosS和MoiraiL主要关注高能量分量
+- 不同数据集的门控分数可视化显示同域数据集（如ETTh1和ETTm2）有相似路由模式，跨域数据集（如Traffic和Weather）有截然不同的模式
+
+## 亮点与洞察
+
+- **以小搏大的典范**：6.5M参数模型击败710M参数的ChronosL，核心在于数据利用效率和架构设计
+- **能量偏差问题的发现和解决**：揭示Transformer预训练中的能量偏差是一个重要贡献，对其他频域建模任务也有启发
+- **MoP设计的优雅性**：用128个提示向量+路由器替代庞大的MoE网络，参数效率极高
+- **两阶段训练策略**：预训练冻结MoP→调优冻结骨干，职责分离清晰
+
+## 局限与展望
+
+- 仅考虑单变量（channel independence），未建模多变量间的交互关系
+- 预训练数据规模（83M）虽然远小于竞品，但对真正资源受限的场景是否足够小待验证
+- 在ETTh1/ETTh2上少样本相对零样本提升有限，暗示模型在小规模/低变异性数据上的适应能力仍有改进空间
+- 未探索灵活的分布预测（仅做点预测），而非概率预测
+
+## 相关工作与启发
+
+- 能量感知思路可迁移到其他频域建模场景（如语音、信号处理）
+- MoP的设计启发：对于需要跨域泛化的轻量级模型，少量可学习提示 + 自适应路由可能是MoE的有效替代
+- 与TTM（轻量级mixer架构）的对比说明，即使在轻量级FM赛道中，SEMPO也具有优势
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ 能量感知频谱分解和MoP设计都是新颖且有理论依据的
+- 实验充分度: ⭐⭐⭐⭐⭐ 16个数据集、零样本/少样本、两大基准、完整消融和可视化分析
+- 写作质量: ⭐⭐⭐⭐ 结构清晰，图表丰富，动机阐述充分
+- 价值: ⭐⭐⭐⭐⭐ 以极小代价达到SOTA效果，对资源受限场景的时序预测有重大实用价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] How Foundational are Foundation Models for Time Series Forecasting?](how_foundational_are_foundation_models_for_time_series_forecasting.md)
+- [\[NeurIPS 2025\] Multi-Scale Finetuning for Encoder-based Time Series Foundation Models](multi-scale_finetuning_for_encoder-based_time_series_foundation_models.md)
+- [\[NeurIPS 2025\] Less is More: Unlocking Specialization of Time Series Foundation Models via Structured Pruning](less_is_more_unlocking_specialization_of_time_series_foundation_models_via_struc.md)
+- [\[NeurIPS 2025\] Frequency Matters: When Time Series Foundation Models Fail Under Spectral Shift](frequency_matters_when_time_series_foundation_models_fail_under_spectral_shift.md)
+- [\[NeurIPS 2025\] Towards Self-Supervised Foundation Models for Critical Care Time Series](towards_self-supervised_foundation_models_for_critical_care_time_series.md)
+
+</div>
+
+<!-- RELATED:END -->

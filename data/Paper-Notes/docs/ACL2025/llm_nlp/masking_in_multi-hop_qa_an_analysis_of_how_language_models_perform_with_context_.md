@@ -1,0 +1,144 @@
+---
+title: >-
+  [论文解读] Masking in Multi-hop QA: How LMs Perform with Context Permutation
+description: >-
+  [ACL 2025][LLM 其他][multi-hop QA] 通过系统性的文档排列实验和注意力权重分析，揭示因果掩码是 decoder-only LLM 在多跳问答中的结构性瓶颈，并证明将因果掩码替换为 prefix mask 可显著提升性能和鲁棒性。 领域现状：RAG 框架已成为搜索式对话代理（如 Copilot、豆包…
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "multi-hop QA"
+  - "causal mask"
+  - "注意力机制"
+  - "document permutation"
+  - "encoder-decoder"
+  - "prefix mask"
+---
+
+# Masking in Multi-hop QA: How LMs Perform with Context Permutation
+
+**会议**: ACL 2025  
+**arXiv**: [2505.11754](https://arxiv.org/abs/2505.11754)  
+**代码**: [https://github.com/hwy9855/MultiHopQA-Reasoning](https://github.com/hwy9855/MultiHopQA-Reasoning)  
+**领域**: LLM/NLP  
+**关键词**: multi-hop QA, causal mask, attention analysis, document permutation, encoder-decoder, prefix mask
+
+## 一句话总结
+
+通过系统性的文档排列实验和注意力权重分析，揭示因果掩码是 decoder-only LLM 在多跳问答中的结构性瓶颈，并证明将因果掩码替换为 prefix mask 可显著提升性能和鲁棒性。
+
+## 研究背景与动机
+
+**领域现状**：RAG 框架已成为搜索式对话代理（如 Copilot、豆包）的基础架构，其中多跳问答（MHQA）要求 LM 从多个检索文档中进行跨文档推理，远比单跳 QA 复杂。
+
+**现有痛点**：先前研究已发现 "lost in the middle" 问题——位于上下文中间的关键信息容易被 LM 忽略。但这些研究主要针对单跳 QA，多跳场景中因果掩码如何影响跨文档推理尚未被系统研究。
+
+**核心矛盾**：当前主流的 causal decoder-only LLM（如 Qwen、Llama）在训练和推理时使用因果掩码，前面的 token 无法看到后面的内容。这意味着在多跳推理中，如果第一跳文档排在第二跳文档之前，第一跳文档的 token 无法编码第二跳的信息，而推理链可能恰恰需要这种双向信息流。
+
+**本文切入点**：设计三种文档排列维度（顺序、距离、完整性），对比三个 LM 家族（Flan-T5 encoder-decoder、Qwen decoder-only、Llama decoder-only）在 MHQA 任务上的表现，并通过注意力权重分布深入分析模型的推理行为。
+
+**核心 idea**：金文档顺序与推理链方向一致时性能最优；双向注意力（prefix mask）可有效缓解因果掩码限制；注意力峰值可作为启发式信号筛选最优文档排列。
+
+## 方法详解
+
+### 任务定义与实验设置
+
+MHQA 任务输入包含一个问题 q 和 n 个文档（含 m 个金文档和干扰文档），模型需从金文档中进行多跳推理得出答案。实验基于 MuSiQue 数据集，包含 2-hop 到 4-hop 问题，每个问题最多 20 个文档，训练集 19,938 条，验证集 2,417 条。评估指标为精确匹配准确率（Acc）。
+
+实验覆盖四种推理设置：
+
+- **Answer Only (AO)**：直接生成答案（\boxed{answer} 格式）
+- **CoT**：零样本 Chain-of-Thought 推理后生成答案
+- **Finetuned (FT)**：在 MuSiQue 训练集上微调（LoRA, r=8, α=16, 5 epochs, lr=2e-5）
+- **Finetuned + Bi (FT+Bi)**：将因果掩码替换为 prefix mask 后微调，使输入部分获得双向注意力
+
+### 三种文档排列维度
+
+**1) 金文档顺序（Order）**：设计三种排列——Forward（金文档按推理链顺序排列）、Backward（金文档按推理链逆序排列）、Original（保持数据集原始顺序）。假设因果掩码在 Forward 设置下影响最小，因为后续 token 可以编码前面所有 hop 的信息。
+
+**2) 金文档距离（Distance）**：固定 Forward 顺序，在金文档之间插入 i 个干扰文档（i=0,1,2,3,4,5），且最后一跳文档固定在上下文末尾。用于测试文档间距离对推理的影响。
+
+**3) 金文档完整性（Completeness）**：Remove First 设置移除第一跳文档，测试模型是否真正进行多跳推理还是依赖参数知识猜测答案。
+
+### 注意力分析方法
+
+提出两个分析工具：
+
+**分组注意力权重（Grouped Attention Weight, GA）**：将 token 按块（指令块、文档块、问题块、预测块）分组，计算块间的平均注意力权重，将 token 级分析提升到文档级分析。
+
+**信息贡献分数（Information Contribution, IC）**：对所有注意力头和答案 token 取平均的分组注意力分数，度量每个文档对最终预测的信息贡献。IC 分数越高，说明模型在生成答案时越依赖该文档。
+
+### Prefix Mask 设计
+
+将 decoder-only 模型的因果掩码替换为前缀掩码——输入上下文部分（位置 ≤ c）的 token 之间可以双向关注，而生成部分仍保持因果约束。这使模型在编码阶段类似 encoder-decoder 架构，在生成阶段保持自回归特性。
+
+## 实验关键数据
+
+### 主实验：不同架构与设置的 MHQA 性能
+
+| 模型 | Answer Only | CoT | Finetuned | FT + Bi |
+|------|:-----------:|:---:|:---------:|:-------:|
+| Qwen2.5 0.5B | 8.94 | 12.91 | 27.14 | 30.30 |
+| Qwen2.5 1.5B | 20.36 | 22.76 | 44.06 | 44.78 |
+| Qwen2.5 3B | 19.78 | 24.82 | 50.23 | 52.15 |
+| Qwen2.5 7B | 28.59 | 36.24 | 58.05 | **62.96** |
+| Qwen2.5 14B | 37.07 | 39.22 | 64.34 | 64.88 |
+| Llama3.2 1B | 11.21 | 11.96 | 33.06 | 40.85 |
+| Llama3.2 3B | 25.73 | 31.65 | 54.57 | 59.60 |
+| Llama3.1 8B | 36.37 | 44.60 | 63.51 | 65.48 |
+
+微调后准确率普遍翻倍以上；加入 prefix mask 后在所有规模上均有进一步提升，其中 Llama3.2 1B 从 33.06 跳至 40.85（+7.79），提升最为显著。
+
+### Encoder-Decoder vs Decoder-Only 零样本对比
+
+| Flan-T5 模型 | Acc | 对应规模 Qwen Acc |
+|-------------|:---:|:-----------------:|
+| FT5 small (80M) | 20.11 | 8.94 (0.5B) |
+| FT5 base (250M) | 28.09 | 20.36 (1.5B) |
+| FT5 large (0.8B) | 40.01 | 19.78 (3B) |
+| FT5 xl (3B) | 47.33 | 28.59 (7B) |
+| FT5 xxl (11B) | 56.43 | 37.07 (14B) |
+
+Flan-T5 在零样本场景下全面碾压参数量大数倍的 decoder-only 模型。FT5 large（0.8B）达到 40.01%，超过 Qwen2.5 7B 的 28.59%——约 10 倍参数差距下仍大幅领先。此优势源于双向注意力编码和 Flan 指令微调数据的质量。
+
+### 文档顺序与距离的影响
+
+微调后的模型明显偏好 Forward 顺序（文档按推理链排列），所有微调模型在 Forward 设置下 Δ_F 均为正值。距离实验显示，非微调模型性能随金文档间距增大而显著下降；微调模型则对距离变化保持更强鲁棒性。关键发现：将 Forward 顺序的文档放在上下文末尾可获得显著性能提升，与 "lost in the middle" 现象一致。
+
+### 注意力峰值启发式提升
+
+通过对每个问题随机打乱文档顺序 20 次并选择注意力峰值（peak IC score）最高的排列，Qwen2.5 7B 的 Answer Only 准确率从 28.59% 提升至 33.7%（+5.1 个百分点），无需任何额外训练。正确回答的样本 IC 中位数为 2.22，错误样本仅 1.72，表明峰值 IC 是区分正确与错误预测的有效信号。
+
+## 亮点与洞察
+
+- **小模型胜大模型**：80M 的 FT5 small 零样本多跳性能（20.11%）已超过 500M 的 Qwen 0.5B（8.94%），证明架构选择在特定任务上比参数规模更重要
+- **Forward 偏好是涌现能力**：微调数据中文档顺序与 Forward/Backward 几乎无相关性（Spearman ρ=0.0013），但微调后模型自发偏好 Forward，这是训练过程中涌现的能力
+- **注意力峰值启发式**：免训练的文档排列优化方法，仅靠多次推理+注意力分析即可提升 5.1%，最优排列的性能几乎是最差排列的两倍
+- **模型"不知道自己不知道"**：去除第一跳文档后，微调模型在 4-hop 上准确率反而升高（56.2→57.2%），说明模型未能判断证据链是否完整，存在严重的归因问题
+- **最后位置偏好**：所有因果 decoder-only 模型在注意力分布上都偏好最后一个文档，这解释了将金文档置于末尾可获得性能增益
+
+## 局限与展望
+
+- 实验上下文长度较短（大多 ≤4k tokens），在长上下文场景中文档顺序和距离的影响可能更加剧烈
+- 仅在 MuSiQue 和 2WikiMultihopQA 上验证，其他 MHQA 数据集待验证
+- 注意力峰值启发式需要多次推理（20 次打乱），计算开销较大，实际应用需优化采样策略
+- 未探索自适应 mask 策略（如根据文档关系动态调整注意力模式）
+
+## 评分
+
+⭐⭐⭐⭐ 扎实的实验分析型工作，通过系统性的排列实验和注意力分析回答了一个重要的架构问题。三种排列维度设计巧妙，实验覆盖面广（13 个模型、4 种设置）。注意力峰值启发式虽朴素但有效。不足在于缺乏对更长上下文的验证，且 prefix mask 方案并非全新。
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Do Large Language Models Perform Latent Multi-Hop Reasoning without Exploiting Shortcuts?](do_large_language_models_perform_latent_multi-hop_reasoning_without_exploiting_s.md)
+- [\[ACL 2025\] LLMs can Perform Multi-Dimensional Analytic Writing Assessments](llm_writing_assessment.md)
+- [\[ACL 2025\] MIRAGE: Exploring How Large Language Models Perform in Complex Social Interactive Environments](mirage_exploring_how_large_language_models_perform_in_complex_social_interactive.md)
+- [\[ACL 2025\] Hierarchical Retrieval with Evidence Curation for Open-Domain Financial QA](hierarchical_retrieval_with_evidence_curation_for_open-domain_financial_question.md)
+- [\[ACL 2025\] ACT: Knowledgeable Agents to Design and Perform Complex Tasks](act_knowledgeable_agents_to_design_and_perform_complex_tasks.md)
+
+</div>
+
+<!-- RELATED:END -->

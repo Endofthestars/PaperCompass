@@ -1,0 +1,150 @@
+---
+title: >-
+  [论文解读] HyperSHAP: Shapley Values and Interactions for Explaining Hyperparameter Optimization
+description: >-
+  [AAAI 2026][超参数优化] HyperSHAP 提出一套基于 Shapley 值和 Shapley 交互的博弈论框架来解释超参数优化（HPO），通过定义消融、灵敏度、可调性和优化器偏差四类解释博弈，提供比 fANOVA 更具可操作性的超参数重要性分析。 超参数优化（HPO）是机器学习中获得强预测性能的关键步骤…
+tags:
+  - "AAAI 2026"
+  - "超参数优化"
+  - "Shapley 值"
+  - "可解释性"
+  - "博弈论"
+  - "超参数重要性"
+---
+
+# HyperSHAP: Shapley Values and Interactions for Explaining Hyperparameter Optimization
+
+**会议**: AAAI 2026  
+**arXiv**: [2502.01276](https://arxiv.org/abs/2502.01276)  
+**代码**: [GitHub](https://github.com/automl/HyperSHAP)  
+**领域**: 可解释 AI / 自动机器学习  
+**关键词**: 超参数优化, Shapley 值, 可解释性, 博弈论, 超参数重要性
+
+## 一句话总结
+
+HyperSHAP 提出一套基于 Shapley 值和 Shapley 交互的博弈论框架来解释超参数优化（HPO），通过定义消融、灵敏度、可调性和优化器偏差四类解释博弈，提供比 fANOVA 更具可操作性的超参数重要性分析。
+
+## 研究背景与动机
+
+超参数优化（HPO）是机器学习中获得强预测性能的关键步骤。然而不同超参数对模型泛化性能的影响高度依赖上下文——数据集特征、性能指标、搜索空间等都会影响超参数的重要性。这种复杂性使得 HPO 通常需要不透明的黑箱优化方法来寻找最优配置。
+
+现有 HPO 方法面临一个根本障碍：**缺乏可解释性**导致用户信任度低、采用率不足。现有研究表明，实践者甚至在高风险场景中倾向于手动调参而非使用 HPO 工具，核心原因是无法理解优化结果背后的逻辑。先前的超参数重要性分析方法主要基于 fANOVA（功能方差分析），通过方差分解来量化超参数影响。但 fANOVA 存在局限：它衡量的是"变化超参数引起的方差"而非"调优带来的性能提升"，且高度依赖配置空间和概率分布的选择。
+
+HyperSHAP 的核心思路是将 HPO 解释问题形式化为合作博弈论问题，用 Shapley 值分配各超参数对性能改善的贡献，用 Shapley 交互揭示超参数间的协同与冗余关系。与 fANOVA 相比，HyperSHAP 直接归因性能贡献而非方差分解，更具可操作性。
+
+## 方法详解
+
+### 整体框架
+
+HyperSHAP 定义了 5 个解释博弈（explanation game），覆盖四个 HPO 分析层面：消融分析（Ablation）、灵敏度分析（Sensitivity）、可调性分析（Tunability）、优化器偏差分析（Optimizer Bias）。每个博弈定义一个集合函数 $\nu: 2^{\mathcal{N}} \to \mathbb{R}$（$\mathcal{N}$ 为超参数集合），然后通过 Shapley 值（SV）和 Shapley 交互（SI）进行加性分解，得到各超参数的重要性得分和交互效应。
+
+### 关键设计
+
+1. **消融博弈（Ablation Game）**:
+
+    - 功能：量化从基线配置 $\bm{\lambda}^0$（如库默认值）到目标配置 $\bm{\lambda}^*$（如 HPO 结果）的性能变化中，各超参数的贡献
+    - 核心思路：对于子集 $S \subseteq \mathcal{N}$，构造中间配置 $\bm{\lambda}^* \oplus_S \bm{\lambda}^0$（仅 $S$ 中的超参数取目标值，其余取默认值），评估 $\nu_{G_A}(S) = \text{Val}_u(\bm{\lambda}^* \oplus_S \bm{\lambda}^0, D)$。这等价于 XAI 中的基线填充法
+    - 设计动机：传统消融研究（如 Fawcett 等人）仅沿单条路径逐个替换超参数，忽略交互。HyperSHAP 枚举所有子集组合，通过 Shapley 值公平捕获交互效应
+
+2. **灵敏度博弈（Sensitivity Game）**:
+
+    - 功能：量化在配置空间 $\bm{\Lambda}$ 上采样时，各超参数引起的性能方差
+    - 核心思路：$\nu_{G_V}(S) = \mathbb{V}_{\bm{\lambda} \sim p^*}[\text{Val}_u(\bm{\lambda} \oplus_S \bm{\lambda}^0, D)]$，即仅变动子集 $S$ 的超参数时产生的性能方差。fANOVA 实质上隐式依赖此博弈
+    - 设计动机：与 fANOVA 建立理论联系，揭示 fANOVA 分解对应于灵敏度博弈的 Möbius 交互
+
+3. **可调性博弈（Tunability Game）**:
+
+    - 功能：直接衡量调优子集 $S$ 的超参数所能获得的最大性能提升
+    - 核心思路：$\nu_{G_T}(S) = \max_{\bm{\lambda} \in \bm{\Lambda}} \text{Val}_u(\bm{\lambda} \oplus_S \bm{\lambda}^0, D)$，取最优值而非方差。该博弈满足**单调性**（$S \subseteq T \Rightarrow \nu(S) \leq \nu(T)$），因此 Shapley 值非负，且主效应非负
+    - 设计动机：灵敏度博弈的方差分解高度依赖分布 $p^*$ 和配置空间大小（域越大的超参数得分越低），且不区分"变好"和"变差"的方向。可调性博弈直接量化调优增益，更符合实际需求
+
+4. **优化器偏差博弈（Optimizer Bias Game）**:
+
+    - 功能：揭示特定 HPO 优化器在哪些超参数上存在系统性不足
+    - 核心思路：$\nu_{G_O}(S) = \text{Val}_u(\mathcal{O}(D, \bm{\Lambda}^S), D) - \nu_{G_T}(S)$，计算优化器返回结果与理论最优之间的差距
+    - 设计动机：帮助 HPO 研究者诊断优化器的弱点，如是否忽视了某些超参数的交互
+
+5. **多数据集扩展**:
+
+    - 通过聚合算子（均值或分位数）将单数据集博弈扩展为跨数据集博弈 $\nu_G^{\mathcal{D}}(S) = \bigoplus_{i=1}^M \nu_G^{D_i}(S)$
+    - 揭示哪些超参数在多任务上普遍值得调优
+
+### 近似与计算
+
+- 可调性博弈中求解 $\max_{\bm{\lambda}}$ 使用代理模型（如贝叶斯优化的代理）近似，误差有理论保证：代理误差为 $\epsilon$ 时，Shapley 值近似误差不超过 $2\epsilon$
+- 优化器偏差分析使用虚拟最佳优化器（多个优化器 + 随机搜索的集成）来近似真实最优
+- 所有联盟评估相互独立，高度可并行化
+
+## 实验关键数据
+
+### 主实验：可调性 vs 灵敏度的对比
+
+| 博弈类型 | 基线 $\bm{\lambda}^0 = (0,0)$ | 基线 $\bm{\lambda}^0 = \bm{\lambda}^*$ | 特点 |
+|---------|------|------|------|
+| 灵敏度 $\lambda_1$ | 1/4 | 1/4 | 不随基线变化 |
+| 灵敏度 $\lambda_2$ | $m/(m+1)^2$ | $m/(m+1)^2$ | 域越大得分越低 |
+| 可调性 $\lambda_1$ | 1 | 0 | 正确反映贡献 |
+| 可调性 $\lambda_2$ | 1 | 0 | 与 $\lambda_1$ 等同 |
+
+在教育性示例中，两个超参数对最优性能贡献相同，可调性博弈正确赋予等权重，而灵敏度博弈因域大小差异产生不公平。
+
+### 消融实验：HPO 子集选择任务
+
+| 方法 | 数据集 1 性能 | 数据集 2 性能 | 说明 |
+|------|-------------|-------------|------|
+| fANOVA（选 top-2 超参数调优） | 较低 | 较低 | 方差分解不直接对应调优增益 |
+| HyperSHAP-Sensitivity | 中等 | 中等 | 灵敏度博弈 |
+| HyperSHAP-Tunability | **最高** | **最高** | 可调性博弈最适合子集选择 |
+
+在 lcbench 基准上，用 HyperSHAP（可调性博弈）选出的 top-2 超参数进行后续 HPO，其 anytime 性能始终优于 fANOVA 选出的子集。
+
+### 关键发现
+
+- 大多数 HPO 问题的解释力在交互阶数 $k=3$ 时就能逼近完整博弈（$R^2 \approx 1$），证实超参数交互通常是低阶的
+- 优化器偏差分析能准确检测人为构造的偏差：独立调优每个超参数的优化器被检测出缺失交互，禁止调某超参数的优化器被检测出该参数的显著负主效应
+- 通过解释 SMAC 的代理模型，可观察到优化过程中模型对超参数重要性信念的动态演变
+- 运行时间分析：消融博弈 5 秒到 2 分钟，可调性博弈 6~15 分钟（4~7 个超参数），相比多小时的 HPO 运行本身开销较小
+
+## 亮点与洞察
+
+- 将 XAI 中成熟的 Shapley 值理论系统性地引入 HPO 解释，建立了完整的理论框架
+- 可调性博弈的单调性质保证了 Shapley 值非负，使解释更直观——"调优这个超参数至少不会变差"
+- 灵敏度与可调性的理论对比非常有教育意义：前者衡量变动性，后者衡量优化潜力，二者在不同场景下各有价值
+- 优化器偏差分析提供了一种全新的视角来审计 HPO 方法的能力，可用于指导 HPO 方法的改进
+
+## 局限与展望
+
+- 计算瓶颈在于可调性博弈需要为每个联盟模拟 HPO，10 个超参数时可达 8.5 小时
+- 当前仅通过代理模型近似最优值，更高效且无偏的近似方法有待发展
+- 未扩展到机器学习流水线（pipeline）优化的解释
+- 未来可利用超参数重要性进行跨数据集的 warm-starting HPO
+
+## 相关工作与启发
+
+- fANOVA 是先前最主流的超参数重要性分析工具，HyperSHAP 通过灵敏度博弈与之建立了理论桥梁，同时指出了 fANOVA 的局限
+- SHAP（Lundberg & Lee, 2017）等 XAI 方法将 Shapley 值用于特征归因；HyperSHAP 将同样的思路从"解释模型预测"迁移到"解释超参数优化"
+- shapiq 库提供了 Shapley 交互的高效实现，是本文方法的计算基础
+- 该框架可启发未来开发"交互感知"的 HPO 方法——既然大多数交互是低阶的，或许可以设计更高效的搜索策略
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐
+- 实验充分度: ⭐⭐⭐⭐
+- 写作质量: ⭐⭐⭐⭐⭐
+- 价值: ⭐⭐⭐⭐
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] A Unified Framework for Provably Efficient Algorithms to Estimate Shapley Values](../../NeurIPS2025/others/a_unified_framework_for_provably_efficient_algorithms_to_estimate_shapley_values.md)
+- [\[ACL 2025\] Using Shapley Interactions to Understand How Models Use Structure](../../ACL2025/others/using_shapley_interactions_to_understand_how_models_use_structure.md)
+- [\[AAAI 2026\] OR-R1: Automating Modeling and Solving of Operations Research Optimization Problems](or-r1_automating_modeling_and_solving_of_operations_research_optimization_proble.md)
+- [\[AAAI 2026\] GDBA Revisited: Unleashing the Power of Guided Local Search for Distributed Constraint Optimization](gdba_revisited_unleashing_the_power_of_guided_local_search_for_distributed_const.md)
+- [\[ICML 2025\] Prediction via Shapley Value Regression (ViaSHAP)](../../ICML2025/others/prediction_via_shapley_value_regression.md)
+
+</div>
+
+<!-- RELATED:END -->

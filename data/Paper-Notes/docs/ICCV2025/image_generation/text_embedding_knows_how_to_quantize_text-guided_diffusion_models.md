@@ -1,0 +1,172 @@
+---
+title: >-
+  [论文解读] Text Embedding Knows How to Quantize Text-Guided Diffusion Models
+description: >-
+  [ICCV 2025][图像生成][扩散模型量化] 首次利用文本提示（text prompt）指导扩散模型的动态量化比特分配——通过预测文本对应的生成图像质量，为不同层和时间步自适应选择高/中/低比特精度，在降低计算复杂度的同时保持甚至提升生成质量。 扩散模型在文本到图像生成中取得巨大成功，但数十亿参数和数百次去噪迭代使其计…
+tags:
+  - "ICCV 2025"
+  - "图像生成"
+  - "扩散模型量化"
+  - "文本引导"
+  - "动态比特精度"
+  - "混合精度"
+  - "后训练量化"
+---
+
+# Text Embedding Knows How to Quantize Text-Guided Diffusion Models
+
+**会议**: ICCV 2025  
+**arXiv**: [2507.10340](https://arxiv.org/abs/2507.10340)  
+**代码**: [https://github.com/jimmy9704/QLIP](https://github.com/jimmy9704/QLIP)  
+**领域**: 扩散模型/模型量化  
+**关键词**: 扩散模型量化, 文本引导, 动态比特精度, 混合精度, 后训练量化
+
+## 一句话总结
+
+首次利用文本提示（text prompt）指导扩散模型的动态量化比特分配——通过预测文本对应的生成图像质量，为不同层和时间步自适应选择高/中/低比特精度，在降低计算复杂度的同时保持甚至提升生成质量。
+
+## 研究背景与动机
+
+扩散模型在文本到图像生成中取得巨大成功，但数十亿参数和数百次去噪迭代使其计算开销极大，限制了资源受限场景下的部署。
+
+**现有量化方法的不足**：
+- PTQ4DM、Q-Diffusion 等方法考虑了时间步对量化的影响，但**忽略了输入条件（文本提示）作为量化信息源**的价值。
+- TDQ 根据时间步自适应调整激活缩放，但对所有层使用相同比特精度。
+- 超分辨率领域已有输入自适应动态量化（CADyQ、AdaBM），但在扩散模型中尚未探索。
+
+**核心观察**：
+- 当文本提示包含丰富具体的描述时，生成图像质量高，此时低比特量化会造成显著质量下降。
+- 当文本提示简单笼统时，即使低比特量化，生成质量也与全精度接近。
+- 因此，可以根据文本提示预测图像质量，进而指导比特精度的动态分配。
+
+## 方法详解
+
+### 整体框架
+
+QLIP（Quantization of Language-to-Image diffusion models using text Prompts）由两个模块组成：
+
+1. **T2Q（Text-to-Quality）模块**：从文本嵌入预测生成图像质量分数 $q$。
+2. **Q2B（Quality-to-Bit）模块**：根据质量分数 $q$ 为每层每个时间步确定比特精度。
+
+QLIP 可无缝集成到已有量化方法（Q-Diffusion、PTQD）之上。
+
+### 关键设计
+
+1. **T2Q 模块**：
+
+    - 输入 CLIP 文本嵌入 $\mathbf{z} \in \mathbb{R}^{C_{clip}}$，输出标量质量分数 $q = \phi(\mathbf{z})$。
+    - 结构简单：3 层线性层。
+    - 训练数据：用全精度模型生成 10k 图像，以 GIQA 评估质量作为伪标签。
+    - 训练损失为 MSE：$L_{t2q} = \frac{1}{N}\sum_i (\bar{q}^i - \phi(\mathbf{z}^i))^2$。
+
+2. **Q2B 模块**：
+
+    - 支持三种比特精度 $\mathcal{B} = \{b_{low}, b_{med}, b_{high}\}$。
+    - **质量驱动概率** $\mathbf{p}_q = \sigma((q-0.5)\mathbf{s} + \mathbf{o})$，其中 $\mathbf{s}, \mathbf{o} \in \mathbb{R}^K$ 为可学习参数。
+    - **时间步驱动概率** $\mathbf{p}_m^t, \mathbf{p}_h^t$：每隔 $M$ 个时间步学习一组参数，相邻时间步共享。
+    - 三种比特的选择概率通过组合计算：
+        - $\mathbf{p}_{b_{low}}^t = (1-\mathbf{p}_q) \odot (1-\mathbf{p}_m^t)$
+        - $\mathbf{p}_{b_{med}}^t = (1-\mathbf{p}_q) \odot \mathbf{p}_m^t + \mathbf{p}_q \odot (1-\mathbf{p}_h^t)$
+        - $\mathbf{p}_{b_{high}}^t = \mathbf{p}_q \odot \mathbf{p}_h^t$
+    - 用 argmax 选择最终比特，训练时用直通估计器（STE）实现可微。
+
+3. **初始时间步高比特策略**：前 $m$ 个时间步强制使用高精度（$\mathbf{p}_q$ 设为 1），因为初始阶段决定了生成图像与文本的语义对齐。
+
+### 损失函数 / 训练策略
+
+$$L_{QLIP} = (\epsilon_\theta(\mathbf{x}_t, t) - \hat{\epsilon}_\theta(\hat{\mathbf{x}}_t, t))^2 + \lambda_{bit}(b_{high} \cdot \sum_k \mathbf{p}_{b_{high}}^t(k) + b_{med} \cdot \sum_k \mathbf{p}_{b_{med}}^t(k))$$
+
+- 第一项：全精度与量化模型噪声预测的 L2 误差。
+- 第二项：比特长度惩罚，鼓励使用低比特以降低计算量。
+- 权重部分固定为 4 比特，仅对激活做动态精度分配。
+- 仅训练 Q2B 模块参数，冻结扩散模型和 T2Q 模块。
+
+## 实验关键数据
+
+### 主实验（BK-SDM-Tiny-2M, COCO2017）
+
+| 方法 | 比特配置 | FAB↓ | BitOPs(T)↓ | FID↓ | sFID↓ | CLIP Score↑ |
+|------|---------|------|-----------|------|-------|-------------|
+| 全精度 | W32A32 | 32.00 | 10.46 | 23.79 | 66.19 | 0.3069 |
+| Q-Diffusion | W4A16 | 16.00 | 1.03 | 30.02 | 73.25 | 0.3068 |
+| **+QLIP** | W4A{8,16,32} | **12.14** | **0.88** | 30.01 | 73.24 | 0.3063 |
+| PTQD | W4A16 | 16.00 | 1.03 | 30.27 | 77.18 | 0.3069 |
+| **+QLIP** | W4A{8,16,32} | **12.14** | **0.88** | **30.02** | **73.26** | 0.3063 |
+
+### Stable Diffusion v1.4 结果
+
+| 方法 | FAB↓ | FID↓ | sFID↓ | CLIP Score↑ |
+|------|------|------|-------|-------------|
+| 全精度 | 32.00 | 22.23 | 65.11 | 0.3174 |
+| Q-Diffusion W4A8 | 8.00 | 23.40 | 66.57 | 0.3126 |
+| **+QLIP** W4A{6,8,10} | **7.86** | **21.61** | **64.32** | 0.3120 |
+| PTQD W4A8 | 8.00 | 22.75 | 68.63 | 0.3126 |
+| **+QLIP** W4A{6,8,10} | **7.86** | **21.35** | **65.81** | 0.3120 |
+
+QLIP 在降低 FAB 的同时反而提升了 FID/sFID，因为将更多比特分配给了对质量敏感的部分。
+
+### 消融实验
+
+**T2Q 模块质量度量选择**：
+
+| 质量度量 | SROCC↑ | PLCC↑ | FAB↓ | FID↓ |
+|---------|--------|-------|------|------|
+| 无 QLIP | - | - | 8.00 | 23.40 |
+| Realism score | 0.513 | 0.502 | 8.10 | 22.18 |
+| CLIP-IQA | 0.713 | 0.708 | 8.54 | 21.81 |
+| **GIQA** | **0.805** | **0.811** | **7.86** | **21.61** |
+
+**Q2B 模块组件分析**：
+
+| 配置 | FAB↓ | FID↓ | 说明 |
+|------|------|------|------|
+| $\mathbf{p}_q$ only | 7.57 | 26.91 | 质量驱动单独使用 FAB 低但 FID 差 |
+| $\mathbf{p}_q + \mathbf{p}_h^t$ | 6.73 | 29.37 | 比特过低，质量下降 |
+| $\mathbf{p}_q + \mathbf{p}_m^t$ | 8.60 | 21.96 | 中间比特保护质量但 FAB 高 |
+| **完整 QLIP** | **7.86** | **21.61** | 三者协同达到最佳平衡 |
+
+### 关键发现
+
+- 文本提示的详细程度与所需比特精度正相关：描述越具体的提示被分配更高比特。
+- Cross-attention 层在简单提示下对量化不敏感，可使用低比特。
+- QLIP 的运行时开销极小，实际推理时间接近 W4A8 水平（4.85s vs 4.53s），但 FID 保持在 W4A16 水平。
+
+## 亮点与洞察
+
+- **文本作为量化信号**的思路新颖且符合直觉：简单提示 → 低要求 → 低比特可接受。
+- **即插即用**设计：仅训练轻量 Q2B 模块（~2KT/M 参数），可应用于已有任何扩散模型量化方法。
+- 从"输入自适应量化"视角切入扩散模型压缩，开辟了新方向。
+
+## 局限与展望
+
+- 当前仅考虑文本提示作为输入条件，可扩展到图像条件、分割图等其他输入。
+- CLIP Score 在应用 QLIP 后几乎不变甚至略降，说明文本-图像对齐尚有优化空间。
+- T2Q 模块的质量预测精度直接影响比特分配策略，更精准的图像质量预测器可进一步提升效果。
+
+## 相关工作与启发
+
+- 借鉴超分辨率领域的输入自适应量化思路（CADyQ、RefQSR），将其迁移到扩散模型生成任务。
+- 与 TDQ 的时间步自适应互补：TDQ 关注时间维度，QLIP 增加了输入内容维度的自适应。
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ — 首次将文本提示用于扩散模型量化，观察和动机清晰
+- **技术深度**: ⭐⭐⭐ — 模块设计简洁有效，但理论深度有限
+- **实验充分度**: ⭐⭐⭐⭐ — 多数据集、多基线、多消融，对比完整
+- **实用价值**: ⭐⭐⭐⭐⭐ — 即插即用，对扩散模型部署有实际意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Addressing Text Embedding Leakage in Diffusion-Based Image Editing](addressing_text_embedding_leakage_in_diffusion-based_image_editing.md)
+- [\[NeurIPS 2025\] Diffusion Adaptive Text Embedding for Text-to-Image Diffusion Models](../../NeurIPS2025/image_generation/diffusion_adaptive_text_embedding_for_texttoimage_diffusion.md)
+- [\[NeurIPS 2025\] Training-Free Safe Text Embedding Guidance for Text-to-Image Diffusion Models](../../NeurIPS2025/image_generation/training-free_safe_text_embedding_guidance_for_text-to-image_diffusion_models.md)
+- [\[ICCV 2025\] AID: Adapting Image2Video Diffusion Models for Instruction-guided Video Prediction](aid_adapting_image2video_diffusion_models_for_instruction-guided_video_predictio.md)
+- [\[ICCV 2025\] TeRA: Rethinking Text-guided Realistic 3D Avatar Generation](tera_rethinking_text-guided_realistic_3d_avatar_generation.md)
+
+</div>
+
+<!-- RELATED:END -->

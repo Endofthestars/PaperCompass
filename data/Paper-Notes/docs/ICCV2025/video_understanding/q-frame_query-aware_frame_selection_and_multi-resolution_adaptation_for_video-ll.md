@@ -1,0 +1,173 @@
+---
+title: >-
+  [论文解读] Q-Frame: Query-aware Frame Selection and Multi-Resolution Adaptation for Video-LLMs
+description: >-
+  [ICCV 2025][视频理解][视频帧选择] 提出 Q-Frame，一种无需训练的即插即用视频帧选择与多分辨率自适应框架，利用 CLIP 跨模态匹配和 Gumbel-Max 技巧实现查询感知的帧选择，使 Video-LLM 在相同计算预算下处理更多关键帧，在 MLVU、LongVideoBench、Video-MME 三个基准上显著提升性能。
+tags:
+  - "ICCV 2025"
+  - "视频理解"
+  - "视频帧选择"
+  - "多分辨率适配"
+  - "Video-LLM"
+  - "CLIP"
+  - "Gumbel-Max采样"
+---
+
+# Q-Frame: Query-aware Frame Selection and Multi-Resolution Adaptation for Video-LLMs
+
+**会议**: ICCV 2025  
+**arXiv**: [2506.22139](https://arxiv.org/abs/2506.22139)  
+**代码**: 无  
+**领域**: 视频理解 / 视频大语言模型  
+**关键词**: 视频帧选择, 多分辨率适配, Video-LLM, CLIP, Gumbel-Max采样
+
+## 一句话总结
+
+提出 Q-Frame，一种无需训练的即插即用视频帧选择与多分辨率自适应框架，利用 CLIP 跨模态匹配和 Gumbel-Max 技巧实现查询感知的帧选择，使 Video-LLM 在相同计算预算下处理更多关键帧，在 MLVU、LongVideoBench、Video-MME 三个基准上显著提升性能。
+
+## 研究背景与动机
+
+Video-LLM 面临视频帧数量巨大与上下文长度受限的根本矛盾。一个 3 分钟 24fps 的视频有约 4,320 帧，但 VideoLLaMA2 仅支持 2,000 token，VILA-V1.5 约 4,000 token。
+
+均匀帧采样的三大问题：
+
+**时间稀疏性**：固定帧数在长视频中越来越稀疏，破坏时间连续性，遗漏关键转换
+
+**查询无关性**：对每个问题采用相同帧组合，无论查询具体需求如何
+
+**分辨率一刀切**：所有帧使用相同分辨率，高信息密度帧被降采样损失细节，低密度帧浪费计算资源
+
+现有改进（Top-K 语义检索、帧排序等）仍无法捕捉复杂时间依赖关系，且未探索动态分辨率适配。
+
+## 方法详解
+
+### 整体框架
+
+Q-Frame 包含三个组件：
+1. **CQR (Cross-modal Query Retrieval)**：跨模态查询检索
+2. **QFS (Query-aware Frame Selection)**：查询感知帧选择
+3. **MRA (Multi-Resolution Adaptation)**：多分辨率适配
+
+### 关键设计
+
+1. **跨模态查询检索 (CQR)**：
+
+    - 从原始视频均匀下采样 $T$ 帧作为候选帧序列 $\mathcal{F}$
+    - 利用预训练 CLIP/Long-CLIP 模型将视频帧和文本查询映射到共享语义空间
+    - 计算每帧与查询的相似度：$I = QF^T \in \mathbb{R}^{1 \times T}$
+    - 选用 Long-CLIP 解决原版 CLIP 文本编码器 77 token 限制
+
+2. **查询感知帧选择 (QFS)**：
+
+    - CLIP 主要训练于图文对，缺乏视频时间关系建模
+    - 引入 **Gumbel-Max 技巧** 的概率引导采样策略
+    - 先将匹配强度转换为概率分布：$\pi = \text{Softmax}(I/\tau)$（$\tau$ 为温度参数）
+    - 注入独立 Gumbel 噪声扰动对数概率：$p = \log\pi + g$，其中 $g = -\log(-\log\epsilon)$
+    - 取 Top-K 帧：$\text{idx}^{\text{select}} = \{i | \text{rank}(i) \leq K\}$
+    - 核心优势：**探索-利用平衡**——高相关帧被选中概率更高，但随机噪声保证了多样性
+
+3. **多分辨率适配 (MRA)**：
+
+    - 根据查询相关性分配三级分辨率
+    - 高相关帧 ($\text{rank} \leq K$) → 高分辨率 $r^{(3)}$
+    - 中等相关帧 ($K < \text{rank} \leq M$) → 中分辨率 $r^{(2)}$
+    - 低相关帧 ($M < \text{rank} \leq N$) → 低分辨率 $r^{(1)}$
+    - 分辨率关系：$r^{(1)} = 4r^{(2)} = 16r^{(3)}$（高分辨率帧产生 16 倍多的 visual token）
+    - Token 预算约束：$K + M/4 + N/16 = 8$（等效 8 帧高分辨率的计算量）
+
+### 损失函数 / 训练策略
+
+**无需任何训练**。Q-Frame 是纯推理阶段的框架：
+- 使用预训练 Long-CLIP 计算相似度
+- Gumbel-Max 采样无需梯度计算
+- 即插即用接入任意 Video-LLM（开源/闭源 API 均可）
+
+## 实验关键数据
+
+### 主实验
+
+在 MLVU、LongVideoBench、Video-MME 三个基准上评估。从 128 候选帧中选 8 帧（或等价 token 预算）。
+
+| 模型 | #帧 | MLVU | LongVideoBench | Video-MME (wo/w sub) |
+|------|-----|------|----------------|---------------------|
+| VILA-V1.5 | 8 | 46.3 | 47.1 | 47.5 / 50.0 |
+| +Frame-Voyager | 8 | 49.8 | - | 50.5 / 53.6 |
+| **+Q-Frame** | 8 | **54.4** | **51.6** | **50.7 / 55.0** |
+| Qwen2-VL | 8 | 56.9 | 53.5 | 53.7 / 59.4 |
+| **+Q-Frame** | 4+8+32 | **65.4** | **58.4** | **58.3 / 61.8** |
+| GPT-4o | 8 | 28.6 | 53.3 | 61.9 / 64.5 |
+| **+Q-Frame** | 8 | 29.3 | **58.6** | **63.8 / 66.5** |
+
+Q-Frame 在所有模型和基准上持续提升，Qwen2-VL + Q-Frame 在 MLVU 上达SOTA（65.4%），GPT-4o + Q-Frame 在另外两个基准上SOTA。
+
+### 消融实验
+
+| 采样方式 | 分辨率 | Acc(%) |
+|---------|--------|--------|
+| Uniform + Fixed | - | 53.5 |
+| CLIP Top-K + Fixed | - | 56.0 |
+| QFS + Fixed | - | 57.6 |
+| QFS + MRA | - | **58.4** |
+
+帧分辨率分配消融（Token 预算等效 8 帧高分辨率）：
+
+| K(高) | M(中) | N(低) | Tokens/视频 | Acc(%) |
+|-------|-------|-------|------------|--------|
+| 8 | 0 | 0 | 2265 | 57.6 |
+| 6 | 4 | 16 | 2313 (+2%) | 58.3 |
+| 4 | 8 | 32 | 2345 (+3.5%) | **58.4** |
+| 4 | 4 | 48 | 2370 (+4.6%) | 57.4 |
+
+### 关键发现
+
+- Q-Frame 对长视频提升更显著：Qwen2-VL 在 15m-60m 视频上提升 +10.5%
+- 6 类视频任务中，Reasoning、Recognition、Counting 提升最为显著
+- 温度参数 $\tau=0.8$ 为最优，过低导致过度利用，过高导致随机性过强
+- 最优分辨率配置为 4 高 + 8 中 + 32 低分辨率帧
+- 增加低分辨率帧到 48 帧性能反而下降，说明非越多帧越好
+- Q-Frame 预处理开销仅增加 3-5% token，对总体推理时间影响很小
+
+## 亮点与洞察
+
+- **优雅的无训练设计**：利用 Gumbel-Max 技巧将确定性排序转化为概率采样，兼顾多样性和相关性
+- **模型无关性**：对开源（VILA-V1.5, Qwen2-VL）和闭源（GPT-4o）模型均有效
+- **多分辨率创新**：首次在 Video-LLM 中引入动态分辨率适配，在相同计算预算下保留更多信息
+- **实验设计规范**：固定帧数和固定 token 两种设置提供了全面公平的对比
+
+## 局限与展望
+
+- 依赖 CLIP 的图文匹配能力，对需要复杂时间推理的查询（如事件顺序判断）帧选择可能不准确
+- Gumbel-Max 采样引入随机性，结果不完全确定（虽然通常是优势）
+- MRA 仅适用于支持动态分辨率输入的模型（如 Qwen2-VL），不是所有 Video-LLM 都支持
+- 候选帧数量 $T=128$ 是固定的，对于特别长的视频可能仍不够
+- 缺乏对时间因果关系的显式建模，case analysis 显示时间推理任务仍有困难
+
+## 相关工作与启发
+
+- KeyVideoLLM 的 Top-K 语义检索和 Frame-Voyager 的损失驱动优化提供了对比基线
+- Qwen2-VL 的原生动态分辨率框架为 MRA 提供了底层支持
+- Gumbel-Max 技巧源自离散概率采样理论，在帧选择场景中的应用是巧妙的跨领域迁移
+- 启发：在大模型推理中，输入端的智能筛选可能比模型端的改进更高效
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ Gumbel-Max 帧选择和多分辨率适配的组合设计有新意，虽然各组件并非全新
+- **实验充分度**: ⭐⭐⭐⭐⭐ 三个基准、三个基线模型、多维度消融、跨视频长度分析、子任务分析，非常全面
+- **写作质量**: ⭐⭐⭐⭐ 表述清晰，图表设计直观
+- **价值**: ⭐⭐⭐⭐ 无训练即插即用设计实用性极强，对 Video-LLM 部署有直接帮助
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] MEMFOF: High-Resolution Training for Memory-Efficient Multi-Frame Optical Flow Estimation](memfof_high-resolution_training_for_memory-efficient_multi-frame_optical_flow_es.md)
+- [\[CVPR 2025\] M-LLM Based Video Frame Selection for Efficient Video Understanding](../../CVPR2025/video_understanding/m-llm_based_video_frame_selection_for_efficient_video_understanding.md)
+- [\[CVPR 2025\] Progress-Aware Video Frame Captioning](../../CVPR2025/video_understanding/progress-aware_video_frame_captioning.md)
+- [\[CVPR 2026\] DIvide, then Ground: Adapting Frame Selection to Query Types for Long-Form Video Understanding](../../CVPR2026/video_understanding/divide_then_ground_adapting_frame_selection_to_query_types_for_long-form_video_u.md)
+- [\[ICCV 2025\] Beyond the Frame: Generating 360° Panoramic Videos from Perspective Videos](beyond_the_frame_generating_360deg_panoramic_videos_from_perspective_videos.md)
+
+</div>
+
+<!-- RELATED:END -->

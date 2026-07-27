@@ -1,0 +1,168 @@
+---
+title: >-
+  [论文解读] CORDIAL: Can Multimodal Large Language Models Effectively Understand Coherence Relations?
+description: >-
+  [ACL 2025][多模态VLM][多模态话语分析] 本文提出CORDIAL，首个用连贯关系（Coherence Relations）评估MLLM多模态话语分析能力的基准，涵盖灾难管理、社交媒体和在线文章3个话语领域的不同粒度连贯关系，实验发现即使Gemini 1.5 Pro和GPT-4o也无法匹配简单的CLIP分类器基线，揭示了MLLM在语用理解方面的根本不足。
+tags:
+  - "ACL 2025"
+  - "多模态VLM"
+  - "多模态话语分析"
+  - "连贯关系"
+  - "图文关系"
+  - "语用推理"
+  - "MLLM评估"
+---
+
+# CORDIAL: Can Multimodal Large Language Models Effectively Understand Coherence Relations?
+
+**会议**: ACL 2025  
+**arXiv**: [2502.11300](https://arxiv.org/abs/2502.11300)  
+**代码**: [aashish2000/CORDIAL](https://aashish2000.github.io/CORDIAL/)  
+**领域**: 多模态VLM  
+**关键词**: 多模态话语分析, 连贯关系, 图文关系, 语用推理, MLLM评估
+
+## 一句话总结
+本文提出CORDIAL，首个用连贯关系（Coherence Relations）评估MLLM多模态话语分析能力的基准，涵盖灾难管理、社交媒体和在线文章3个话语领域的不同粒度连贯关系，实验发现即使Gemini 1.5 Pro和GPT-4o也无法匹配简单的CLIP分类器基线，揭示了MLLM在语用理解方面的根本不足。
+
+## 研究背景与动机
+多模态大语言模型（MLLM）在各种下游任务中表现出色，但现有benchmark主要评估模型的**事实和逻辑正确性**，忽略了一个关键维度：**模型对语用线索和模态间关系的理解能力**。
+
+核心问题在于：
+
+**字面vs语用关系**：现有图文对齐评估（如CLIPScore等）仅关注字面层面的重叠度，忽略了非字面关系（如讽刺、隐喻、信息互补）
+
+**相似度分数的局限**：图文关系不是简单的"相似/不相似"，而是存在多种对齐状态（对象级、场景级、话语级）
+
+**多种连贯关系的存在**：在真实世界的多模态话语中，图文之间的连接可以是描述可见内容（Visible）、扩展信息（Extension）、投射隐含含义（Projection）等多种形式
+
+切入角度：借用话语连贯理论（Hobbs, 1978）中的连贯关系概念，将原本用于文本的话语分析理论扩展到多模态场景，评估MLLM能否预测和验证图文之间的连贯关系。
+
+核心 idea：**用连贯关系取代相似度分数来评估MLLM对图文关系的理解，建立从字面到语用的完整评估体系**。
+
+## 方法详解
+
+### 整体框架
+CORDIAL评估MLLM在三个话语领域的连贯关系预测和验证能力：
+- 灾难管理（DisRel）：二分类（Similar/Complementary）
+- 社交媒体（Tweet Subtitles）：5类单标签分类
+- 在线文章（CLUE）：5类多标签 + 单标签两种设置
+
+### 关键设计
+
+1. **连贯关系的理论基础**:
+
+    - 基于Hobbs（1978）的话语连贯理论，定义通信成功的4个条件：(1)消息内容在话语中存在 (2)消息与整体上下文相关 (3)新/意外属性基于听众已有知识构建 (4)说话者提供线索引导听众理解其意图
+    - 连贯关系就是满足上述通信功能的一组有限连接
+
+2. **三个话语领域的数据源**:
+
+   **DisRel（灾难管理，二分类）**:
+    - 4600条灾难相关推文的图文对，测试集500条（50%均分）
+    - **Similar**：图文共享相同焦点，传达相同信息
+    - **Complementary**：图文不共享焦点，但一方帮助理解另一方
+
+   **Tweet Subtitles（社交媒体，5类单标签）**:
+    - 16000个开放域推特图文对，测试集1600条
+    - 3个实体级关系：**Insertion**（文本和图像聚焦同一视觉实体但文本未显式提及）、**Concretization**（两者都提及主要实体但细节可能不同）、**Projection**（文本中的实体与图像中的对象隐式相关）
+    - 2个场景级关系：**Restatement**（文本直接描述图像内容）、**Extension**（图像扩展文本的故事）
+
+   **CLUE（在线文章，5类多/单标签）**:
+    - 4770个Conceptual Captions图文对，测试集1183条
+    - 5种关系：**Visible**（文本描述图像可见内容）、**Action**（文本描述包含图像瞬间的动态过程）、**Meta**（文本引导推断图像的制作/呈现方式）、**Subjective**（文本提供说话者对图像的反应/评价）、**Story**（文本提供图像情境的独立描述）
+    - 多标签和单标签两种评估设置
+
+3. **CLIP基线分类器**:
+
+    - 使用CLIP Text和Image编码器提取零样本多模态嵌入
+    - 在每个数据集的训练集上训练MLP分类器
+    - 目的：提供简单但可靠的参考点，识别MLLM特别弱的关系类型
+
+4. **评估设置**:
+
+    - 三种提示策略：零样本（Zero-shot）、少样本（Few-shot）、思维链（CoT）
+    - 两类任务：关系预测（RQ1）和关系验证（RQ2）
+    - 还探索了连贯感知微调（RQ3）：对Llama 3.2-V进行微调
+
+### 损失函数 / 训练策略
+- 微调实验使用Llama 3.2-V作为基座模型
+- 在各数据集的训练集上进行连贯关系感知微调
+- 微调显示显著性能提升，但某些关系类别改善有限
+
+## 实验关键数据
+
+### 主实验（关系预测 Macro F1）
+
+| 模型 | DisRel | Tweet Subtitles | 说明 |
+|--------|------|------|------|
+| CLIP分类器基线 | **0.733** | **0.519** | 简单基线最强 |
+| Gemini 1.5 Pro (best prompt) | 0.699 | 0.271 | 落后CLIP基线 |
+| GPT-4o (best prompt) | 0.555 | 0.274 | 落后CLIP基线 |
+| Claude 3.5 Sonnet v2 | 0.669 | **0.323** | MLLM中最强Tweet |
+| InternVL 2.5 26B | 0.658 | 0.190 | 开源模型中较优 |
+
+### Tweet Subtitles各类别F1
+
+| 模型 | Insertion | Concretization | Projection | Restatement | Extension |
+|------|------|------|------|------|------|
+| CLIP基线 | **0.542** | **0.866** | **0.286** | **0.388** | **0.514** |
+| Claude 3.5 Sonnet v2 | 0.180 | 0.725 | 0.138 | 0.316 | 0.256 |
+| GPT-4o (Few) | 0.171 | 0.599 | 0.131 | 0.268 | 0.199 |
+
+### 微调效果
+
+| 设置 | 微调后效果 | 说明 |
+|------|---------|------|
+| DisRel | 显著提升 | 尤其在零样本提示上 |
+| Tweet Subtitles | 部分提升 | 语用关系改善有限 |
+| CLUE SL/ML | 混合效果 | 微调显示跨域维度的改善 |
+
+### 关键发现
+- **简单CLIP分类器全面击败MLLM**：在所有话语领域中，基于CLIP嵌入训练的MLP分类器一致优于包括GPT-4o和Gemini 1.5 Pro在内的所有MLLM
+- **语用关系是最大挑战**：MLLM在需要理解语用意图的关系（如Insertion、Projection、Extension）上表现最差
+- **大模型整体优于小模型**：但差距在语用关系上缩小
+- **不同提示策略效果不一致**：CoT有时提升、有时下降，Few-shot也不总是有效
+- **连贯感知微调有效但有限**：微调可以显著改善某些关系的理解，但对高度语用性的关系改善有限
+- **模型偏向特定关系类型**：如多个模型过度预测Concretization关系（在Tweet Subtitles上），因为这是字面关系
+
+## 亮点与洞察
+- 开创性地将话语连贯理论引入MLLM评估，提供了超越相似度分数的新视角
+- CLIP分类器击败MLLM的结果令人振聋发聩：说明MLLM的"理解"可能更多是知识检索而非真正的关系推理
+- 三个不同话语领域的选择（灾难管理、社交媒体、在线文章）覆盖了从严肃到日常的不同交流语境
+- 从二分类到多标签的渐进式难度设计，全面暴露MLLM的弱点
+- 微调实验（RQ3）提示了连贯感知训练的潜力，但也显示了语用理解的根本性困难
+
+## 局限与展望
+- benchmark规模相对有限，各领域的关系类别数量不多
+- 连贯关系的标注存在主观性和噪声，特别是多标签设置
+- 未探索更先进的少样本学习策略（如检索增强的ICL）
+- 可探索的方向：构建连贯关系感知的预训练目标，而非仅做下游微调
+- 可将评估扩展到更多模态（如音频、视频中的图文连贯关系）
+- MLLM-as-judge场景中，连贯关系理解的缺失可能导致评估偏差
+
+## 相关工作与启发
+- Alikhani et al.（2020）将文本连贯关系扩展到多模态：CORDIAL基于此建立评估框架
+- CLIPScore等基于相similarity的评估：CORDIAL论证了相似度分数不足以捕捉完整的图文关系
+- Marsh & White（2003）等图文关系分类法：CORDIAL的连贯关系提供了更理论化的分类视角
+- 与VLM2-Bench形成互补：VLM2-Bench测试视觉层面的匹配，CORDIAL测试语义/语用层面的关系理解
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 首次将话语连贯理论系统性地用于MLLM评估，视角独特
+- 实验充分度: ⭐⭐⭐⭐ 10+模型、3种提示策略、3个领域，但各领域测试集规模不同可能影响结论
+- 写作质量: ⭐⭐⭐⭐ 动机阐述清晰，连贯关系定义准确，但部分表格过于密集
+- 价值: ⭐⭐⭐⭐ 指出了MLLM评估的重要盲区，对"MLLM是否真正理解多模态话语"提出了尖锐质疑
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Can Multimodal Large Language Models Understand Spatial Relations?](spatialmqa_mllm_spatial_relations.md)
+- [\[ACL 2025\] NegVQA: Can Vision Language Models Understand Negation?](negvqa_can_vision_language_models_understand_negation.md)
+- [\[ACL 2025\] Can Vision Language Models Understand Mimed Actions?](can_vision_language_models_understand_mimed_actions.md)
+- [\[ACL 2025\] Can MLLMs Understand the Deep Implication Behind Chinese Images?](can_mllms_understand_the_deep_implication_behind_chinese_images.md)
+- [\[ACL 2025\] Enhance Multimodal Consistency and Coherence for Text-Image Plan Generation](enhance_multimodal_consistency_and_coherence_for_text-image_plan_generation.md)
+
+</div>
+
+<!-- RELATED:END -->

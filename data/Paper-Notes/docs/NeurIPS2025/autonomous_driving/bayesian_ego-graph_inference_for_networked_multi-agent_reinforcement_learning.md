@@ -1,0 +1,116 @@
+---
+title: >-
+  [论文解读] BayesG: Bayesian Ego-Graph Inference for Networked Multi-Agent Reinforcement Learning
+description: >-
+  [NeurIPS 2025][自动驾驶][贝叶斯推断] BayesG 让网络化 MARL 中的每个 agent 通过贝叶斯变分推断学习其局部通信图的动态结构——用 Gumbel-Softmax 采样边掩码、ELBO 目标联合优化策略和图结构，在 167 agent 的纽约交通场景中奖励比最佳 baseline 高 50%+。
+tags:
+  - "NeurIPS 2025"
+  - "自动驾驶"
+  - "贝叶斯推断"
+  - "自我图"
+  - "网络化MARL"
+  - "动态通信图"
+  - "去中心化"
+---
+
+# BayesG: Bayesian Ego-Graph Inference for Networked Multi-Agent Reinforcement Learning
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2509.16606](https://arxiv.org/abs/2509.16606)  
+**代码**: [https://github.com/Wei9711/BayesG](https://github.com/Wei9711/BayesG)  
+**领域**: 自动驾驶  
+**关键词**: 贝叶斯推断, 自我图, 网络化MARL, 动态通信图, 去中心化
+
+## 一句话总结
+BayesG 让网络化 MARL 中的每个 agent 通过贝叶斯变分推断学习其局部通信图的动态结构——用 Gumbel-Softmax 采样边掩码、ELBO 目标联合优化策略和图结构，在 167 agent 的纽约交通场景中奖励比最佳 baseline 高 50%+。
+
+## 研究背景与动机
+
+**领域现状**：网络化 MARL 中 agent 通过通信图交换信息。现有方法使用固定通信图，或需全局状态来学习动态图。
+
+**现有痛点**：固定邻居集在动态环境中次优——不同时刻不同邻居的信息价值不同。中心化图学习（需要全局可观测）在去中心化系统中不现实。
+
+**核心矛盾**：agent 只有局部观测，但需要决定"从哪些邻居获取信息最有用"——这本身是一个不确定性问题。
+
+**本文目标** 去中心化地让每个 agent 学习任务自适应的局部通信图结构。
+
+**切入角度**：将边的存在/不存在建模为 Bernoulli 随机变量，用变分贝叶斯推断从局部数据估计后验。
+
+**核心 idea**：每个 agent 对其自我图的边做贝叶斯变分推断（Bernoulli + Gumbel-Softmax），ELBO 目标联合优化策略和图结构，实现去中心化的动态通信。
+
+## 方法详解
+
+### 整体框架
+agent $i$ 的策略条件化于采样的子图：$\pi_i(u_i, G_{\mathcal{V}_i} | s_{\mathcal{V}_i}) = \rho(G | s) \cdot \tilde{\pi}_i(u_i | \tilde{f}_i(s, G))$。边掩码 $Z_i$ 由变分分布 $q(Z_i; \phi_i) = \prod \text{Bern}(z_{ij}; \sigma(\phi_{ij}))$ 采样，Gumbel-Softmax 可微化。
+
+### 关键设计
+
+1. **贝叶斯边推断**: 变分近似 $q(Z_{ij})$ 为 Bernoulli，先验 $p(Z_{ij})$ 有保留偏置 $\lambda$。ELBO: $\mathcal{L} = E_q[-\mathcal{L}_{\theta,\varphi}] - \sum_{j} \text{KL}(q \| p)$
+2. **GNC 消息传递**: 在掩码邻接矩阵 $A_i^* = Z_i \odot A_i$ 上做图神经通信
+3. **多特征输入**: 邻居状态+轨迹+策略特征三类信息
+
+### 损失函数 / 训练策略
+- Actor-Critic + ELBO 联合优化
+- KL 正则化促进稀疏图（只保留有用的边）
+
+## 实验关键数据
+
+### 主实验（自适应交通信号控制 ATSC）
+
+| 环境 | BayesG | NeurComm | CommNet | 提升 |
+|------|--------|----------|---------|------|
+| Grid 5×5 | ~-15 | ~-20 | ~-30 | +25% |
+| NewYork 167 agent | **~-30** | ~-45 | ~-60 | **+50%** |
+
+### 消融实验
+
+| 配置 | 效果 |
+|------|------|
+| 无掩码 | baseline 性能 |
+| 随机掩码 | 严重退化 |
+| 学习掩码 | **最优** |
+| 轨迹+状态+策略 | 最佳特征组合 |
+
+### 关键发现
+- 学习图结构比固定图显著好——尤其在大规模场景（167 agent）
+- 随机掩码反而有害，证明结构学习的必要性
+- 更快收敛（早期训练阶段就显著领先）
+
+## 亮点与洞察
+- **贝叶斯处理不确定性很自然**：不确定哪个邻居有用时，概率采样比硬选择更鲁棒
+- **KL 正则化自动实现稀疏**：不需要手动设定通信预算
+
+## 局限与展望
+- 未分析学习图结构随时间的演化
+- 仅测试到 167 agent
+- 固定通信间隔
+
+## 相关工作与启发
+- **vs CommNet**: 固定全连接，BayesG 学习稀疏动态图
+- **vs NeurComm**: 中心化图学习，BayesG 完全去中心化
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 贝叶斯图推断+MARL的自然结合
+- 实验充分度: ⭐⭐⭐⭐ 5 环境 + 消融
+- 写作质量: ⭐⭐⭐⭐ 方法清晰
+- 价值: ⭐⭐⭐⭐ 分布式多智能体系统实用方案
+- 交互结构应该是动态的而非预定义的——贝叶斯推断让agent自适应选择交互对象
+- 在167agent交通控制中超越全连接和固定图方法，学到的稀疏图更高效
+- 该方法的核心创新在于设计思路的简洁性和有效性
+- 实验结果充分验证了核心假设
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] R3DM: Enabling Role Discovery and Diversity Through Dynamics Models in Multi-agent Reinforcement Learning](../../ICML2025/autonomous_driving/r3dm_enabling_role_discovery_and_diversity_through_dynamics_models_in_multi-agen.md)
+- [\[ICML 2025\] GoIRL: Graph-Oriented Inverse Reinforcement Learning for Multimodal Trajectory Prediction](../../ICML2025/autonomous_driving/goirl_graph-oriented_inverse_reinforcement_learning_for_multimodal_trajectory_pr.md)
+- [\[NeurIPS 2025\] Self-Supervised Learning of Graph Representations for Network Intrusion Detection](self-supervised_learning_of_graph_representations_for_network_intrusion_detectio.md)
+- [\[CVPR 2026\] RLFTSim: Realistic and Controllable Multi-Agent Traffic Simulation via Reinforcement Learning Fine-Tuning](../../CVPR2026/autonomous_driving/rlftsim_realistic_and_controllable_multi-agent_traffic_simulation_via_reinforcem.md)
+- [\[NeurIPS 2025\] Regret Lower Bounds for Decentralized Multi-Agent Stochastic Shortest Path Problems](regret_lower_bounds_for_decentralized_multi-agent_stochastic_shortest_path_probl.md)
+
+</div>
+
+<!-- RELATED:END -->

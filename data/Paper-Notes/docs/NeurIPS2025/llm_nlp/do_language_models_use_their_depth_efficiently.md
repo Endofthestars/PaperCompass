@@ -1,0 +1,139 @@
+---
+title: >-
+  [论文解读] Do Language Models Use Their Depth Efficiently?
+description: >-
+  [NeurIPS 2025][LLM 其他][深度利用效率] 通过因果干预、残差流分析和跨模型线性映射，证明当前 LLM 后半部分层不参与组合式计算，仅迭代细化输出概率分布，深层模型只是把浅层模型的计算"展延"到更多层。 现有痛点 现有痛点：领域现状：现代 LLM 越来越深，132 个 Open LLM Leaderboar…
+tags:
+  - "NeurIPS 2025"
+  - "LLM 其他"
+  - "深度利用效率"
+  - "残差流"
+  - "层贡献"
+  - "因果干预"
+  - "相位转变"
+---
+
+# Do Language Models Use Their Depth Efficiently?
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2505.13898](https://arxiv.org/abs/2505.13898)  
+**代码**: [https://github.com/robertcsordas/llm_effective_depth](https://github.com/robertcsordas/llm_effective_depth)  
+**领域**: LLM/NLP  
+**关键词**: 深度利用效率, 残差流, 层贡献, 因果干预, 相位转变
+
+## 一句话总结
+通过因果干预、残差流分析和跨模型线性映射，证明当前 LLM 后半部分层不参与组合式计算，仅迭代细化输出概率分布，深层模型只是把浅层模型的计算"展延"到更多层。
+
+## 研究背景与动机
+
+### 现有痛点
+
+**现有痛点**：**领域现状**：现代 LLM 越来越深，132 个 Open LLM Leaderboard 模型的统计显示深度与性能正相关（即使控制参数量等因素）。理论上，更深的模型应能执行更复杂的组合计算——在前层结果基础上构建更高阶表示。然而实践中，Gromov et al. 发现可以移除一半层而不显著影响 MMLU 性能，Lad et al. 发现模型对跳层和交换邻近层具有惊人鲁棒性。
+
+本文的核心问题：**深层模型是否利用额外深度来组合更多特征、执行浅层模型不可能完成的高阶计算？还是仅将相同类型的计算分散到更多层？**
+
+## 技术背景
+所有分析对象均为 pre-layernorm Transformer。在此架构中，每层由注意力子层和 MLP 子层组成，与残差流的交互为纯加法：$h_{l+1} = h_l + a_l + m_l$。这意味着可以将 $a_l + m_l = h_{l+1} - h_l$ 直接量化为该层对残差流的贡献。残差流初始化为 $h_0 = \text{Embedding}(x)$，最终输出为 $y = \text{softmax}(\text{Norm}(h_L) W^{out})$。
+
+由于初始化时各子层输出范数相同（归一化层保证），但残差范数持续增长且权重衰减抑制后层补偿，后层天然更难改变残差方向。这是理解"深度利用不足"现象的重要结构性前提。
+
+## 方法详解
+
+### 整体框架
+以 Llama 3.1（8B/70B）为主要分析对象，Qwen 3 和 OLMo 2 为辅助验证。使用 NDIF/NNsight 平台在 GSM8K 上执行实验，从五个角度系统分析深度利用效率。
+
+### 分析一：残差流与子层贡献
+测量每层对残差流的相对贡献 $\|a_l + m_l\|_2 / \|h_l\|_2$，以及子层输出与残差的余弦相似度。由于 pre-layernorm Transformer 中子层与残差的交互是加法式的（$h_{l+1} = h_l + a_l + m_l$），残差范数随层数增长，但子层输出范数的增长速度更慢。
+
+**关键发现**：模型前半部分层贡献稳定，中间位置出现显著下降（尤其是注意力层）。余弦相似度显示清晰的**相位转变**——前半部分主要擦除/写入新特征（负/零相似度），后半部分转为强化已有特征（正相似度）。
+
+### 分析二：层跳过的因果干预
+跳过层 $s$ 后测量对后续所有层计算的相对变化：$\|(h_{l+1}-h_l) - (\bar{h}_{l+1}-\bar{h}_l)\|_2 / \|h_{l+1}-h_l\|_2$。取所有序列位置和多个 prompt 的最大值。
+
+**对当前 token 的影响**：后半部分层之间的相互影响远低于前半部分，但每层对最终输出预测仍然重要——说明后半部分执行独立的、非组合的分布细化操作。
+
+**对未来 token 的影响**：仅跳过当前及之前位置的层，测量对未来位置的影响。结果更戏剧性——后半部分层对未来计算几乎没有影响，说明这些层不产生可复用的中间结果。
+
+### 分析三：Logitlens 验证
+对每层残差应用 Logitlens（直接用输出分类器读取中间层表示），测量与最终预测的 KL 散度和 top-5 预测重叠度。
+
+KL 散度在网络中间开始急剧下降，top-5 重叠度急剧上升，与相位转变位置一致——后半部分的确只在迭代微调概率分布。这一发现独立于因果干预结果，为"后半层做分布细化"提供了互补验证。
+
+### 分析四：深度与问题复杂度的关系
+定义**深度分数** $d = \sum_{l=1}^{L} l \cdot e_l / \sum_m e_m$，其中 $e_l$ 是第 $l$ 层的重要性。在两个数据集上分析：
+- **MQuAKE**（多跳推理）：2-hop 到多 hop，深度分数无变化
+- **MATH**（不同难度级别）：难度增加不导致更深层被更多使用
+
+单例分析（积分梯度 + 残差擦除干预）也显示：所有输入 token 在网络中间之前同等重要，多步计算的后续步骤不会延迟到更深层执行，**没有组合计算的证据**。
+
+残差擦除具体做法：将第 $l$ 层第 $t$ 个位置的残差替换为多样本平均值 $\tilde{h}_l$，测量对答案 token 预测的最大变化 $\|y - \bar{y}\|_2$。
+
+### 分析五：跨模型线性映射
+取独立训练的 Qwen 2.5 1.5B（28层）和 14B（48层），为每对层训练线性映射 $f_{lm}$，测量相对预测误差 $\|h_l^{14B} - f_{lm}(h_m^{1.5B})\|_2 / \|h_l^{14B}\|_2$。
+
+结果呈现清晰的**对角线模式**：相同相对深度的层之间映射最好（如 1.5B 的第 14 层最佳映射到 14B 的第 24 层）。这直接证明深层模型只是浅层模型的"展延"版本，而非执行全新类型的计算。如果深层模型在后半部分执行了浅层模型不具备的新型计算，则这些层应无法从浅层模型预测——但事实并非如此。
+
+## 实验关键数据
+
+
+### 主实验
+
+| 分析方法 | 模型 | 数据集 | 核心发现 |
+|---------|------|--------|---------|
+| 相对贡献 | Llama 3.1 70B | GSM8K | 前半 >0.15，后半 <0.05，中间急剧下降 |
+| 层跳过（当前token） | Llama 3.1 70B | GSM8K | 后半层间相互影响低，但各层对输出仍重要 |
+| 层跳过（未来token） | Llama 3.1 70B | GSM8K | 后半层对未来几乎无影响 |
+| 深度分数 | Llama 3.1 70B | MQuAKE/MATH | 复杂度增加不改变计算深度 |
+| 线性映射 | Qwen 2.5 1.5B→14B | 通用 | 对角线模式，深模型=展延计算 |
+
+## 探索性实验：MoEUT
+比较标准 Transformer 与 MoEUT（参数共享的 Universal Transformer，244M 参数）在 DeepMind Math 数据集上的表现。额外设置了"不建模问题"变体——训练时不对问题部分的 token 计算损失。
+
+**结果**：
+- MoEUT 在不建模问题时：更深层被显著利用、计算深度随步骤增加、外推准确率从 36% 提升到 63%
+- 标准 Transformer 的提升较小（41% → 48%）
+- 残差擦除可视化显示 MoEUT 的深度使用更具输入依赖性
+- 从头训练的模型都展现出随计算步骤增加深度的趋势，但微调预训练模型未能改变这一行为
+
+这暗示：(1) 参数共享架构可能更有效利用深度；(2) 预训练目标（对不可预测的问题建模）可能是深度利用不足的原因之一。
+
+## 亮点与洞察
+1. **统一的相位转变**：残差贡献下降、余弦相似度变号、Logitlens 预测收敛、未来 token 影响消失——都发生在网络中间同一位置，构成一致的证据图景
+2. **后半层的本质是分布细化**：执行重要但独立的操作，不参与组合计算，不产生可复用中间结果
+3. **深度模型 ≠ 更复杂计算**：跨模型线性映射的对角线模式直接证明深层模型只是"展延"
+4. **固定深度计算的后果**：模型不根据问题复杂度调整计算深度，所有问题用固定电路处理。这可能解释 scaling 收益递减
+5. **对 CoT 和 latent thinking 的启示**：CoT 通过将组合计算外包到输入/输出空间绕过了深度限制；latent thinking 方法如果深度不敏感是训练目标导致的，则可能根本行不通
+6. **残差宽度可能是瓶颈**：后半层独立操作意味着所有信息必须同时存在于残差中，$d_{model}$ 可能是真正的容量限制
+
+## 局限与展望
+- 分析主要在 GSM8K 的 10 个随机样本上进行，样本量较小
+- MoEUT 探索性实验仅用 4 个示例和 244M 参数模型，规模有限
+- 线性映射假设层级对应关系可由线性变换捕捉，非线性对应可能被遗漏
+- 余弦相似度在特征超位叠加（superposition）的情况下解读受限
+- 主要聚焦数学领域（因其对层干预最敏感），其他领域结论可能不同
+
+## 相关工作
+- **Lad et al.**：提出推理四阶段（去分词→特征工程→预测集成→残差锐化），发现中间层对跳层鲁棒但未研究输入复杂度的影响。本文补充了因果干预分析并证明后半层对未来 token 几乎无影响
+- **Gromov et al.**：证明可移除一半层不显著影响 MMLU，但数学例外。本文进一步揭示这些"可移除"层的具体功能是分布细化
+- **Skean et al.**：发现自回归 Transformer 中间存在信息瓶颈，中间层表示在下游任务上常优于最终层，与本文的相位转变发现一致
+- **Sun et al.**：将 Transformer 层比作画家，发现层间可交换，支持层间计算独立性的观点
+- **Petty et al.**：发现增加深度不帮助组合泛化，与本文"深度不产生新计算"的结论互相印证
+
+## 评分
+⭐⭐⭐⭐ (4/5)
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] From Data to Knowledge: Evaluating How Efficiently Language Models Learn Facts](../../ACL2025/llm_nlp/from_data_to_knowledge_evaluating_how_efficiently_language_models_learn_facts.md)
+- [\[ACL 2025\] Do Language Models Understand Honorific Systems in Javanese?](../../ACL2025/llm_nlp/do_language_models_understand_honorific_systems_in_javanese.md)
+- [\[NeurIPS 2025\] In-Context Learning of Linear Dynamical Systems with Transformers: Approximation Bounds and Depth-Separation](in-context_learning_of_linear_dynamical_systems_with_transformers_approximation_.md)
+- [\[ACL 2025\] CogSteer: Cognition-Inspired Selective Layer Intervention for Efficiently Steering Large Language Models](../../ACL2025/llm_nlp/cogsteer_cognition-inspired_selective_layer_intervention_for_efficiently_steerin.md)
+- [\[ACL 2025\] Do Language Models Understand the Cognitive Tasks Given to Them? Investigations with the N-Back Paradigm](../../ACL2025/llm_nlp/do_language_models_understand_the_cognitive_tasks_given_to_them_investigations_w.md)
+
+</div>
+
+<!-- RELATED:END -->

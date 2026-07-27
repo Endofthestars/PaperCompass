@@ -1,0 +1,168 @@
+---
+title: >-
+  [论文解读] Mind the Cost of Scaffold! Benign Clients May Even Become Accomplices of Backdoor Attack
+description: >-
+  [ICCV 2025][AI安全][联邦学习] 提出 BadSFL，首个针对 Scaffold 联邦学习算法的后门攻击方法，通过篡改控制变量（control variate）将良性客户端变为"帮凶"，结合 GAN 数据增强和预测全局模型收敛方向的优化策略，在 non-IID 场景下实现了攻击停止后仍持续 60+ 轮的后门效果，持久性是基线方法的 3 倍。
+tags:
+  - "ICCV 2025"
+  - "AI安全"
+  - "联邦学习"
+  - "backdoor attack"
+  - "Scaffold"
+  - "控制变量"
+  - "Non-IID"
+---
+
+# Mind the Cost of Scaffold! Benign Clients May Even Become Accomplices of Backdoor Attack
+
+**会议**: ICCV 2025  
+**arXiv**: [2411.16167](https://arxiv.org/abs/2411.16167)  
+**代码**: 无  
+**领域**: AI安全  
+**关键词**: federated learning, backdoor attack, Scaffold, 控制变量, Non-IID
+
+## 一句话总结
+
+提出 BadSFL，首个针对 Scaffold 联邦学习算法的后门攻击方法，通过篡改控制变量（control variate）将良性客户端变为"帮凶"，结合 GAN 数据增强和预测全局模型收敛方向的优化策略，在 non-IID 场景下实现了攻击停止后仍持续 60+ 轮的后门效果，持久性是基线方法的 3 倍。
+
+## 研究背景与动机
+
+### 领域现状
+
+联邦学习（FL）通过分布式训练保护客户端数据隐私。在 non-IID 数据分布下，各客户端的局部最优与全局最优偏离（client drift），导致 FedAvg 等标准方法收敛性差。Scaffold 通过引入控制变量（control variate）来校正每个客户端的梯度更新方向，显著缓解 client drift，是 non-IID FL 的主流方案。
+
+### 现有痛点
+
+**Scaffold 的安全性未被研究**：虽然 FL 后门攻击已被广泛研究，但几乎所有现有工作针对 FedAvg 等标准聚合算法，而 Scaffold 引入的控制变量机制创造了全新的攻击面——这一安全隐患被完全忽视
+
+**non-IID 场景对攻击者不利**：攻击者不了解全局数据分布，直接注入后门会导致模型在良性任务上性能严重下降（如 PTA 从 85% 降至 25%），容易被发现
+
+**后门持久性差**：攻击者停止参与后，良性更新会逐渐冲刷掉后门功能——现有基线在停止攻击 20 轮后后门精度即降至 50% 以下
+
+### 核心发现
+
+Scaffold 的控制变量 $c$ 被所有客户端用于校正本地梯度更新 $w_i \leftarrow w_i - \eta_l(g_i(w_i) - c_i + c)$。如果攻击者篡改上传的控制变量 $\Delta c_p$，就能**间接影响所有良性客户端的梯度方向**——使它们在不知情的情况下朝着有利于后门持久性的方向更新。这是一种"让良性客户端成为帮凶"的攻击策略。
+
+## 方法详解
+
+### 整体框架
+
+BadSFL 包含 4 个步骤：
+1. **初始化**：下载全局模型 $w_g$ 和控制变量 $c$
+2. **GAN 数据增强**：生成攻击者缺乏的其他类别数据，补充 non-IID 数据集
+3. **后门触发注入**：在补充后的数据集中选择后门样本并篡改标签
+4. **带控制变量约束的后门训练**：优化后门模型使其更接近全局模型预测的未来状态
+
+### 关键设计
+
+#### 1. **GAN 数据增强（Dataset Supplementation）**
+- **功能**：在 non-IID 场景下，攻击者仅持有部分类别的数据。使用 GAN 生成攻击者缺失的其他类别样本
+- **核心思路**：Generator $G$ 用一系列反卷积层将噪声转化为图像，Discriminator $D$ 使用当前全局模型的特征提取部分。每轮从服务器下载最新全局模型更新 $D$，然后优化 $G$ 生成更逼真的假样本。生成的样本 $D_f$ 与原始数据 $D^i$ 合并为 $D_c$
+- **设计动机**：non-IID 下直接后门训练会使局部模型严重偏离全局最优，导致主任务精度崩溃。数据增强让攻击者的局部最优更接近全局最优，使后门模型在聚合后不会被轻易稀释
+
+#### 2. **触发注入策略**
+- **功能**：在补充数据集中注入后门
+- **三种方式**：
+    - **标签翻转（Label Flipping）**：将某一整类直接改标签（如 dog→bird）
+    - **模式触发（Pattern Trigger）**：在图像角落添加小三角形图案
+    - **特征触发（Feature-based Trigger）**：选择类内的自然特征作为触发器（如绿色汽车、红色船）
+- **设计动机**：特征触发最隐蔽，因为它利用数据的自然变异，不需要修改图像，不易与良性更新冲突
+
+#### 3. **控制变量约束的后门优化**
+- **功能**：利用全局控制变量 $c$ 预测全局模型未来的收敛方向，优化后门使其在未来轮次中仍然有效
+- **核心公式**：
+    - 标准后门目标：$w_p^* = \arg\min_{w_p} L(D_p, w_p)$
+    - 预测未来 $j$ 轮的全局模型：$P_j(w_p, c) = \frac{w_p + w_g \cdot (n-1)}{n} - \eta_l \cdot c \cdot j$
+    - BadSFL 目标：$w_p^* = \arg\min_{w_p} [L(D_p, w_p) + L(D_p, P_j(w_p, c))]$
+- **篡改控制变量**：$\Delta c_p = \frac{1}{K \cdot \eta_l}(w_g - w_p) - c$
+- **设计动机**：全局控制变量 $c$ 代表全局模型的收敛方向。通过模拟未来聚合并将后门目标也施加在预测的未来模型上，确保后门不会被未来的良性更新冲刷。同时，篡改的控制变量会通过服务器聚合传播给所有良性客户端，隐性引导它们的梯度方向
+
+### 攻击协议
+
+- 攻击者从第 10 轮加入，第 40 轮退出
+- 20 个客户端，每轮 50% 被选中
+- 数据按标签排序分为 200 组，随机分配给客户端（non-IID）
+- 未来预测轮数 $j = 10$
+
+## 实验关键数据
+
+### 主实验（CIFAR-10，Feature-based Trigger: Plane in Sunset）
+
+| 方法 | 攻击期间 BTA | 停止攻击后 BTA（40→100轮） | 持续轮数 |
+|------|------------|------------------------|---------|
+| Black-box Attack | ~70% | 降至 <50%（约第60轮） | ~20轮 |
+| Neurotoxin | ~75% | 降至 <50%（约第65轮） | ~25轮 |
+| IBA | ~65% | 降至 <40%（约第60轮） | ~20轮 |
+| 3DFed | ~70% | 降至 <50%（约第60轮） | ~20轮 |
+| **BadSFL** | **>90%** | **>90%（持续到第100轮）** | **>60轮** |
+
+### GAN 数据增强效果
+
+| 数据集 | 方法 | 攻击期间 PTA（主任务精度）|
+|--------|------|----------------------|
+| CIFAR-10 | 无数据增强 | <25% |
+| CIFAR-10 | **有数据增强** | **~55%** |
+| MNIST | 无数据增强 | <75% |
+| MNIST | **有数据增强** | **>90%** |
+
+### 防御实验（CIFAR-10，Feature-based Trigger）
+
+| 防御方法 | BadSFL BTA | 基线 BTA | 说明 |
+|---------|-----------|---------|------|
+| Differential Privacy + Model Pruning | >80% | <50% | BadSFL 持续有效 |
+| FLAME | >70% | <40% | BadSFL 持续有效 |
+| SparseFed | >75% | <40% | BadSFL 持续有效 |
+
+### 关键发现
+
+- **BadSFL 的持久性是基线的 3 倍以上**：停止攻击后，基线的 BTA 在约 20 轮后降至 50% 以下，而 BadSFL 维持 90%+ 超过 60 轮
+- **GAN 数据增强对主任务精度的保护至关重要**：无增强时 PTA 降至 25%（CIFAR-10），有增强后维持 55%
+- **特征触发优于标签翻转和模式触发**：因其自然性使后门更新与良性更新冲突更小
+- **四种防御方法同时使用仍无法有效抵御 BadSFL**
+- **Neurotoxin 在 SFL 中未表现出预期的持久性优势**：可能因为 Scaffold 的控制变量机制改变了参数更新的动态
+
+## 亮点与洞察
+
+1. **攻击面的发现**：Scaffold 的控制变量是为了提升收敛性而引入的，但同时为攻击者提供了"操纵全局方向→间接控制良性客户端"的通道——这是一个典型的"功能即漏洞"案例
+2. **"帮凶"机制的精妙**：攻击者不是直接对抗良性更新，而是通过篡改控制变量让良性客户端在不知情的情况下朝有利于后门的方向更新——这种间接操控比传统的模型替换更隐蔽、更持久
+3. **预测未来模型的优化思路**：利用控制变量 $c$ 作为全局收敛方向的代理，模拟未来聚合结果来优化后门——这种"面向未来"的优化策略可泛化到其他 FL 攻击场景
+4. **对 FL 安全研究的启示**：性能更好的 FL 算法不一定更安全——Scaffold 的校正机制恰恰成为放大攻击效果的工具
+
+## 局限与展望
+
+1. **PTA 仍有下降**：CIFAR-10 上 55% 的主任务精度虽优于无增强基线，但仍远低于正常训练（~80%），可能引起怀疑
+2. **假设攻击者能参与多轮**：攻击者需要从第 10 轮持续参与到第 40 轮，在实际系统中可能被发现
+3. **GAN 质量影响**：数据增强效果依赖 GAN 在 FL 受限条件下的生成质量
+4. **仅评估分类任务**：未在检测、分割等更复杂任务上验证
+5. **缺少自适应防御的讨论**：针对控制变量异常检测的防御方法未被探讨
+6. **CIFAR-10 上 PTA 较低**：作为 SFL 在 non-IID 下的固有挑战，55% 的 PTA 可能限制实际场景的适用性
+
+## 相关工作与启发
+
+- Scaffold（Karimireddy et al., 2020）是 non-IID FL 的标准方案——本文揭示了其控制变量机制的安全代价
+- Neurotoxin（Zhang et al.）通过锁定低频更新参数来增强后门持久性，但在 SFL 中失效——控制变量改变了参数更新动态
+- 3DFed 的多层后门框架在 FedAvg 上有效，但在 SFL 中同样无法达到 BadSFL 的持久性
+- 迁移学习领域的 GAN 数据增强思想被成功应用于 FL 攻击场景
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐⭐ — 首次揭示 Scaffold 控制变量的安全漏洞，"让良性客户端成为帮凶"的思路新颖
+- **实验充分度**: ⭐⭐⭐⭐ — 三数据集 + 三种触发方式 + 四种防御 + 消融，覆盖面广
+- **写作质量**: ⭐⭐⭐ — 方法描述清晰但部分实验图表需参考附录，主文的定量结果不够精确（多为图表而非表格）
+- **价值**: ⭐⭐⭐⭐⭐ — 对 FL 安全研究领域有重要警示意义，揭示了算法改进可能带来新安全风险的深层问题
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2026\] Batman: Benign Knowledge Alignment Through Malicious Null Space in Federated Backdoor Attack](../../CVPR2026/ai_safety/batman_benign_knowledge_alignment_through_malicious_null_space_in_federated_back.md)
+- [\[ICCV 2025\] Backdoor Attacks on Neural Networks via One-Bit Flip](backdoor_attacks_on_neural_networks_via_one_bit_flip.md)
+- [\[NeurIPS 2025\] Taught Well, Learned Ill: Towards Distillation-Conditional Backdoor Attack](../../NeurIPS2025/ai_safety/taught_well_learned_ill_towards_distillation-conditional_backdoor_attack.md)
+- [\[CVPR 2025\] Infighting in the Dark: Multi-Label Backdoor Attack in Federated Learning](../../CVPR2025/ai_safety/infighting_in_the_dark_multi-label_backdoor_attack_in_federated_learning.md)
+- [\[ICCV 2025\] Find a Scapegoat: Poisoning Membership Inference Attack and Defense to Federated Learning](find_a_scapegoat_poisoning_membership_inference_attack_and_defense_to_federated_.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,153 @@
+---
+title: >-
+  [论文解读] MindVote: When AI Meets the Wild West of Social Media Opinion
+description: >-
+  [AAAI 2026 Oral][LLM评测][社交媒体民意] 构建MindVote双语基准（3918个Reddit/微博真实投票×23主题），评估15个LLM民意预测能力，发现专门调查微调模型反而不如通用模型（"专门化陷阱"）。 领域现状 领域现状：领域现状：LLM 被用作调查的可扩展替代——部署昂贵调查前预测公众意见分布…
+tags:
+  - "AAAI 2026 Oral"
+  - "LLM评测"
+  - "社交媒体民意"
+  - "双语投票"
+  - "LLM评估"
+---
+
+# MindVote: When AI Meets the Wild West of Social Media Opinion
+
+**会议**: AAAI 2026 Oral  
+**arXiv**: [2505.14422](https://arxiv.org/abs/2505.14422)  
+**代码**: 有  
+**领域**: LLM评测  
+**关键词**: 舆情预测, 社交媒体, LLM基准, 文化偏见, 上下文依赖
+
+## 一句话总结
+提出 MindVote——首个基于真实社交媒体投票数据的 LLM 舆情预测基准，包含 Reddit/微博上 3,918 个自然投票（23 个话题），附带平台和话题上下文。评估 15 个 LLM 发现：最佳模型（o3-medium）1-Wasserstein 仅 0.892 vs 上界 0.972；在调查数据上微调的专用模型反而不如通用模型（"调查特化陷阱"）；模型表现出强烈文化对齐——西方模型擅长 Reddit、中国模型擅长微博。
+
+## 研究背景与动机
+
+### 领域现状
+
+**领域现状**：领域现状**：LLM 被用作调查的可扩展替代——部署昂贵调查前预测公众意见分布。但现有评估基于传统结构化问卷。
+
+**现有痛点**：
+
+### 现有痛点
+
+**现有痛点**：传统调查缺乏社交媒体特有的上下文（平台规范、社区话语、文化因素）
+
+### 核心矛盾
+
+**核心矛盾**：调查数据与真实社交讨论脱节——问卷去除了形成观点的社会环境
+
+### 解决思路
+
+**解决思路**：现有基准话题单一、文化同质、缺乏上下文元数据
+
+**核心矛盾**：LLM 实际部署的场景是社交媒体，但评估用的是与社交媒体风格截然不同的结构化调查。
+
+**本文目标** 构建基于真实社交媒体讨论的舆情预测基准。
+
+**切入角度**：从 Reddit 和微博收集真实投票数据（非人工构造），配以平台和话题上下文。
+
+**核心 idea**：真实社交投票 + 双平台跨文化 + 丰富上下文 = 生态有效的舆情评估。
+
+## 方法详解
+
+### 整体框架
+从 Reddit/微博收集 3,918 自然投票 → 23 话题 × 白名单过滤 → 标注平台上下文（用户画像、技术倾向）和话题上下文（时事新闻、行业数据）→ 15 个 LLM 零样本评估。
+
+### 关键设计
+
+1. **双平台跨文化设计**:
+
+    - 功能：覆盖中西方不同社区规范和文化
+    - Reddit（英语/西方用户）和微博（中文/中国用户），翻译增强（BLEU>35）
+    - 设计动机：直接比较同话题在不同文化中的模型表现
+
+2. **结构化上下文标注**:
+
+    - 功能：为每个投票提供影响观点的上下文
+    - 平台上下文 + 话题上下文
+    - 消融发现：去掉上下文性能下降 5.91%——上下文是关键信号
+
+3. **四指标评估**：1-Wasserstein / KL / Spearman / Accuracy
+
+## 实验关键数据
+
+### 主实验
+
+| 模型 | 1-Wass↑ | Spearman↑ | Acc |
+|------|---------|-----------|-----|
+| o3-medium | **0.892** | **0.756** | 58.1% |
+| DeepSeek-R1 | 0.876 | 0.739 | 55.8% |
+| SubPop-Llama（调查微调） | 0.774 | - | - |
+| 上界 | 0.972 | - | - |
+
+### 消融：上下文影响
+
+| 配置 | 1-Wass 变化 |
+|------|-----------|
+| 移除全部上下文 | -5.91% |
+| 仅移除平台上下文 | -5.12% |
+| 仅移除话题上下文 | -4.52% |
+
+### 关键发现
+- **调查特化陷阱**：在调查数据上微调的专用模型反而不如通用模型
+- **强烈文化对齐**：西方模型擅长 Reddit、中国模型擅长微博
+- **与上界差距显著**（0.892 vs 0.972）
+
+## 亮点与洞察
+- **"调查≠社交媒体"**的核心洞察对评估方法论有广泛影响
+- **文化对齐现象**揭示了 LLM 以训练数据的文化为中心推理的本质
+- 上下文消融设计干净有说服力
+
+## 局限与展望
+- 限于 Reddit/微博两个平台
+- 机器翻译可能不完全捕捉文化细微差异
+- 去掉了分类偏好投票减少了多样性
+
+## 相关工作与启发
+- **vs OpinionQA / SubPop**：基于通用社会调查。MindVote 用真实社交数据更有生态效度
+- **vs GlobalOpinionQA**：多国调查但仍是调查格式
+- 对多文化 AI 系统设计有指导
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 首个真实社交媒体舆情预测基准，"调查特化陷阱"重要
+- 实验充分度: ⭐⭐⭐⭐ 15 模型、3918 投票、双平台、上下文消融
+- 写作质量: ⭐⭐⭐⭐ 问题定义精准
+- 价值: ⭐⭐⭐⭐ 对舆情预测评估有方法论贡献
+**领域**: NLP理解 / 舆情分析  
+**关键词**: 社交媒体民意, 双语投票, LLM评估
+
+## 一句话总结
+构建MindVote双语基准（3918个Reddit/微博真实投票×23主题），评估15个LLM民意预测能力，发现专门调查微调模型反而不如通用模型（"专门化陷阱"）。
+
+## 方法详解
+
+### 关键设计
+1. **3918个自然投票**（双语）
+2. **15个LLM评估**
+3. **Wasserstein/KL/排序相关**多指标
+
+## 亮点与洞察
+- **专门化陷阱**：调查微调模型<通用模型——这个反直觉发现很重要。
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 首个真实社媒投票基准
+- 实验充分度: ⭐⭐⭐⭐ 15模型双语
+- 价值: ⭐⭐⭐⭐ 对社媒分析有实用价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2026\] When AI Benchmarks Plateau: A Systematic Study of Benchmark Saturation](../../ICML2026/llm_evaluation/when_ai_benchmarks_plateau_a_systematic_study_of_benchmark_saturation.md)
+- [\[ICML 2026\] From Human-Level AI Tales to AI Leveling Human Scales](../../ICML2026/llm_evaluation/from_human-level_ai_tales_to_ai_leveling_human_scales.md)
+- [\[ACL 2026\] WildIFEval: Instruction Following in the Wild](../../ACL2026/llm_evaluation/wildifeval_instruction_following_in_the_wild.md)
+- [\[ACL 2026\] Are They Lovers or Friends? Evaluating LLMs' Social Reasoning in English and Korean Dialogues](../../ACL2026/llm_evaluation/are_they_lovers_or_friends_evaluating_llms39_social_reasoning_in_english_and_kor.md)
+- [\[ICLR 2026\] Benchmarking LLM Tool-Use in the Wild](../../ICLR2026/llm_evaluation/benchmarking_llm_tool-use_in_the_wild.md)
+
+</div>
+
+<!-- RELATED:END -->

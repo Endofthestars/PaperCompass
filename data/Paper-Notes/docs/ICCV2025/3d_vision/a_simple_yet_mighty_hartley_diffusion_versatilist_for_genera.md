@@ -1,0 +1,131 @@
+---
+title: >-
+  [论文解读] A Simple yet Mighty Hartley Diffusion Versatilist for Generalizable Dense Vision Tasks
+description: >-
+  [ICCV 2025][3D视觉][扩散模型] 提出HarDiff——基于离散Hartley变换的频域学习策略，通过低频训练（从源域提取结构先验）和高频采样（利用目标域细节引导）增强扩散模型在稠密视觉任务上的跨域泛化能力，在语义分割、深度估计和去雾等12个基准上取得SOTA。 扩散模型已展现出作为稠密视觉任务通用器（vers…
+tags:
+  - "ICCV 2025"
+  - "3D视觉"
+  - "扩散模型"
+  - "离散Hartley变换"
+  - "域泛化"
+  - "语义分割"
+  - "深度估计"
+  - "去雾"
+---
+
+# A Simple yet Mighty Hartley Diffusion Versatilist for Generalizable Dense Vision Tasks
+
+**会议**: ICCV 2025  
+**代码**: 无公开信息  
+**领域**: 稠密预测 / 扩散模型 / 域泛化  
+**关键词**: 扩散模型, 离散Hartley变换, 域泛化, 语义分割, 深度估计, 去雾  
+
+## 一句话总结
+提出HarDiff——基于离散Hartley变换的频域学习策略，通过低频训练（从源域提取结构先验）和高频采样（利用目标域细节引导）增强扩散模型在稠密视觉任务上的跨域泛化能力，在语义分割、深度估计和去雾等12个基准上取得SOTA。
+
+## 背景与动机
+扩散模型已展现出作为稠密视觉任务通用器（versatilist）的强大能力，但其泛化到未见域（unseen domains）的能力鲜有探索。如何让扩散模型既能在源域学到任务相关的结构知识，又能在推理时适应目标域的细节特征，是一个关键的开放问题。
+
+## 核心问题
+如何提升基于扩散模型的稠密预测方法在域偏移（domain shift）情况下的泛化能力？核心发现：Hartley变换中低频分量包含图像的广泛内容信息，高频分量保留细节——可分别用于训练和采样。
+
+## 方法详解
+
+### 整体框架
+HarDiff 基于扩散模型进行稠密视觉预测，核心创新是引入离散 Hartley 变换（DHT）进行频域分析，将扩散过程拆分为低频训练和高频采样两个阶段。整体框架：输入为源域带标注的图像-标签对 → 在频域进行低频分量提取用于训练（学习域不变的结构先验）→ 推理时目标域图像提供高频引导（注入目标域特有的细节信息）→ 输出稠密预测结果（语义分割图/深度图/去雾图像）。
+
+### 关键设计
+
+1. **离散 Hartley 变换（DHT）分析**:
+
+    - 功能：将图像/特征从空间域变换到频域，分析低频和高频分量的作用
+    - 核心思路：与离散傅里叶变换（DFT）不同，DHT 使用 $\text{cas}(\cdot) = \cos(\cdot) + \sin(\cdot)$ 函数替代复指数函数，变换结果完全是实数——无虚数部分。DHT 定义为 $H(u,v) = \frac{1}{N}\sum_{x,y} f(x,y) \text{cas}(\frac{2\pi ux}{N} + \frac{2\pi vy}{N})$。低频分量激活图像的全局内容和结构信息，高频分量保留边缘和纹理等精细细节
+    - 设计动机：DHT 纯实数计算比 DFT 更高效，且与深度学习框架的张量运算天然兼容（无需处理复数）。分析发现：不同域图像的低频分量具有很高的一致性（域不变），而高频分量差异大（域特有）——这为域泛化提供了清晰的频域视角
+
+2. **低频训练过程（Low-Frequency Training）**:
+
+    - 功能：在源域数据上学习域不变的结构先验
+    - 核心思路：在扩散模型训练过程中，对中间特征或噪声进行 DHT 变换后，仅保留低频分量参与损失计算或特征传递。低频分量代表了跨域共享的广泛内容结构——如物体的大致形状、场景布局等
+    - 设计动机：聚焦低频分量可以自然过滤掉域特有的高频细节（如特定域的纹理模式、噪声特征），从而学到更具泛化性的结构知识
+
+3. **高频采样过程（High-Frequency Sampling）**:
+
+    - 功能：推理时利用目标域图像的高频信息引导生成
+    - 核心思路：在扩散模型的采样（去噪）过程中，将目标域图像经 DHT 分解后的高频分量注入到采样步骤中，使得生成的稠密预测既保持从源域学到的结构正确性，又包含目标域特有的精细细节
+    - 设计动机：目标域的高频分量包含该域特有的纹理和细节信息，通过在采样时引入这些信息，模型可以自适应地从"结构正确但缺乏细节"的预测过渡到"既结构正确又细节精确"的最终输出
+
+### 损失函数 / 训练策略
+
+- 训练阶段使用标准扩散模型去噪损失，但在频域中对低频分量给予更高权重
+- 整体策略为即插即用（plug-and-play），可嵌入到多种基于扩散的稠密预测框架中
+- 无需在目标域上微调，推理时直接使用高频采样策略实现域泛化
+
+## 实验关键数据
+
+论文在 12 个公开基准上评估，覆盖三类任务——语义分割（域泛化设置）、单目深度估计、图像去雾：
+
+### 主实验
+
+| 任务 | 设置 | 结果概述 |
+|------|------|---------|
+| 语义分割 | GTA5→Cityscapes 等跨域基准 | 超越现有 SOTA 域泛化方法 |
+| 单目深度估计 | NYU/KITTI 等基准 | 超越现有 SOTA |
+| 图像去雾 | RESIDE 等基准 | 超越现有 SOTA |
+
+### 消融实验
+
+| 配置 | 效果 | 说明 |
+|------|------|------|
+| Full HarDiff | 最优 | 低频训练 + 高频采样完整方案 |
+| 仅低频训练（无高频采样） | 下降 | 缺少目标域细节引导 |
+| 仅高频采样（无低频训练） | 下降 | 缺少域不变结构基础 |
+| 用 DFT 替代 DHT | 略低 | DHT 纯实数计算更高效且精度相当或更好 |
+
+### 关键发现
+
+- 低频训练和高频采样两阶段均不可或缺，体现了频域分解的互补性
+- DHT 相比 DFT 精度相当但计算更高效——纯实数运算避免了复数开销
+- 同一策略在分割、深度、去雾三类任务上一致有效，说明频域分解捕获了跨任务共通的域不变/域特有特性
+
+## 亮点与洞察
+
+- **Hartley 变换替代傅里叶变换**: DHT 纯实数计算比 DFT 更适合深度学习场景，且信号分析能力相当。这是将 DHT 引入深度学习频域分析的早期工作之一
+- **频域分离的域泛化视角**: 低频=结构=域不变，高频=细节=域特定——这个频域视角比传统风格迁移或域适应方法更优雅且理论清晰
+- **即插即用的通用性**: 同一策略适用于分割、深度、去雾等不同稠密预测任务，说明基于频域的域泛化策略具有很强的通用性
+
+## 局限与展望
+
+- 12 个基准的具体数值因仅能获取 CVF PDF 受限，精确提升幅度有待核实
+- 高频采样是否增加推理时间成本，作者未明确量化
+- 可否扩展到其他稠密预测任务如光流、法线估计、表面重建等
+- 低频/高频的频率截断阈值是固定的还是自适应的，论文中未详细讨论
+
+## 相关工作与启发
+
+- **vs VPD 等扩散稠密预测方法**: VPD 等标准方法通常假设训练和测试在同一域，HarDiff 显式处理域泛化
+- **vs FDA 等傅里叶域适应方法**: FDA 在像素空间做频率交换，HarDiff 在扩散过程中做频率分离——更深层次地整合到生成过程
+- **频域先验的普适性**: DHT 分解可迁移到其他生成模型（如 GAN、VAE）的域泛化设计中
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ Hartley 变换 + 扩散模型域泛化的结合较新颖
+- 实验充分度: ⭐⭐⭐⭐ 12 个基准 3 类任务覆盖广泛
+- 写作质量: ⭐⭐⭐⭐ 方法动机清晰，框架简洁优雅
+- 价值: ⭐⭐⭐⭐ 频域思路对域泛化研究有启发
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Easy3D: A Simple Yet Effective Method for 3D Interactive Segmentation](easy3d_a_simple_yet_effective_method_for_3d_interactive_segmentation.md)
+- [\[ICCV 2025\] LLaVA-3D: A Simple yet Effective Pathway to Empowering LMMs with 3D Capabilities](llava-3d_a_simple_yet_effective_pathway_to_empowering_lmms_with_3d_capabilities.md)
+- [\[CVPR 2025\] Scaling Properties of Diffusion Models for Perceptual Tasks](../../CVPR2025/3d_vision/scaling_properties_of_diffusion_models_for_perceptual_tasks.md)
+- [\[CVPR 2025\] Olympus: A Universal Task Router for Computer Vision Tasks](../../CVPR2025/3d_vision/olympus_a_universal_task_router_for_computer_vision_tasks.md)
+- [\[ICCV 2025\] Boost 3D Reconstruction using Diffusion-based Monocular Camera Calibration](boost_3d_reconstruction_using_diffusion-based_monocular_camera_calibration.md)
+
+</div>
+
+<!-- RELATED:END -->

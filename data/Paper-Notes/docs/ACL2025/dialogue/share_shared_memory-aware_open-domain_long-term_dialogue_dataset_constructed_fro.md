@@ -1,0 +1,161 @@
+---
+title: >-
+  [论文解读] SHARE: Shared Memory-Aware Open-Domain Long-Term Dialogue Dataset Constructed from Movie Script
+description: >-
+  [ACL 2025][对话系统][长期对话] 提出了基于电影剧本构建的长期对话数据集 SHARE，首次引入「共享记忆」概念，并设计了 EPISODE 对话框架来管理个人信息、个人事件和共享记忆，使长期对话更具亲密感和参与度。 对话中的记忆在建立关系和促进持续对话中发挥关键作用。现有长期对话研究的局限性： 仅关注个体记忆：现有…
+tags:
+  - "ACL 2025"
+  - "对话系统"
+  - "长期对话"
+  - "共享记忆"
+  - "电影剧本"
+  - "对话记忆管理"
+  - "多会话对话"
+---
+
+# SHARE: Shared Memory-Aware Open-Domain Long-Term Dialogue Dataset Constructed from Movie Script
+
+**会议**: ACL 2025  
+**arXiv**: [2410.20682](https://arxiv.org/abs/2410.20682)  
+**代码**: [github](https://github.com/e1kim/SHARE)  
+**领域**: 其他  
+**关键词**: 长期对话, 共享记忆, 电影剧本, 对话记忆管理, 多会话对话
+
+## 一句话总结
+
+提出了基于电影剧本构建的长期对话数据集 SHARE，首次引入「共享记忆」概念，并设计了 EPISODE 对话框架来管理个人信息、个人事件和共享记忆，使长期对话更具亲密感和参与度。
+
+## 研究背景与动机
+
+对话中的记忆在建立关系和促进持续对话中发挥关键作用。现有长期对话研究的局限性：
+
+**仅关注个体记忆**：现有方法只利用个人信息（如"我是 K-Pop 粉丝"）或短期事件（如"看医生"）来支持长期对话，适用于初次交流或日常闲聊
+
+**忽视共享记忆**：在现实中，老朋友间的对话大量围绕共享记忆展开（如"记得我们去年去的音乐节吗？"），但这类研究几乎空白
+
+**数据收集困难**：众包对话需要手动创建角色扮演场景，成本高；LLM 生成的数据主要关注显式陈述的事件，忽略了对话中隐式可推断的事件
+
+**现有数据集对比**（Table 1）：MSC、LoCoMo、CONVERSATION CHRONICLES 等数据集均不包含共享记忆信息
+
+**核心创新点**：电影剧本天然包含角色间的共享记忆——对话不仅描述角色及其关系，还传递了场景中未直接展示的共享记忆信息。
+
+## 方法详解
+
+### 整体框架
+
+SHARE 数据集构建 + EPISODE 对话框架。数据从电影剧本中提取，包含四类信息：个人画像（persona）、个人事件、互动事件（mutual event）和共享记忆。EPISODE 框架在此基础上管理和利用这些记忆进行响应生成。
+
+### 关键设计
+
+1. **数据集构建（SHARE）**：
+
+    - **数据源**：从 IMSDB、DailyScript 和 Simply Scripts 收集 1201 部电影剧本，涵盖浪漫、喜剧、动作等多种类型
+    - **剧本预处理**：使用电影剧本解析器将脚本结构化为对话；仅保留两人对话，每个场景作为一个 session，同一对角色的多个 session 构成一个 episode（≥3 sessions）
+    - **信息提取**（使用 GPT-4）：
+        - 个人画像：性格、兴趣等
+        - 个人事件：当前健康状况等短暂信息
+        - 互动事件：两人间的实时事件（当前 session 可显式推断）
+        - 共享记忆：当前 session 之前两人共享的过去事件（需隐式推断）
+    - **标注**：使用 GPT-3.5-turbo 将每条话语关联到对应的记忆集信息
+
+2. **EPISODE 对话框架**：
+
+    - **记忆选择**：基于 Llama-3-8B 训练记忆选择器，从不断增长的记忆集 $\mathcal{M}_{(u,v)} = \{\mathcal{P}_u, \mathcal{P}_v, \mathcal{E}_u, \mathcal{E}_v, \mathcal{S}_{(u,v)}\}$ 中选取与当前上下文相关的记忆。候选池中添加"Everyday Language"选项，用于不需要特定记忆的闲聊场景
+    - **响应生成**：使用 Gemma (2B) 和 Llama-3.1-Instruct (8B) 作为主干模型，结合选中的记忆 $\mathbf{m}$ 和当前上下文 $\mathbf{c}$ 生成响应
+
+3. **记忆管理（异步更新）**：
+
+    - **信息提取**：每轮 session 结束后，使用训练好的 Llama-3-8B 提取新信息
+    - **记忆更新策略**：
+        - 累积：新信息独立于已有记忆时直接添加
+        - 顺序更新：新信息与已有记忆有因果/顺序关系时更新
+        - 冲突更新：新信息与已有记忆矛盾时更新
+        - 去重：新信息与已有记忆重复时不更新
+
+### 损失函数 / 训练策略
+
+使用标准的语言模型微调策略（SFT），数据集按 8:1:1 划分为训练/验证/测试集。记忆选择器和响应生成器分别基于收集的训练数据微调 Llama-3-8B 和相应主干模型。
+
+## 实验关键数据
+
+### 主实验
+
+**自动评估指标**（Llama-3.1-Instruct 8B）：
+
+| 方法 | BLEU-3/4 | ROUGE-1/2 | ROUGE-L | BertSim | Dist-1/2 |
+|------|----------|-----------|---------|---------|----------|
+| Zero-shot | 0.0122/0.0099 | 0.0997/0.0213 | 0.0923 | 0.8474 | 0.5458/0.8470 |
+| SHARE w/o memory | 0.0168/0.0135 | 0.1146/0.0329 | 0.1085 | 0.8592 | 0.6372/0.8432 |
+| SHARE w/ predicted memory | **0.0267/0.0200** | **0.1392/0.0508** | **0.1290** | **0.8632** | 0.5676/0.8179 |
+| SHARE w/ gold memory | 0.0500/0.0377 | 0.2205/0.1000 | 0.2040 | 0.8806 | 0.6171/0.8389 |
+
+**多会话 GPT-4o 评估**（Llama-3.1-Instruct 8B，Session 6，0-3分）：
+
+| 方法 | 连贯性 | 参与度 | 亲密度 | 反映度 |
+|------|--------|--------|--------|--------|
+| SHARE (w/o shared memory) | 2.5979 | 2.3538 | 1.6771 | — |
+| SHARE + ACCUMULATION | 2.5958 | 2.3125 | 1.7271 | 1.3937 |
+| SHARE + COMEDY | 2.0625 | 1.2521 | 1.0042 | — |
+| SHARE + EPISODE | **2.6042** | **2.3625** | **1.7583** | **1.7604** |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|---------|------|
+| 预测记忆 vs 仅个人记忆 | BLEU-4: 0.0200 vs 0.0116 | 使用完整记忆（含共享）显著优于仅个人记忆 |
+| EPISODE vs ACCUMULATE | 反映度: 1.76 vs 1.39 (Session 6) | 记忆更新策略明显优于简单累积 |
+| EPISODE vs COMEDY | 参与度: 2.36 vs 1.25 (Session 6) | COMEDY 的压缩策略导致信息丢失 |
+| w/ vs w/o shared memory | 反映度: 有 vs 无 | 没有共享记忆时无法评估关系反映度 |
+
+### 关键发现
+
+1. **共享记忆的重要性**：61.57% 的 episode 包含至少一条共享记忆，证明了其在延续对话中的重要性
+2. **预测记忆 vs 仅个人记忆**：整合共享记忆比仅使用个人信息产生更丰富和多样化的对话
+3. **EPISODE 在反映度上持续领先**：随着 session 增加，EPISODE 的关系反映度持续提升且优于所有基线
+4. **记忆管理优于简单累积**：EPISODE 的结构化记忆策略在连贯性和参与度上均优于简单累积
+
+## 亮点与洞察
+
+- **电影剧本作为数据源的巧妙选择**：利用了电影对话天然蕴含的隐式共享记忆信息，解决了众包数据收集成本高和 LLM 生成忽略隐式信息的问题
+- **「共享记忆」概念的引入**：填补了长期对话研究中的重要空白——现有工作关注的是"你知道什么"和"发生了什么"，而 SHARE 还关注"我们一起经历了什么"
+- **完整的端到端框架**：从数据构建到记忆管理到响应生成的完整闭环
+- **多样化的对话风格**：不仅限于日常对话，还包含奇幻等多种类型
+
+## 局限与展望
+
+1. **数据质量依赖 GPT-4**：信息提取完全依赖 GPT-4，可能存在提取偏差
+2. **英文单语言**：数据集仅覆盖英文
+3. **剧本 vs 真实对话**：电影剧本的对话风格与真实日常对话存在差异
+4. **评估主观性**：反映度（Reflectiveness）等指标的评判标准较主观
+5. **隐式推断的准确性**：共享记忆的"隐式推断"本身就是一个难以验证的任务
+6. **规模受限**：3,216 个 episode、17,679 个 session，相比大规模对话数据集仍较小
+
+## 相关工作与启发
+
+- **与 MSC、LoCoMo 的区别**：这些数据集只关注 persona 和个人事件，SHARE 增加了共享记忆维度
+- **与 CONVERSATION CHRONICLES 的区别**：后者虽然包含关系信息但使用合成数据，SHARE 来自真实电影剧本
+- **记忆管理启发**：EPISODE 的四种更新策略（累积/顺序/冲突/去重）提供了比简单压缩更精细的记忆管理方案
+- **启发方向**：共享记忆概念可扩展到游戏 NPC 对话、在线客服、个人助手等需要关系维护的场景
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 「共享记忆」概念新颖，电影剧本数据源选择巧妙
+- 实验充分度: ⭐⭐⭐⭐ 自动评估 + GPT-4o评估 + 人工评估，多backbone对比
+- 写作质量: ⭐⭐⭐⭐ 动机清晰，开头引用 Saint-Exupéry 贴切，表格丰富
+- 价值: ⭐⭐⭐⭐ 填补了长期对话中共享记忆的空白，数据集和框架都开源
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2026\] APEX-MEM: Agentic Semi-Structured Memory with Temporal Reasoning for Long-Term Conversational AI](../../ACL2026/dialogue/apex-mem_agentic_semi-structured_memory_with_temporal_reasoning_for_long-term_co.md)
+- [\[ACL 2025\] KokoroChat: A Japanese Psychological Counseling Dialogue Dataset Collected via Role-Playing by Trained Counselors](kokorochat_a_japanese_psychological_counseling_dialogue.md)
+- [\[ACL 2025\] Enabling Chatbots with Eyes and Ears: An Immersive Multimodal Conversation System](enabling_chatbots_with_eyes_and_ears_an_immersive_multimodal_conversation_system.md)
+- [\[ACL 2025\] Dialogue Systems for Emotional Support via Value Reinforcement](dialogue_systems_for_emotional_support_via_value_reinforcement.md)
+- [\[ACL 2025\] EnSToM: Enhancing Dialogue Systems with Entropy-Scaled Steering Vectors for Topic Maintenance](enstom_enhancing_dialogue_systems_with_entropy-scaled_steering_vectors_for_topic.md)
+
+</div>
+
+<!-- RELATED:END -->

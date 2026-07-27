@@ -1,0 +1,151 @@
+---
+title: >-
+  [论文解读] UrbanIng-V2X: A Large-Scale Multi-Vehicle Multi-Infrastructure Dataset Across Multiple Intersections for Cooperative Perception
+description: >-
+  [NeurIPS 2025][自动驾驶][车路协同] UrbanIng-V2X 是首个覆盖多车辆、多基础设施传感器、多城市交叉路口的真实世界协同感知数据集，提供 34 个场景的 712K 标注实例和 13 类目标，并通过跨路口评估策略（SIS）定量揭示了现有协同感知方法在未见交叉路口上存在 14 mAP 的显著泛化差距。
+tags:
+  - "NeurIPS 2025"
+  - "自动驾驶"
+  - "车路协同"
+  - "V2X数据集"
+  - "协同感知"
+  - "多交叉路口"
+  - "3D目标检测"
+---
+
+# UrbanIng-V2X: A Large-Scale Multi-Vehicle Multi-Infrastructure Dataset Across Multiple Intersections for Cooperative Perception
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.23478](https://arxiv.org/abs/2510.23478)  
+**代码**: [https://github.com/thi-ad/UrbanIng-V2X](https://github.com/thi-ad/UrbanIng-V2X)  
+**领域**: 自动驾驶 / 协同感知  
+**关键词**: 车路协同, V2X数据集, 协同感知, 多交叉路口, 3D目标检测
+
+## 一句话总结
+
+UrbanIng-V2X 是首个覆盖多车辆、多基础设施传感器、多城市交叉路口的真实世界协同感知数据集，提供 34 个场景的 712K 标注实例和 13 类目标，并通过跨路口评估策略（SIS）定量揭示了现有协同感知方法在未见交叉路口上存在 14 mAP 的显著泛化差距。
+
+## 研究背景与动机
+
+**领域现状**：协同感知（Cooperative Perception）利用 V2X 通信让车辆和基础设施共享传感器信息，克服单车遮挡和视野受限。已有真实世界数据集推动了该领域发展：V2V4Real（纯V2V）、DAIR-V2X-C（V2I，28路口但单车）、TUMTraf-V2X（V2I，单路口）、V2X-Real（V2V+V2I，单路口）。
+
+**现有痛点**：(1) 没有数据集同时具备"多车辆+多基础设施+多交叉路口"的组合——这对评估协同感知系统在真实城市环境中的可扩展性至关重要。(2) 在单一交叉路口上训练和测试可能产生虚高性能——模型可能学到的是特定路口的几何模式和交通行为，而非通用的协同感知能力。
+
+**核心矛盾**：评估泛化能力需要跨路口测试，但跨路口数据收集面临硬件部署、时空同步和多源标注一致性等巨大工程挑战。
+
+**本文目标** (1) 构建首个多车+多基础设施+多路口的真实 V2X 数据集；(2) 设计评估策略量化模型在未见路口上的泛化差距；(3) 提供完整工具链（开发套件+HD地图+数字孪生）赋能社区研究。
+
+**切入角度**：在德国 Ingolstadt 的高清测试场选取 3 个几何布局不同的城市交叉路口，部署 2 辆联网车辆和 7 个传感器杆，精心设计时空同步方案，录制约 8 小时数据并精选 34 个代表性场景。
+
+**核心 idea**：首个真实世界多交叉路口+多车+多基础设施的 V2X 数据集，通过 Separate Intersection Split 揭示协同感知的泛化瓶颈。
+
+## 方法详解
+
+### 整体框架
+
+UrbanIng-V2X 的数据集构建涵盖五个核心环节：(1) 大规模多模态传感器部署；(2) 精密时空同步与标定；(3) LiDAR 运动补偿与多源融合；(4) 场景选择与 3D 标注；(5) 跨路口评估策略设计。配套提供 OpenCOOD/nuScenes 格式转换器、Lanelet2 HD 地图和 CARLA 数字孪生。
+
+### 关键设计
+
+1. **业界最全面的 V2X 传感器部署**:
+
+    - 功能：实现前所未有的多模态多视角传感器覆盖
+    - 核心思路：每辆车配备 6 个 FHD RGB 相机（360°）+ 1 个 128 线 LiDAR + 高精 IMU（RTK 1cm 定位）。3 个路口共 7 个传感器杆，每杆配 1-3 个 VGA 热像相机 + LiDAR 组合（64线中距+32线盲区）。总计每场景最多：12 车载 RGB + 2 车载 LiDAR + 17 基础设施热像相机 + 12 基础设施 LiDAR
+    - 设计动机：首次引入热像仪到 V2X 数据集，支持夜间和恶劣光照研究。中距+盲区 LiDAR 组合扩大覆盖范围。RGB+热像+LiDAR 三模态组合是现有数据集中最丰富的
+
+2. **精密时空同步与标定方案**:
+
+    - 功能：确保多源异构传感器的精确对齐
+    - 核心思路：时间同步采用 UTC 统一基准——车载通过 GPS→IMU→PTP 链路同步，LiDAR 锁相保证旋转周期对齐，相机在 LiDAR 光束扫过其 FOV 时硬件触发。基础设施端通过 PTP/NTP 服务器同步，热像相机（30FPS）与 LiDAR（20FPS）最大偏差 16.6ms。空间标定使用锥形反射标靶+RTK GPS（2cm精度），优化重投影误差。逐点 LiDAR 运动补偿处理旋转扫描期间的车辆运动
+    - 设计动机：协同感知的核心挑战是多源对齐精度。锁相+硬件触发+逐点补偿的方案远精于简单时间戳匹配。50km/h 条件下最大空间误差估计 0.7m（不可避免，因为目标也在运动）
+
+3. **跨交叉路口评估策略（EIS vs SIS）**:
+
+    - 功能：分离评估"在已知环境中的性能"和"在未见环境中的泛化能力"
+    - 核心思路：**EIS**（Equal Intersection Split）——序列级划分，每个 split 包含所有路口的序列（21 train/6 val/7 test），评估已知路口性能。**SIS**（Separate Intersection Split）——路口级划分，整个路口的数据只在 train 或 test 中出现（leave-one-out 方案），评估泛化能力。设计了 SIS$_{1/2vs3}$、SIS$_{1/3vs2}$、SIS$_{2/3vs1}$ 三种配置
+    - 设计动机：帧级划分有严重数据泄露风险（时间相邻帧高度相似）；序列级仍可能因路口几何相似而高估；只有路口级才能真正评估泛化。14 mAP 的差距证明了这种评估设计的必要性
+
+### 损失函数 / 训练策略
+
+基准实验全部使用 PointPillars 骨干网络，评估 No Fusion、Early Fusion、Late Fusion 和 5 种 Intermediate Fusion 方法（F-Cooper、AttFuse、V2X-ViT、Where2Comm、CoBEVT）。4 个超类：Vehicle、Two-Wheelers、Heavy Vehicle、Pedestrian。评估指标 mAP@0.3 和 mAP@0.5。
+
+## 实验关键数据
+
+### 主实验（SIS$_{1/2vs3}$ 划分）
+
+| 方法 | AP_Veh@0.5 | AP_HVeh@0.5 | AP_Ped@0.5 | AP_TWheel@0.5 | mAP@0.5 |
+|------|-----------|-------------|-----------|--------------|---------|
+| No Fusion | 40.9 | 17.6 | 0.7 | 13.8 | 18.3 |
+| Early Fusion | 41.1 | 24.8 | 3.5 | 21.6 | 22.8 |
+| Late Fusion | 24.6 | 6.9 | 0.8 | 12.1 | 11.1 |
+| F-Cooper | 46.7 | 24.0 | 3.1 | 23.2 | 24.2 |
+| AttFuse | **47.6** | **27.8** | **4.6** | 22.1 | **25.5** |
+| V2X-ViT | 46.2 | 22.2 | 3.5 | 18.0 | 22.5 |
+| CoBEVT | 46.0 | 29.6 | 3.3 | 20.5 | 24.9 |
+
+### 消融实验（泛化差距）
+
+| 数据划分 | mAP@0.5 | 说明 |
+|----------|---------|------|
+| EIS avg（已见路口） | 38.2 | 在训练时见过的路口上测试 |
+| SIS avg（未见路口） | 24.2 | 在完全未见的路口上测试 |
+| **泛化差距** | **-14.0** | **现有方法严重过拟合特定路口** |
+
+| SIS 配置 | 测试路口 | mAP@0.5 | 特点 |
+|----------|---------|---------|------|
+| SIS$_{1/2vs3}$ | 路口3 | 24.6 | 中等难度 |
+| SIS$_{1/3vs2}$ | 路口2 | 19.1 | 最难（最密集动态） |
+| SIS$_{2/3vs1}$ | 路口1 | 28.9 | 相对简单 |
+
+### 关键发现
+
+- **14 mAP 泛化差距是本文最重要的发现**：EIS（38.2）→SIS（24.2），证明现有协同感知方法严重过拟合到特定路口的几何与交通模式。这对社区是重要警示
+- Intermediate Fusion 整体优于其他策略，AttFuse 以 25.5 mAP 领先。Late Fusion 最差（11.1 mAP），说明多源目标列表关联仍是主要瓶颈
+- 行人检测全面困难（最佳仅 4.6 AP@0.5），源于目标尺寸小、LiDAR 点数少
+- 路口间差异显著：路口2最难（人车密集、动态复杂），路口1最简单（点云可见性最高）
+- 每帧平均 78-129 个标注实例，远超 DAIR-V2X-C 和 TUMTraf-V2X
+
+## 亮点与洞察
+
+- **揭示了虚高性能的假象**：在单路口上的高 mAP 可能毫无意义——模型学到的是"这个路口的右转弯道就这个形状"而非"通用的协同感知能力"。14 mAP 的差距强烈呼吁多路口评估成为标准
+- **热像仪的引入**：首次将红外热像相机纳入 V2X 数据集（17个相机，38.8K图像），为夜间和恶劣光照下的协同感知开辟新维度
+- **工程实践的参考价值**：LiDAR 锁相+相机硬件触发+逐点运动补偿的同步方案是工业级精度，对其他多源传感器系统的构建有直接参考意义
+- **CARLA 数字孪生的附加值**：地理参考的数字孪生支持合成数据生成和 sim-to-real 研究，在真实数据昂贵时提供扩展途径
+
+## 局限与展望
+
+- 仅 3 个路口且均在 Ingolstadt 一个城市，地理多样性仍然有限——跨城市/跨国的评估是下一步
+- 34 个 20 秒场景（~680秒有效数据）总量对工业级标准偏小，但标注质量高
+- 当前基准仅评估 LiDAR-only 方法，未充分利用 RGB 和热像相机数据的多模态融合潜力——这部分需要研究社区跟进
+- 最大空间融合误差 0.7m 对行人等小目标影响显著（行人尺寸约 0.4×0.6m）
+- 无恶劣天气数据（仅光照变化），雨雪雾等条件下的协同感知评估缺失
+
+## 相关工作与启发
+
+- **vs DAIR-V2X-C**: 覆盖 28 个路口但仅单车 V2I 且中国区域限制。UrbanIng-V2X 路口少但提供多车+多基础设施+全球可用+HD地图+数字孪生
+- **vs V2X-Real**: 有双车+基础设施但限于单路口、无 HD 地图。UrbanIng-V2X 扩展到多路口并补全工具链
+- **vs TUMTraf-V2X**: 同为德国单路口 V2I 数据集。UrbanIng-V2X 是其自然扩展——多路口+多车+热像仪
+- **vs V2V4Real**: 纯 V2V 无基础设施，UrbanIng-V2X 补全了完整 V2V+V2I 场景
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 首个满足多车+多基础设施+多路口+热像仪组合的 V2X 数据集，填补重要空白
+- 实验充分度: ⭐⭐⭐ 覆盖多种融合策略但仅限 LiDAR-only，多模态融合和更多检测方法的评估缺失
+- 写作质量: ⭐⭐⭐⭐ 数据集构建细节详尽，同步方案工程描述清晰，统计分析全面
+- 价值: ⭐⭐⭐⭐ 14 mAP 泛化差距对协同感知社区有重要警示意义，SIS 评估策略值得推广为标准实践
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] V2X-Radar: A Multi-Modal Dataset with 4D Radar for Cooperative Perception](v2x-radar_a_multi-modal_dataset_with_4d_radar_for_cooperative_perception.md)
+- [\[CVPR 2026\] V2U4Real: A Real-world Large-scale Dataset for Vehicle-to-UAV Cooperative Perception](../../CVPR2026/autonomous_driving/v2u4real_a_real-world_large-scale_dataset_for_vehicle-to-uav_cooperative_percept.md)
+- [\[ECCV 2024\] H-V2X: A Large Scale Highway Dataset for BEV Perception](../../ECCV2024/autonomous_driving/h-v2x_a_large_scale_highway_dataset_for_bev_perception.md)
+- [\[ICCV 2025\] CoopTrack: Exploring End-to-End Learning for Efficient Cooperative Sequential Perception](../../ICCV2025/autonomous_driving/cooptrack_exploring_end-to-end_learning_for_efficient_cooperative_sequential_per.md)
+- [\[NeurIPS 2025\] X-Scene: Large-Scale Driving Scene Generation with High Fidelity and Flexible Controllability](x-scene_large-scale_driving_scene_generation_with_high_fidelity_and_flexible_con.md)
+
+</div>
+
+<!-- RELATED:END -->

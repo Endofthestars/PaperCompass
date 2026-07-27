@@ -1,0 +1,196 @@
+---
+title: >-
+  [论文解读] GenVidBench: A 6-Million Benchmark for AI-Generated Video Detection
+description: >-
+  [AAAI 2026][视频生成][AI生成视频检测] 提出 GenVidBench——首个 678 万级 AI 生成视频检测数据集，具备跨源（cross-source）和跨生成器（cross-generator）特性，覆盖 11 种 SOTA 视频生成器，并提供丰富的语义标注。 领域现状 视频生成模型（如 Sora、Kli…
+tags:
+  - "AAAI 2026"
+  - "视频生成"
+  - "AI生成视频检测"
+  - "基准数据集"
+  - "跨源跨生成器"
+  - "视频取证"
+  - "深度伪造检测"
+---
+
+# GenVidBench: A 6-Million Benchmark for AI-Generated Video Detection
+
+**会议**: AAAI 2026  
+**arXiv**: [2501.11340](https://arxiv.org/abs/2501.11340)  
+**代码**: [项目页](https://genvidbench.github.io/)  
+**领域**: 视频生成  
+**关键词**: AI生成视频检测, 基准数据集, 跨源跨生成器, 视频取证, 深度伪造检测
+
+## 一句话总结
+
+提出 GenVidBench——首个 678 万级 AI 生成视频检测数据集，具备跨源（cross-source）和跨生成器（cross-generator）特性，覆盖 11 种 SOTA 视频生成器，并提供丰富的语义标注。
+
+## 研究背景与动机
+
+### 领域现状
+视频生成模型（如 Sora、Kling）发展迅猛，生成视频质量趋近真实，真假视频界限日益模糊。这带来虚假信息传播、声誉损害、网络安全威胁等风险，迫切需要有效的 AI 生成视频检测器。
+
+### 核心痛点
+
+**高性能检测器的开发受限于缺乏大规模、高质量的专用数据集**。现有数据集存在以下问题：
+
+| 数据集 | 规模 | 提示/图像 | 视频对 | 语义标签 | 跨源 |
+|--------|------|-----------|--------|----------|------|
+| GVD | 11k | ✗ | ✗ | ✗ | ✗ |
+| GVF | 2.8k | ✓ | ✓ | ✓ | ✗ |
+| GenVideo | 2.27M | ✗ | ✗ | ✗ | ✗ |
+| GenVidDet | 2.66M | ✗ | ✗ | ✗ | ✗ |
+| **GenVidBench** | **6.78M** | **✓** | **✓** | **✓** | **✓** |
+
+- GVD/GenVideo 缺乏原始提示、视频对和语义标签，无法避免训练集和测试集内容相似的问题
+- GVF 虽有提示和语义标签，但规模仅 2.8k 且无跨源设置
+- 现有数据集中训练集和测试集使用相同生成器，检测难度低，不反映真实场景
+
+### 核心 Idea
+构建一个具备**跨源+跨生成器**特性的超大规模数据集：训练集和测试集使用**不同的视频生成器**和**不同的内容来源**，迫使检测器学习生成视频的本质特征而非依赖特定生成器或内容的偏差。
+
+## 方法详解
+
+### 整体框架
+
+GenVidBench 的设计围绕三个核心原则：**大规模、跨源跨生成器、SOTA 生成器覆盖**。
+
+### 关键设计
+
+#### 1. **数据集构成与配对策略**
+
+数据集组织为两组配对视频（Video Pair），每组内的视频来自相同的文本提示或图像：
+
+**训练集 (Video Pair 1)**：
+
+| 来源 | 类型 | 任务 | 分辨率 | 数量 |
+|------|------|------|--------|------|
+| Vript | 真实 | - | - | 417,566 |
+| Pika | 伪造 | T2V&I2V | 1088×560 | 1,670,465 |
+| VideoCraftV2 | 伪造 | T2V&I2V | 512×320 | 1,672,242 |
+| ModelScope | 伪造 | T2V | 256×256 | 1,672,242 |
+| T2V-Zero | 伪造 | T2V | 512×512 | 1,268,595 |
+
+**测试集 (Video Pair 2)**：
+
+| 来源 | 类型 | 任务 | 分辨率 | 数量 |
+|------|------|------|--------|------|
+| HD-VG-130M | 真实 | - | 1280×720 | 13,853 |
+| MuseV | 伪造 | I2V | 1210×576 | 13,853 |
+| SVD | 伪造 | I2V | 1024×576 | 13,853 |
+| Mora | 伪造 | T2V | 1024×576 | 13,853 |
+| CogVideo | 伪造 | T2V | 480×480 | 13,853 |
+| Sora | 伪造 | T2V | 1920×1080 | 51 |
+| Kling | 伪造 | T2V&I2V | - | 264 |
+
+- **设计动机**：训练集和测试集使用完全不同的生成器和内容源，防止模型仅通过内容或视频质量区分真假
+
+#### 2. **跨源跨生成器任务设计**
+
+- **同生成器检测**：在同一子集上训练和测试，准确率普遍 >97.4%，说明任务简单
+- **跨生成器检测**：换生成器测试时性能剧降（如 Pika 训练 → SVD 测试仅 54.66%），揭示了真实场景的挑战
+- **同源 vs. 跨源**：使用相同内容源生成的视频更容易分类（Pair1 平均 61.81% vs. 跨源 56.71%），证明检测器高度依赖生成源
+
+#### 3. **语义内容标注**
+
+从三个维度对视频进行语义分类：
+- **物体类别**：人物、动物、建筑、自然、植物、卡通、食物、游戏、车辆、其他
+- **动作**：反映时间属性（静态姿势、展示展览等）
+- **场景**：指示场景复杂度（自然风景 vs. 交通场景）
+
+利用 LLM 提取主题，聚合为抽象分类树（每维度 ≤10 类），为场景特定分析提供基础。
+
+#### 4. **轻量版本 GenVidBench-143k**
+
+从 678 万视频中精心采样 143,400 个视频，保持代表性和多样性，大幅降低计算需求。
+
+### 损失函数 / 训练策略
+
+论文主要是数据集贡献，使用标准视频分类模型进行基准测试。采用 MMAction2 默认配置，8 帧采样，224×224 分辨率，批大小 8。
+
+## 实验关键数据
+
+### 主实验（跨源跨生成器检测）
+
+| 方法 | 类型 | MuseV | SVD | CogV | Mora | Sora | Kling | HD | Top-1 |
+|------|------|-------|-----|------|------|------|-------|----|-------|
+| I3D | CNN | 32.72 | 12.04 | 76.44 | 72.30 | 41.18 | 46.22 | 95.04 | 60.21 |
+| SlowFast | CNN | 87.14 | 29.80 | 93.07 | 55.23 | 23.53 | 58.33 | 96.61 | 70.06 |
+| TSM | CNN | 95.94 | 73.16 | 36.44 | 91.72 | 33.34 | 71.60 | 96.30 | 73.88 |
+| VideoSwin | Trans. | 90.24 | 27.72 | 91.64 | 88.14 | 19.60 | 50.76 | 99.10 | 80.39 |
+| MViTv2-S | Trans. | 77.08 | 44.89 | 99.91 | 76.77 | 61.36 | 31.37 | 86.98 | 80.45 |
+| **DeMamba** | **Mamba** | **85.04** | **48.81** | **98.66** | **90.23** | **1.96** | **33.71** | **99.86** | **85.47** |
+
+DeMamba 以 Top-1 85.47% 领先，但 Sora 生成的视频检测率仅 1.96%，几乎无法识别。
+
+### 跨数据集对比
+
+| 数据集 | SlowFast | I3D | F3Net |
+|--------|----------|-----|-------|
+| NeuralTextures | 82.55 | - | - |
+| GVF | - | 61.88 | - |
+| GenVideo | - | - | 51.83 |
+| **GenVidBench** | **70.06** | **60.21** | **42.52** |
+
+GenVidBench 上所有检测器性能显著低于其他数据集，证明其更具挑战性。
+
+### 关键发现
+
+1. **跨生成器检测极具挑战性**：同生成器训测 >97%，跨生成器可低至 ~50%
+2. **生成器质量差异巨大**：Sora 视频几乎无法被检测（1.96%），CogVideo 最易检测（时间连续性差）
+3. **SVD 生成视频最难区分**：在 hard case 分析中，SVD 产生最多严重模糊案例
+4. **Transformer 类模型优于 CNN**：Transformer/Mamba 架构在此任务上表现更好
+5. **语义类别影响检测难度**：卡通类最易检测（Mean=0.209），车辆类最难（Mean=0.308）
+
+### 场景特定分析（Plants 类别）
+
+| 方法 | MuseV | SVD | CogV | Mora | HD | Mean |
+|------|-------|-----|------|------|-----|------|
+| TimeSformer | 77.96 | 29.80 | 96.30 | 93.44 | 87.14 | **75.09** |
+| VideoSwin | 57.96 | 7.35 | 92.59 | 47.88 | 98.76 | 52.86 |
+
+不同模型在特定类别上表现差异显著。
+
+## 亮点与洞察
+
+1. **跨源设计是最大亮点**：通过确保训练集和测试集的内容来源相同但生成器不同，有效消除了内容偏差，迫使检测器学习生成伪影
+2. **规模碾压**：678 万视频，比此前最大数据集 GenVidDet（266万）大 2.5 倍
+3. **语义标注的实用价值**：研究者可按需提取特定场景（如人物、动作）进行targeted研究
+4. **143k 轻量版设计贴心**：大幅降低研究门槛，加速模型迭代
+
+## 局限与展望
+
+1. **测试集规模较小**：每个测试生成器仅约 14k 视频，与训练集的百万级相比不对称
+2. **训练集生成质量偏低**：Pika/ModelScope/T2V-Zero 的分辨率和质量明显低于测试集中的 MuseV/SVD/Mora
+3. **最新生成器覆盖有限**：Sora 仅 51 个样本，Kling 仅 264 个
+4. **缺乏时序伪影的深度分析**：没有探索帧间一致性等时序特有的检测线索
+5. **语义标注依赖 LLM**：分类质量受限于 LLM 能力
+
+## 相关工作与启发
+
+- 与图像生成检测的 GenImage 数据集设计理念一致，但扩展到视频领域增加了时序维度
+- 跨源设计思想可推广到其他生成内容检测任务（音频、3D 模型等）
+- DeMamba 的优异表现暗示 SSM 架构在视频取证中的潜力
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐ — 数据集贡献为主，跨源设计是亮点但技术创新有限
+- **实验充分度**: ⭐⭐⭐⭐⭐ — 多模型基准、跨验证、hard case 分析、场景特定分析非常全面
+- **写作质量**: ⭐⭐⭐⭐ — 结构清晰，表格丰富
+- **价值**: ⭐⭐⭐⭐⭐ — 填补了大规模高质量生成视频检测数据集的空白，对社区有长期价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] D3: Training-Free AI-Generated Video Detection Using Second-Order Features](../../ICCV2025/video_generation/d3_training-free_ai-generated_video_detection_using_second-order_features.md)
+- [\[CVPR 2026\] VideoRealBench: A Chain-of-Thought Realism Evaluation Benchmark for Generated Human-Centric Videos](../../CVPR2026/video_generation/videorealbench_a_chain-of-thought_realism_evaluation_benchmark_for_generated_hum.md)
+- [\[CVPR 2026\] ActivityForensics: A Comprehensive Benchmark for Localizing Manipulated Activity in Videos](../../CVPR2026/video_generation/activityforensics_a_comprehensive_benchmark_for_localizing_manipulated_activity_.md)
+- [\[ACL 2026\] Self-Correcting Text-to-Video Generation with Misalignment Detection and Localized Refinement](../../ACL2026/video_generation/self-correcting_text-to-video_generation_with_misalignment_detection_and_localiz.md)
+- [\[CVPR 2026\] VABench: A Comprehensive Benchmark for Audio-Video Generation](../../CVPR2026/video_generation/vabench_a_comprehensive_benchmark_for_audio-video_generation.md)
+
+</div>
+
+<!-- RELATED:END -->

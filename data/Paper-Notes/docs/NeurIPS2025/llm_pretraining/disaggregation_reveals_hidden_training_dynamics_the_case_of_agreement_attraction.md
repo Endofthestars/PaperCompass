@@ -1,0 +1,144 @@
+---
+title: >-
+  [论文解读] Disaggregation Reveals Hidden Training Dynamics: The Case of Agreement Attraction
+description: >-
+  [NeurIPS 2025][预训练][训练动态] 本文通过对语言模型在主谓一致任务上的表现按实验条件进行细粒度拆解（disaggregation），揭示了聚合指标所掩盖的多阶段训练动态：模型先学词频偏好、再学局部上下文、最后发展出一般性的语法规则，这一过程涉及多次"隐藏突破"而非简单的单调提升。 领域现状：大型语言模型通常…
+tags:
+  - "NeurIPS 2025"
+  - "预训练"
+  - "训练动态"
+  - "主谓一致"
+  - "语法学习"
+  - "细粒度分析"
+  - "心理语言学"
+---
+
+# Disaggregation Reveals Hidden Training Dynamics: The Case of Agreement Attraction
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.24934](https://arxiv.org/abs/2510.24934)  
+**代码**: [GitHub](https://github.com/jmichaelov/sv-disaggregation-cognitive-interpretability)  
+**领域**: LLM预训练 / 可解释性  
+**关键词**: 训练动态, 主谓一致, 语法学习, 细粒度分析, 心理语言学
+
+## 一句话总结
+
+本文通过对语言模型在主谓一致任务上的表现按实验条件进行细粒度拆解（disaggregation），揭示了聚合指标所掩盖的多阶段训练动态：模型先学词频偏好、再学局部上下文、最后发展出一般性的语法规则，这一过程涉及多次"隐藏突破"而非简单的单调提升。
+
+## 研究背景与动机
+
+**领域现状**：大型语言模型通常能生成语法正确的文本，在主谓一致等基本语法任务上表现良好。学界已广泛认可LLM具有一定的语言能力。然而即使是大模型如Chinchilla，在更难的语法任务上仍然经常失败，暗示模型可能学到的不是完全通用的语法规则，而是越来越复杂的启发式。
+
+**现有痛点**：现有的语法能力评估通常报告所有条件的聚合分数，掩盖了模型在不同条件下的巨大差异。例如，语言模型在有"干扰词"（attractor）的句子上表现更差，特别是当干扰词的数（单/复数）与主语不匹配时——类似于人类的agreement attraction效应。但这些细粒度pattern在聚合分数中被平均掉了。此外，对模型训练过程中语法能力如何逐步发展的研究很少。
+
+**核心矛盾**：聚合指标显示"缓慢渐进"的学习，但这可能掩盖了底层快速且非单调的学习动态。
+
+**本文目标** 通过拆解不同实验条件（主语单/复数、干扰词有无/匹配与否），结合训练过程中的多个checkpoint，揭示语言模型语法学习的真实动态。
+
+**切入角度**：借鉴心理语言学的经典范式——分析错误模式和发展轨迹。把语言模型的训练过程类比为人类语言习得，在不同实验条件间进行对比分析。
+
+**核心 idea**：对语法评估数据集按条件拆解（disaggregation）并追踪训练过程中每个条件的表现变化，就能看到聚合指标掩盖的多阶段"隐藏突破"。
+
+## 方法详解
+
+### 整体框架
+
+实验使用PolyPythia模型套件（14M到410M参数的10个随机种子），在训练过程中的多个checkpoint上评估主谓一致任务。评估使用BIG-bench的简单一致和PP短语附加人（attractor）子集，以及Bock and Cutting (1992)的心理语言学刺激材料。通过拆解不同条件的表现曲线，识别训练中的不同学习阶段。
+
+### 关键设计
+
+1. **条件级拆解分析（Condition-level Disaggregation）**:
+
+    - 功能：将每个数据集的不同实验条件分开追踪，而非只看聚合分数
+    - 核心思路：主谓一致句被分为8个条件组合：主语数（单/复数）× 干扰词（无/匹配/不匹配） × 动词类型（be动词 vs 其他单token / 多token）。在model每个训练checkpoint上分别计算各条件的准确率。模型选择log概率更高的动词形式作为预测，对于多token动词取token log概率之和
+    - 设计动机：心理语言学中，不同条件之间的差异本身就是有解释力的——agreement attraction是一个经典的人类语言处理effect，拆解后可以直接对比人和模型的行为模式
+
+2. **多随机种子的稳定性验证（PolyPythia）**:
+
+    - 功能：控制随机初始化和数据shuffle带来的变异
+    - 核心思路：使用10个不同随机种子的Pythia模型（14M到410M），报告均值和95%置信区间。每个训练步代表相同数量的token，因此可以跨模型大小和种子进行对比
+    - 设计动机：单次训练的结果可能是偶然的，但如果10个种子都显示相同的阶段性pattern，就可以确信这是系统性的训练动态
+
+3. **动词分词方式的区分（Single-token vs Multi-token）**:
+
+    - 功能：揭示tokenization对语法学习动态的影响
+    - 核心思路：有些动词的单复数形式各占一个token（如know/knows），有些则是复数占一个token而单数占两个token（如admire vs admires）。后者的条件更难，因为判断第二个token是否属于单数动词需要更长的上下文依赖
+    - 设计动机：如果模型按n-gram统计逐步学习，那么multi-token动词需要更长的依赖（至少trigram），因此学习应该更晚，这正是实验观察到的
+
+### 损失函数 / 训练策略
+
+本文不涉及模型训练（使用预训练好的PolyPythia模型），仅做推理评估。评估指标是准确率：模型是否给正确的动词形式赋予更高的log概率。
+
+## 实验关键数据
+
+### 主实验
+
+核心发现是三阶段学习动态（以be动词is/are为例）：
+
+| 训练阶段 | 步数 | 行为特征 | 解释 |
+|---------|------|---------|------|
+| Phase 1 | 0-128 | 单数条件高准确率，复数条件低准确率 | 模型学到了词频偏好：is比are更频繁 |
+| Phase 2 | 128-512 | 复数和复数+匹配attractor条件急剧上升，同时不匹配attractor条件急剧下降 | 模型开始关注局部上下文（前一个词的数），但受attractor干扰 |
+| Phase 3 | 512+ | 所有条件逐步提升 | 模型逐渐学习更长距离的依赖 |
+
+对于非be动词，pattern相反但对称：先偏好复数形式（bare form更频繁），再出现attractor效应，最后逐步改善。
+
+### 消融实验
+
+| 分析维度 | 发现 |
+|---------|------|
+| 模型大小(14M-410M) | 小模型pattern相同但不稳定，大模型pattern更清晰、变化更快 |
+| 随机种子 | 10个种子基本一致，个别种子在小模型上有波动 |
+| 单token vs 多token动词 | 多token动词的phase 2出现更晚，变化更小 |
+| 逐动词分析 | 大部分动词pattern一致，但stimulate/stimulates的频率差异小，导致phase 1偏好更弱 |
+| 聚合分数 | 仅显示缓慢渐进的提升，完全掩盖了底层的非单调动态 |
+
+### 关键发现
+
+- **聚合指标是欺骗性的**：总分显示缓慢平稳的提升，但拆解后每个条件都经历了快速的非单调变化——某些条件急升的同时其他条件急降
+- **学习并非突然也非渐进，而是多次"隐藏突破"**：这支持了Kangaslahti et al. (2025)的hidden breakthroughs假说
+- **n-gram解释**：Chang et al. (2024)发现transformer训练时依次过拟合unigram→bigram→trigram概率。Phase 1对应unigram偏好，Phase 2对应bigram敏感性，multi-token动词更晚的转变对应trigram需求
+- **attractor效应的时间特征**：attractor效应在训练中期最强，之后逐渐减弱但不消失——模型和人类都表现出类似的agreement attraction
+
+## 亮点与洞察
+
+- **方法论贡献 > 技术贡献**：本文最大的价值不在于具体发现，而在于展示了"按条件拆解+跟踪训练动态"作为一种通用分析工具的威力。这个方法可以迁移到任何构造化评估数据集上
+- **连接心理语言学和LLM分析**：借用人类语言处理研究的经典范式（minimal pairs、agreement attraction），将几十年的心理语言学研究基础用于理解AI系统。这种跨学科视角非常有启发性
+- **对benchmark设计的警示**：如果一个语法任务可以通过bigram统计解决，那它可能不具备足够的构念效度。BLiMP中很多子任务5-gram就能大幅超过chance，说明模型不需要真正学语法就能"通过考试"
+
+## 局限与展望
+
+- **仅涉及英语主谓一致**：这是最简单的语法现象之一，结果能否推广到更复杂的语法结构（如长距离依赖、嵌套结构）值得探索
+- **仅有PP短语attractor**：其他类型的attractor（如关系从句）可能有不同的动态
+- **解释性而非验证性研究**：观察到了pattern但没有机制性的验证（如ablation或probing），n-gram解释仍是假说
+- **仅使用PolyPythia**：受限于公开可用的多种子、多checkpoint模型套件。不清楚结论是否推广到其他架构
+- **评估指标过于简单**：仅用准确率（比较两个动词形式的log概率），更精细的指标（如surprisal差）可能揭示更多信息
+
+## 相关工作与启发
+
+- **vs Evanson et al. (2023)**：他们也研究了语法学习的训练动态，但只看聚合分数，发现主谓一致"较早学会"。本文通过拆解揭示了更丰富的动态
+- **vs Kangaslahti et al. (2025) Hidden Breakthroughs**：他们提出了"隐藏突破"的概念和bottom-up的子集发现方法。本文用理论驱动的top-down拆解得到了类似结论
+- **vs Schaeffer et al. (2023)**：他们认为涌现能力是"海市蜃楼"（度量问题），本文提供了涌现确实存在但被聚合掩盖的证据
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 分析方法新颖且结论令人惊讶，但不涉及新算法
+- 实验充分度: ⭐⭐⭐ 多种子验证充分，但仅限英语、仅一种语法现象
+- 写作质量: ⭐⭐⭐⭐⭐ 论证清晰，图表信息量大，跨学科视角引人入胜
+- 价值: ⭐⭐⭐⭐ 对理解LLM训练动态和benchmark设计都有实际指导意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] On the Clean Generalization and Robust Overfitting in Adversarial Training from Two Theoretical Views: Representation Complexity and Training Dynamics](../../ICML2025/llm_pretraining/on_the_clean_generalization_and_robust_overfitting_in_adversarial_training_from_.md)
+- [\[ICLR 2026\] Intrinsic Training Dynamics of Deep Neural Networks](../../ICLR2026/llm_pretraining/intrinsic_training_dynamics_of_deep_neural_networks.md)
+- [\[ACL 2025\] Training Dynamics Underlying Language Model Scaling Laws: Loss Deceleration and Zero-Sum Learning](../../ACL2025/llm_pretraining/training_dynamics_underlying_language_model_scaling_laws_loss_deceleration_and_z.md)
+- [\[ACL 2025\] Diversity Explains Inference Scaling Laws: Through a Case Study of Minimum Bayes Risk Decoding](../../ACL2025/llm_pretraining/diversity_explains_inference_scaling_laws_through_a_case_study_of_minimum_bayes_.md)
+- [\[NeurIPS 2025\] Enhancing Training Data Attribution with Representational Optimization](enhancing_training_data_attribution_with_representational_optimization.md)
+
+</div>
+
+<!-- RELATED:END -->

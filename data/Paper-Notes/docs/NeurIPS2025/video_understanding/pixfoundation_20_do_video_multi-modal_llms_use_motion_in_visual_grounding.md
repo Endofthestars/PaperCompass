@@ -1,0 +1,132 @@
+---
+title: >-
+  [论文解读] PixFoundation 2.0: Do Video Multi-Modal LLMs Use Motion in Visual Grounding?
+description: >-
+  [NeurIPS 2025][视频理解][运动中心评估] 通过提出四项运动中心的探测技术和 MoCentric-Bench 基准，证明当前视频多模态 LLM 在像素级视觉接地任务中未能真正利用运动信息，可被静态关键帧欺骗。 领域现状：多模态大语言模型在视频高层任务（QA、描述）表现良好，但像素级视觉接地能力未被深入探讨…
+tags:
+  - "NeurIPS 2025"
+  - "视频理解"
+  - "运动中心评估"
+  - "视觉接地"
+  - "视频 MLLM"
+  - "指称分割"
+  - "运动理解"
+---
+
+# PixFoundation 2.0: Do Video Multi-Modal LLMs Use Motion in Visual Grounding?
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2509.02807](https://arxiv.org/abs/2509.02807)  
+**代码**: [https://github.com/MSiam/PixFoundation-2.0](https://github.com/MSiam/PixFoundation-2.0)  
+**领域**: 视频理解 / 视觉接地  
+**关键词**: 运动中心评估, 视觉接地, 视频 MLLM, 指称分割, 运动理解
+
+## 一句话总结
+
+通过提出四项运动中心的探测技术和 MoCentric-Bench 基准，证明当前视频多模态 LLM 在像素级视觉接地任务中未能真正利用运动信息，可被静态关键帧欺骗。
+
+## 研究背景与动机
+
+**领域现状**：多模态大语言模型在视频高层任务（QA、描述）表现良好，但像素级视觉接地能力未被深入探讨。
+
+**现有痛点**：现有基准假设运动是必需的，但实际上单个静态帧往往足以解决运动表达任务。视频 MLLM 声称利用时间信息，但可能只依赖强大的视觉编码器和 LLM。
+
+**核心矛盾**：无法区分"真运动"（时间动态）和"伪运动"（静态关键帧可模拟），缺乏评估运动顺序理解的基准。
+
+**切入角度**：设计运动存在性和运动顺序两类探测技术，构建 MoCentric-Bench 强制模型利用真运动。
+
+## 方法详解
+
+### 整体框架
+
+三层结构：(1) 问题诊断——分析 RefDAVIS、MeVIS 等现有基准的缺陷；(2) 运动中心探测设计——自动合成虚假运动和反转运动；(3) 基线和适配——提供单帧强基线和 Sa2VA 的 LoRA 微调版本。
+
+### 关键设计
+
+1. **运动存在性探测（Motion Existence）**
+
+    - 功能：判断模型是否真正依赖运动信息
+    - 核心思路：用 Qwen2.5-VL 进行粗粒度时间定位找关键帧，生成虚假视频（关键帧重复），与原始视频组合成 4 种布局，检查模型是否被欺骗
+    - 设计动机：运动表达（如"跳向左边"）可能仅用单帧+空间布局就能推导
+
+2. **运动顺序探测（Motion Order）**
+
+    - 功能：判断模型是否理解时间方向
+    - 核心思路：用 GPT-4o 将"拉"转换为"推"等反向运动描述，反向播放视频，检查模型能否区分
+    - 设计动机：如果模型真正理解运动，应能区分正向和反向视频
+
+3. **MLLM + SAM 2.0 强基线**
+
+    - 功能：验证单帧方法的竞争力
+    - 核心思路：Qwen2.5-VL 在关键帧做 bounding box 定位，SAM 2.0 生成完整分割掩码，完全不涉及时间推理
+    - 设计动机：如果单帧基线接近 SOTA，说明现有数据集不够"运动中心"
+
+### 损失函数 / 训练策略
+
+Sa2VA★ 微调版本采用 LoRA 微调视觉编码器，在 MoCentric-Bench 合成数据上监督学习。
+
+## 实验关键数据
+
+### 主实验（现有基准）
+
+| 方法 | RefDAVIS-17 J&F | MeVIS val J&F |
+|------|-----------------|----------------|
+| LISA | 64.8 | 37.2 |
+| VideoGLAMM | 69.5 | 45.2 |
+| Sa2VA | 75.2 | 51.5 |
+| MLLM+SAM2 (单帧基线) | 70.5 | 44.5 |
+| MLLM+SAM2† (关键帧) | **71.7** | **46.9** |
+
+### 消融实验（MoCentric-Bench）
+
+| 模型 | 原 val | 单帧混合 | 下降% | 反向混合 | 下降% |
+|------|--------|---------|-------|---------|-------|
+| VidGLAMM | 48.2 | 21.6 | -55.2% | 34.0 | -29.4% |
+| Sa2VA | 58.9 | 28.5 | -51.6% | 61.1 | +3.7% |
+| MLLM+SAM2† | 57.4 | 28.1 | -51.0% | 53.1 | -7.5% |
+| Sa2VA★ (微调) | 63.1 | 38.2 | -39.5% | 56.4 | -10.6% |
+
+### 关键发现
+
+- 单帧基线已与或超越多个 SOTA 方法，暴露现有数据集严重依赖静态信息
+- 所有模型在单帧混合中性能大幅下降（39-55%），说明模型被虚假运动欺骗
+- Sa2VA 在反向混合中甚至略有提升（+3.7%），说明它完全没有理解运动方向
+
+## 亮点与洞察
+
+- **首创运动中心评估**：系统性揭示了现有基准中的方法论问题。这对视频理解领域的评估标准设计有深远影响。
+- **自动数据合成**：利用 VLM + LLM 自动生成虚假运动和反转运动，成本低且可扩展。
+- **弱点明确**：SOTA 方法（Sa2VA）在运动中心任务上性能大幅下滑（51.5→28.5），这个发现将推动视频 MLLM 向真正的运动理解发展。
+
+## 局限与展望
+
+- MoCentric-Bench 规模较小（32-152 对象），需更大规模验证
+- 微调仅在前 5 帧处理，可能不足以充分利用运动
+- 反向表达可能与某些视频存在语义不兼容，需手工过滤
+
+## 相关工作与启发
+
+- **vs ATP（Buch 等 2022）**：ATP 也做单帧 vs 视频对比，但仅限于视频级理解任务；本文首次在像素级接地任务上系统研究
+- **vs Kowal 等（2022）**：前人分析动静比例，本文提出完整的探测框架
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 首个运动中心视觉接地评估
+- 实验充分度: ⭐⭐⭐⭐ 4 种探测全面，基准可更大
+- 写作质量: ⭐⭐⭐⭐⭐ 问题陈述明确，方法易复现
+- 价值: ⭐⭐⭐⭐⭐ 推动视频 MLLM 向真正运动理解发展
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] MUVR: A Multi-Modal Untrimmed Video Retrieval Benchmark with Multi-Level Visual Correspondence](muvr_a_multi-modal_untrimmed_video_retrieval_benchmark_with_multi-level_visual_c.md)
+- [\[ICCV 2025\] AIM: Adaptive Inference of Multi-Modal LLMs via Token Merging and Pruning](../../ICCV2025/video_understanding/aim_adaptive_inference_multimodal_llms_token_merging_pruning.md)
+- [\[ICCV 2025\] DynImg: Key Frames with Visual Prompts are Good Representation for Multi-Modal Video Understanding](../../ICCV2025/video_understanding/dynimg_key_frames_with_visual_prompts_are_good_representation_for_multi-modal_vi.md)
+- [\[ICLR 2026\] Steering and Rectifying Latent Representation Manifolds in Frozen Multi-Modal LLMs for Video Anomaly Detection](../../ICLR2026/video_understanding/steering_and_rectifying_latent_representation_manifolds_in_frozen_multi-modal_ll.md)
+- [\[ICCV 2025\] OVG-HQ: Online Video Grounding with Hybrid-modal Queries](../../ICCV2025/video_understanding/ovg-hq_online_video_grounding_with_hybrid-modal_queries.md)
+
+</div>
+
+<!-- RELATED:END -->

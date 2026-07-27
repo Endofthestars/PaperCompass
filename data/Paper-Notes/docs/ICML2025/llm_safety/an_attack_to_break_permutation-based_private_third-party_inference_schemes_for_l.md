@@ -1,0 +1,149 @@
+---
+title: >-
+  [论文解读] An Attack to Break Permutation-Based Private Third-Party Inference Schemes for LLMs
+description: >-
+  [ICML 2025][LLM安全][private inference] 提出一种基于词汇表逐token匹配的攻击方法，利用decoder-only LLM隐藏状态的非碰撞特性，可以从三种类型的置换隐藏状态中近乎完美恢复原始输入token，打破PermLLM、STIP、Centaur三种隐私推理方案的安全声明。
+tags:
+  - "ICML 2025"
+  - "LLM安全"
+  - "private inference"
+  - "permutation security"
+  - "hidden state reversal"
+  - "LLM"
+  - "SMPC"
+---
+
+# An Attack to Break Permutation-Based Private Third-Party Inference Schemes for LLMs
+
+**会议**: ICML 2025  
+**arXiv**: [2505.18332](https://arxiv.org/abs/2505.18332)  
+**代码**: 无  
+**领域**: AI安全  
+**关键词**: private inference, permutation security, hidden state reversal, LLM, SMPC
+
+## 一句话总结
+
+提出一种基于词汇表逐token匹配的攻击方法，利用decoder-only LLM隐藏状态的非碰撞特性，可以从三种类型的置换隐藏状态中近乎完美恢复原始输入token，打破PermLLM、STIP、Centaur三种隐私推理方案的安全声明。
+
+## 研究背景与动机
+
+**领域现状**：LLM推理日益依赖第三方服务，隐私保护成为关键需求。安全多方计算（SMPC）是经典方案，但对Transformer中大量非线性操作的处理效率极低（比明文推理慢数千倍），难以扩展到大型LLM。
+
+**现有痛点**：为避免SMPC的高昂开销，PermLLM、STIP、Centaur三篇工作提出用统计混淆代替密码学——将隐藏状态做置换后以明文暴露给推理方。安全论证基于置换空间极大（如 $N!(d!)^N$），暴力破解不可行。
+
+**核心矛盾**：这些工作假设置换空间的指数级大小等同于安全性，但忽视了LLM隐藏状态本身的结构特性——不同token在同一位置的隐藏状态几乎不重合（非碰撞性），使攻击复杂度从 $V^N$ 降至 $O(VN)$。
+
+**本文目标**：证明基于置换的隐私推理方案不安全，并精确指出其理论证明中的缺陷。
+
+**切入角度**：利用decoder-only LLM的单向注意力——第 $n$ 个位置的隐藏状态只是前 $n$ 个token的函数，使逐位置贪婪匹配成为可能。
+
+**核心 idea**：通过逐token遍历词汇表做前向传播、与目标隐藏状态做L1距离匹配，将指数级搜索问题转化为线性搜索。
+
+## 方法详解
+
+### 整体框架
+
+攻击者持有模型权重和某层隐藏状态 $\mathbf{h} = [h_1, ..., h_N]$，从第1个位置开始，遍历词汇表所有token做前向传播，找L1距离最接近 $h_1$ 的token作为 $\hat{x}_1$，然后固定 $\hat{x}_1$ 对第2个位置重复。总复杂度 $O(VN)$。
+
+### 关键设计
+
+1. **非确定性处理与Proposal加速**:
+
+    - 功能：克服GPU浮点非确定性并加速搜索
+    - 核心思路：用L1距离阈值 $\epsilon$（三分搜索在50个校准样本上调优）做模糊匹配，距离低于阈值则接受。用proposal model按似然排序词汇表，将平均搜索量从 $V/2$ 降至约100（1000×加速），配合KV cache优化，50-token序列约2分钟解码
+    - 设计动机：精确匹配因浮点非确定性不可行，但LLM隐藏状态的非碰撞性保证模糊匹配仍能唯一确定正确token
+
+2. **序列维度置换攻击**:
+
+    - 功能：隐藏状态行顺序被打乱时仍能恢复
+    - 核心思路：单向注意力给每个位置打了隐式标记——恰有一个元素只是单个embedding的函数（"第1个"），恰有一个只依赖两个embedding（"第2个"）。匹配时在所有剩余行中搜索最佳匹配，排除已配对行
+    - 设计动机：需要跨位置非碰撞性——不同位置的隐藏状态也不重合
+
+3. **隐藏维度置换攻击**:
+
+    - 功能：每个隐藏向量 $h_i$ 的维度被独立置换时仍能恢复
+    - 核心思路：用**排序L1距离（sorted-L1）**——先分别排序两个向量再算L1距离，排序将任意维度置换映射到相同结果
+    - 设计动机：需要排序后仍非碰撞——置换在隐藏维度上不提供真正混淆
+
+### 距离相关性理论缺陷剖析
+
+STIP/Centaur引用的安全论证有三个根本问题：（1）Theorem 1证明随机1D投影也可逆；（2）Theorem 2构造了距离相关性低但完全可重建的反例——距离相关性不度量可重构性；（3）Transformer的token间单向依赖被忽略。
+
+## 实验关键数据
+
+### 未置换隐藏状态完美解码率（1000样本）
+
+| 层 | Gemma-2-2B-IT | Llama-3.1-8B-Instruct |
+|----|--------------|----------------------|
+| 1 | 100% | 100% |
+| 11 | 100% | 100% |
+| 21 | 100% | 99.9% |
+| 26 | 100% | 99.7% |
+
+### 分解2D置换完美解码率（最难设定）
+
+| 层 | Gemma-2-2B-IT | Llama-3.1-8B-Instruct |
+|----|--------------|----------------------|
+| 1 | 99.9% | 98.4% |
+| 11 | 99.5% | 98.9% |
+| 21 | 99.1% | 98.0% |
+| 26 | 99.0% | 97.6% |
+
+### 噪声防御（Gemma-2-2B-IT，ROUGE-L / LiveBench性能）
+
+| 防御 | 未置换 | 2D置换 | 下游性能 |
+|------|--------|--------|---------|
+| 无防御 | 1.00 | 1.00 | 100% |
+| 高斯σ=0.01 | 0.93 | 0.07 | 101.4% |
+| 高斯σ=0.1 | 0.91 | 0.01 | 5.8% |
+| 4-bit量化 | 0.88 | 0.71 | 92.2% |
+
+### 关键发现
+
+- 三种置换下完美解码率均达97%+，LLM隐藏状态非碰撞性极强
+- 置换+小噪声σ=0.01的组合似乎安全（ROUGE-L<0.1且性能无损），但只是必要不充分
+- 4-bit量化仍不足以防御（ROUGE-L=0.71），非碰撞性极其鲁棒
+- 少数失败案例来自特殊格式字符导致proposal model优先选错token
+
+## 亮点与洞察
+
+- 将指数搜索转为线性搜索的洞察——利用单向注意力的因果结构而非置换空间代数性质
+- 对距离相关性理论的三重系统性反驳，理论功底扎实
+- 非碰撞性发现揭示了LLM表示空间的重要结构特性
+- 噪声防御的诚实分析：没有声称找到完美防御，清晰展示安全性-实用性trade-off
+
+## 局限性
+
+- 白盒假设（需模型权重），但STIP/Centaur威胁模型下推理方本身有权重
+- 未处理非受限2D置换（任意元素可移至任意位置）
+- 只测试了两个模型家族（Gemma-2, Llama-3.1）
+- encoder-only/encoder-decoder架构（双向注意力）不适用
+
+## 相关工作与启发
+
+- **vs Wan et al. (2024)**: 用训练好的transformer做逆向，F1约60%。本文无需训练、近乎完美
+- **vs Morris et al. (2023)**: 关注logit逆向（约75%准确率），本文关注中间层隐藏状态
+- **对PermLLM/STIP/Centaur**: 三者均实质性被打破
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ 一举打破三篇已发表工作的安全声明
+- 实验充分度: ⭐⭐⭐⭐⭐ 2模型×6层×3置换类型+防御分析+理论剖析
+- 写作质量: ⭐⭐⭐⭐⭐ 攻击→理论批判→实验→防御的逻辑链完美
+- 价值: ⭐⭐⭐⭐⭐ 对隐私推理社区有根本性影响
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] Cascade: Token-Sharded Private LLM Inference](cascade_token-sharded_private_llm_inference.md)
+- [\[ACL 2026\] Rethinking LLM Watermark Detection in Black-Box Settings: A Non-Intrusive Third-Party Framework](../../ACL2026/llm_safety/rethinking_llm_watermark_detection_in_black-box_settings_a_non-intrusive_third-p.md)
+- [\[ICLR 2026\] Stop Tracking Me! Proactive Defense Against Attribute Inference Attack in LLMs](../../ICLR2026/llm_safety/stop_tracking_me_proactive_defense_against_attribute_inference_attack_in_llms.md)
+- [\[NeurIPS 2025\] MPCache: MPC-Friendly KV Cache Eviction for Efficient Private LLM Inference](../../NeurIPS2025/llm_safety/mpcache_mpc-friendly_kv_cache_eviction_for_efficient_private_llm_inference.md)
+- [\[ACL 2025\] A Statistical and Multi-Perspective Revisiting of the Membership Inference Attack in Large Language Models](../../ACL2025/llm_safety/a_statistical_and_multi-perspective_revisiting_of_the_membership_inference_attac.md)
+
+</div>
+
+<!-- RELATED:END -->

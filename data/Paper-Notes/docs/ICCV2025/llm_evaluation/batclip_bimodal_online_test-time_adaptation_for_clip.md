@@ -1,0 +1,152 @@
+---
+title: >-
+  [论文解读] BATCLIP: Bimodal Online Test-Time Adaptation for CLIP
+description: >-
+  [ICCV 2025][LLM评测][CLIP] 提出BATCLIP，一种针对CLIP的双模态在线测试时自适应（TTA）方法，通过同时适应视觉编码器和文本编码器的LayerNorm参数，引入投影匹配损失和类间可分性损失来增强图文特征对齐和类别区分度，在CIFAR-10C/100C/ImageNet-C上达到SOTA效果。
+tags:
+  - "ICCV 2025"
+  - "LLM评测"
+  - "CLIP"
+  - "测试时自适应"
+  - "双模态适应"
+  - "图像损坏鲁棒性"
+  - "视觉语言模型"
+---
+
+# BATCLIP: Bimodal Online Test-Time Adaptation for CLIP
+
+**会议**: ICCV 2025  
+**arXiv**: [2412.02837](https://arxiv.org/abs/2412.02837)  
+**代码**: [https://github.com/sarthaxxxxx/BATCLIP](https://github.com/sarthaxxxxx/BATCLIP)  
+**领域**: LLM评测  
+**关键词**: CLIP, 测试时自适应, 双模态适应, 图像损坏鲁棒性, 视觉语言模型
+
+## 一句话总结
+提出BATCLIP，一种针对CLIP的双模态在线测试时自适应（TTA）方法，通过同时适应视觉编码器和文本编码器的LayerNorm参数，引入投影匹配损失和类间可分性损失来增强图文特征对齐和类别区分度，在CIFAR-10C/100C/ImageNet-C上达到SOTA效果。
+
+## 研究背景与动机
+CLIP作为强大的视觉语言模型，虽然在零样本分类上表现优异，但面对常见图像损坏（如高斯噪声、雾、雪等）时性能急剧下降。作者发现，使用ViT-B/16的CLIP在CIFAR-100高斯噪声severity-5下，准确率从66.6%暴跌至10.79%。这种脆弱性在自动驾驶等安全关键场景中后果严重。
+
+现有的CLIP TTA方法存在三个核心问题：
+
+**单模态局限**：TPT仅优化文本提示，视觉编码器保持冻结，适应后的提示对测试图像分布无感知
+
+**计算昂贵**：TPT需要为每张测试图像生成多个增强视图并进行多次前向传播
+
+**提示模板依赖**：WATT等方法依赖多种提示模板，在测试时选择或优化提示不切实际
+
+作者通过系统实验发现两个关键洞见：（1）CLIP对损坏严重度极其敏感，即使severity-1也有明显下降；（2）不同提示模板对损坏图像的影响微乎其微——真正的瓶颈不在文本提示而在视觉-文本特征的对齐。因此，需要一种双模态适应方法来同时调整两个编码器。
+
+## 方法详解
+
+### 整体框架
+BATCLIP在在线TTA设置下工作：每个测试批次按序到达，模型对每个批次执行单步前向传播和参数更新。仅适应CLIP两个编码器的LayerNorm参数（约占全部参数的0.044%），每个任务/损坏类型后重置参数。
+
+### 关键设计
+
+1. **双模态LayerNorm适应**:
+
+    - 功能：同时更新视觉编码器 $f_{vis}$ 和文本编码器 $f_{txt}$ 的LayerNorm参数
+    - 核心思路：区别于现有方法仅更新视觉侧或文本提示，BATCLIP联合更新两个编码器的归一化层参数 $\phi_v$ 和 $\phi_t$，使两者产生相互感知的、领域特异性的特征
+    - 设计动机：单模态适应（仅调视觉或仅调文本）会导致两模态特征不对齐。单独更新视觉编码器时，文本特征仍针对预训练数据优化；单独更新文本提示时，生成的文本特征对测试分布无感知
+
+2. **投影匹配损失（Projection Matching Loss）**:
+
+    - 功能：最大化视觉类原型与对应文本特征的标量投影
+    - 核心思路：首先基于伪标签计算每个类的视觉原型 $\bar{v}_c$（类内图像特征的均值），然后最大化原型到归一化文本特征的投影：
+    $\mathcal{L}_{pm} = \frac{1}{C} \sum_c \bar{v}_c \cdot \hat{z}_c$
+      其中 $\hat{z}_c = z_c / \|z_c\|_2$。使用原型而非单个特征是因为在损坏图像下伪标签可能有噪声，原型可以平滑类分布
+    - 设计动机：几何上，最大化投影意味着使视觉特征在文本特征方向上的分量最大，直接优化图文对齐
+
+3. **类间可分性损失（Inter-class Separability Loss）**:
+
+    - 功能：增大不同类原型之间的余弦距离
+    - 核心思路：
+    $\mathcal{L}_{sp} = \sum_{l \in C} \sum_{c \in C} \mathbb{1}[l \neq c](1 - \cos(\bar{v}_c, \bar{v}_l))$
+      最大化此损失推动不同类的视觉原型在特征空间中分离
+    - 设计动机：图像损坏可能导致不同类的视觉特征重叠，仅对齐图文不足以保证良好的分类决策边界
+
+4. **总体优化目标**:
+    $\arg\min_{\phi_v, \phi_t} (\mathcal{L}_{ent} - \mathcal{L}_{pm} - \mathcal{L}_{sp})$
+   三个损失分别负责：（1）$\mathcal{L}_{ent}$熵最小化——降低预测不确定性；（2）$-\mathcal{L}_{pm}$投影匹配——强化图文对齐；（3）$-\mathcal{L}_{sp}$类间分离——增强特征判别性
+
+### 损失函数 / 训练策略
+- 使用AdamW优化器，CIFAR-10C学习率1e-3，CIFAR-100C/ImageNet-C学习率5e-4
+- 仅单步在线适应（每批次一步梯度更新），适合实时部署
+- 使用通用提示模板"a photo of a \<CLS\>."，不依赖多模板
+- 每个损坏任务后重置模型参数，防止灾难性遗忘
+- 批大小：CIFAR-10C/100C为200，ImageNet-C为64
+
+## 实验关键数据
+
+### 主实验（平均准确率%，severity-5，ViT-B/16）
+
+| 方法 | CIFAR-10C | CIFAR-100C | ImageNet-C |
+|------|-----------|------------|------------|
+| Zero-shot CLIP | 61.16 | 35.79 | 24.51 |
+| TENT | 62.03 | 37.96 | 25.15 |
+| SAR | 67.37 | 41.19 | 29.73 |
+| TPT | 63.64 | 36.15 | 24.87 |
+| VTE | 64.15 | 35.01 | 25.60 |
+| WATT-S* | 72.81 | 36.71 | 24.67 |
+| **BATCLIP** | **73.85** | **42.09** | **30.72** |
+
+### 消融实验
+
+| 损失组合 | CIFAR-10C | CIFAR-100C | ImageNet-C | 说明 |
+|----------|-----------|------------|------------|------|
+| $\mathcal{L}_{ent}$ | 60.65 | 38.17 | 24.03 | 仅熵最小化 |
+| $\mathcal{L}_{sp}$ | 73.16 | 41.36 | 30.05 | 类间分离贡献最大 |
+| $\mathcal{L}_{ent}+\mathcal{L}_{pm}$ | 62.60 | 39.32 | 25.21 | +对齐有提升 |
+| $\mathcal{L}_{ent}+\mathcal{L}_{sp}$ | 72.69 | 41.84 | 30.08 | +分离大幅提升 |
+| $\mathcal{L}_{ent}+\mathcal{L}_{pm}+\mathcal{L}_{sp}$ | **73.85** | **42.09** | **30.72** | 三者组合最优 |
+
+### 关键发现
+- $\mathcal{L}_{sp}$（类间分离）是性能提升的主要贡献者，CIFAR-10C上单独使用即达73.16%
+- 多步迭代适应反而会导致过拟合，单步适应在鲁棒性和性能间取得最佳平衡
+- 低批大小（如32）下BATCLIP仍优于或持平TPT和VTE，因为原型计算能适应可用样本
+- 在ViT-L/14上同样有效，CIFAR-10C达84.74%（零样本75.84%）
+- 计算效率远优于WATT——每批仅需0.2秒（vs WATT的2.34秒），适合实时部署
+- 仅更新0.044%的参数即可获得一致的性能提升
+
+## 亮点与洞察
+- 对CLIP零样本性能的系统分析（跨backbone、跨损坏类型、跨提示模板）为社区提供了有价值的参考
+- "双模态适应"的核心洞见——文本编码器也需要感知测试域——是突破单模态TTA瓶颈的关键
+- 方法设计简洁实用：无需多模板/增强视图，单步单模板适应，支持实时部署
+- t-SNE可视化清楚展示了BATCLIP如何形成更紧密的类簇和更好的图文对齐
+
+## 局限与展望
+- OfficeHome和PACS等域泛化数据集上提升不大，可能因为单步适应不足以处理大的风格差异
+- 伪标签质量依赖批大小和损坏程度，极端情况下可能退化
+- 未探索自适应学习率或更复杂的原型更新策略
+- 灾难性遗忘通过任务间重置来回避，而非根本解决
+- 主要使用ViT-B/16验证，其他视觉backbone的效果仍有限
+
+## 相关工作与启发
+- **vs TPT**: TPT是单模态（仅文本提示优化），且需对每张图像多次前向传播，慢且不考虑视觉编码器适应
+- **vs VTE**: VTE使用多模板集成但不更新模型参数，对严重损坏适应力不足
+- **vs WATT**: WATT依赖多模板多步适应，不适合在线TTA，且计算成本高10倍以上
+- **vs TENT**: TENT仅更新BN层且不考虑图文对齐，简单将其应用于CLIP效果有限
+- **vs SAR**: SAR通过梯度空间过滤噪声样本表现不错，但仍是单模态方法
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 双模态适应思路合理且有效，投影匹配+类间分离的组合设计清晰
+- 实验充分度: ⭐⭐⭐⭐⭐ 三大基准数据集+域泛化数据集+详尽消融+效率分析
+- 写作质量: ⭐⭐⭐⭐ 分析透彻，先做系统性预研再提方法，逻辑自洽
+- 价值: ⭐⭐⭐⭐ 实用性强，方法简洁高效，适合实际部署场景
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ECCV 2024\] Distribution Alignment for Fully Test-Time Adaptation with Dynamic Online Data Streams](../../ECCV2024/llm_evaluation/distribution_alignment_for_fully_test-time_adaptation_with_dynamic_online_data_s.md)
+- [\[ICCV 2025\] Rethinking Few Shot CLIP Benchmarks: A Critical Analysis in the Inductive Setting](rethinking_few_shot_clip_benchmarks_a_critical_analysis_in_the_inductive_setting.md)
+- [\[ICCV 2025\] Imbalance in Balance: Online Concept Balancing in Generation Models](imbalance_in_balance_online_concept_balancing_in_generation_models.md)
+- [\[AAAI 2026\] Test-time Diverse Reasoning by Riemannian Activation Steering](../../AAAI2026/llm_evaluation/test-time_diverse_reasoning_by_riemannian_activation_steering.md)
+- [\[NeurIPS 2025\] Time Travel is Cheating: Going Live with DeepFund for Real-Time Fund Investment Benchmarking](../../NeurIPS2025/llm_evaluation/time_travel_is_cheating_going_live_with_deepfund_for_real-time_fund_investment_b.md)
+
+</div>
+
+<!-- RELATED:END -->

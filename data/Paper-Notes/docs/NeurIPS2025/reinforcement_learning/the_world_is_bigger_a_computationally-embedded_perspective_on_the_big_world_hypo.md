@@ -1,0 +1,155 @@
+---
+title: >-
+  [论文解读] The World Is Bigger! A Computationally-Embedded Perspective on the Big World Hypothesis
+description: >-
+  [NeurIPS 2025 Spotlight][强化学习][持续学习] 从计算嵌入（computationally-embedded）的视角形式化了"大世界假说"，证明被嵌入在通用局部环境中的智能体天然受限于自身容量，提出"交互性"（interactivity）作为持续适应能力的计算度量，并实验表明深度非线性网络难以维持交互性，而深度线性网络可随容量增加而提升交互性。
+tags:
+  - "NeurIPS 2025 Spotlight"
+  - "强化学习"
+  - "持续学习"
+  - "Big World假说"
+  - "嵌入式智能体"
+  - "算法信息论"
+  - "交互性"
+---
+
+# The World Is Bigger! A Computationally-Embedded Perspective on the Big World Hypothesis
+
+**会议**: NeurIPS 2025 Spotlight  
+**arXiv**: [2512.23419](https://arxiv.org/abs/2512.23419)  
+**代码**: [GitHub](https://github.com/AlexLewandowski/bigger-world-interactivity)  
+**领域**: 强化学习  
+**关键词**: 持续学习, Big World假说, 嵌入式智能体, 算法信息论, 交互性
+
+## 一句话总结
+
+从计算嵌入（computationally-embedded）的视角形式化了"大世界假说"，证明被嵌入在通用局部环境中的智能体天然受限于自身容量，提出"交互性"（interactivity）作为持续适应能力的计算度量，并实验表明深度非线性网络难以维持交互性，而深度线性网络可随容量增加而提升交互性。
+
+## 研究背景与动机
+
+### 领域现状
+
+持续学习（continual learning）的核心动机是"大世界假说"——环境比智能体更大，因此智能体应持续适应而非收敛到固定解。现有的形式化方式通常对智能体施加**显式约束**：限制存储、函数逼近器的表达力、计算量或能耗。Kumar等人(2023,2024)提出了基于信息论容量的约束，但这在分析可行的简单系统之外难以度量和执行。
+
+### 核心矛盾
+
+显式约束存在两个根本问题：
+
+**限制了扩展的有效性**：如果约束是手动施加的，那么增加智能体容量来提升性能的做法与约束矛盾
+
+**缺乏通用性**：约束的选择往往是ad hoc的，难以推广到不同设置
+
+传统RL中的智能体和环境被视为**分离的实体**（如图1a），智能体原则上可以无限扩展以超越环境。AIXI框架（图1b）考虑了通用环境，但其本身不可计算且不考虑有限容量下的学习问题。
+
+### 本文切入角度
+
+本文提出了一种全新视角：**嵌入式智能体**（图1c）。智能体不是独立于环境的外部实体，而是环境状态空间中的一个有限子集，由环境的转移动力学来模拟运行。这种嵌入关系提供了**隐式约束**——环境必然比其中包含的任何智能体拥有更大的容量。这类似于现实物理世界中的情况：任何物理实体都嵌入在物理世界中，且必然比物理世界小。
+
+## 方法详解
+
+### 整体框架
+
+本文构建了三层理论框架：
+1. 定义**通用局部环境**（universal-local environment）作为智能体存在的"世界"
+2. 在其中定义**嵌入式自动机**作为智能体的形式化表示
+3. 提出**交互性**（interactivity）作为持续适应能力的度量
+
+### 关键设计
+
+1. **通用局部环境**：定义为一个算法马尔可夫过程 $\mathcal{E} = (\Omega, \Xi, \mathbb{T})$，满足两个性质：
+
+    - **计算通用性**：转移函数可以模拟任何算法（等价于通用图灵机）
+    - **均匀局部性**：转移函数可分解为作用在状态空间局部区域上的相同局部转移函数
+   
+   Conway's Game of Life是一个具体示例——它计算通用（能模拟通用图灵机），且均匀局部（每个格子的转移规则相同，仅依赖8个邻居）。
+
+2. **嵌入式自动机**：定义为 $\mathcal{A} := (\Omega|_X, \Omega|_Y, \Omega|_\Theta, u, \pi)$，其中 $\Omega|_\Theta$ 是内部状态空间，$\Omega|_X, \Omega|_Y$ 是输入输出空间，$u$ 是状态更新函数（对应学习算法），$\pi$ 是输出函数（对应策略）。关键定理（Proposition 2）证明：当自动机的边界空间与输入输出空间重合时，自动机等价于在POMDP上运行的有状态策略。
+
+   Proposition 3证明嵌入式自动机的容量上界为 $|\Theta|$，因此存在它无法实现的输入输出行为——这是**隐式约束**的核心。
+
+3. **交互性（Interactivity）**：度量智能体未来行为中"可预测的复杂性"：
+
+$$\mathbb{I}_T(\mathcal{A}|x_t, b_{0:t-1}) := \mathbb{K}_\mathcal{E}(b_{t:t+T-1}|\epsilon) - \mathbb{K}_\mathcal{E}(b_{t:t+T-1}|b_{0:t-1})$$
+
+其中 $\mathbb{K}$ 是算法复杂度（Kolmogorov complexity），$b$ 是行为序列。交互性高意味着：(i) 未来行为具有高无条件复杂度（复杂多样），且 (ii) 过去行为对未来行为有强预测性（学到了东西）。
+
+   Theorem 1证明最大交互性受容量约束：$\alpha C(\mathcal{A}) - O(1) < \max_\mathcal{A} \mathbb{I}_T \leq C(\mathcal{A}) + O(1)$
+
+### 损失函数 / 训练策略
+
+由于算法复杂度不可计算，本文用**智能体相对复杂度**近似——通过时间差分(TD)误差来度量预测误差：
+
+$$\hat{\mathbb{K}}_\mathcal{A}(b_{t:t+T-1}|b_{0:t-1}) = \sum_{k=0}^{T-1}\delta_{t+k}^2(\theta_{t+k-1})$$
+
+交互性近似为静态TD误差与动态TD误差之差，策略通过最大化该差值来训练：
+
+$$J(\theta) = \sum_{k=1}^{T}\delta_{t+k}^2(z_t, \theta) - \delta_{t+k}^2(z_{t+k}, \theta)$$
+
+价值函数使用线性参数化 $v(b_t; \mathbf{W}_t) := \mathbf{W}_t b_t$，策略网络使用深度网络（线性或ReLU激活），输出经RMSNorm归一化。
+
+## 实验关键数据
+
+### 行为自预测任务（无环境设置）
+
+| 策略网络类型 | 深度 | 宽度 | 能否维持交互性 | 行为特征 |
+|------------|------|------|--------------|---------|
+| 深度ReLU | D=2 | 1000 | 否，迅速崩溃 | 无可预测结构 |
+| 深度线性 | D=2 | 1000 | 是，持续维持 | 非平稳波形，可局部预测 |
+
+### 容量扩展实验（深度线性网络）
+
+| 配置 | 交互性水平 | 趋势 |
+|------|----------|------|
+| 宽度增加 | 边际提升 | 更宽→略高交互性 |
+| 深度增加（D=1→4） | 显著提升 | 更深→更高交互性+更多振荡 |
+
+### 关键发现
+
+- **深度非线性网络的失败**：ReLU网络无法产生"对动态价值函数预测误差低、但对静态价值函数预测误差高"的行为序列，可能由于非平稳性导致类似可塑性丧失的现象
+- **深度线性网络的成功**：产生类似非平稳波形的行为序列，可被线性函数局部预测但需动态更新才能全局预测
+- **Theorem 2（大世界定理）验证**：追求交互性的智能体如果停止学习则次优，且最大交互性随容量增加而提升
+
+## 亮点与洞察
+
+- **理论优雅性**：从嵌入代理的角度自然导出容量约束，而非人为施加，提供了持续学习问题的"第一性原理"式推导
+- **交互性 vs 好奇心驱动**：交互性不追求环境的准确模型（好奇心），而是追求复杂且可预测的行为——更接近"持续学习能力"的度量
+- **无环境基准**：交互性最大化本身就是一个持续学习基准测试，不需要外部环境或数据集
+- **线性 vs 非线性网络的洞察**：可塑性丧失可能是非线性网络在非平稳学习中的固有缺陷
+
+## 局限与展望
+
+- 实验中网络深度仅到 $D=4$（但通过meta-gradient，有效深度为 $T \cdot D = 40$）
+- Meta-gradient方法的计算复杂度为 $O(HD^2)$，深度和horizon的扩展面临立方级增长
+- 目前仅在自预测任务上验证，未在外部环境中将交互性作为内在奖励使用
+- 评估标准需要重新思考——不能像传统ML那样固定智能体进行评测
+- 超参数选择对长期持续学习性能的影响尚不清楚
+
+## 相关工作与启发
+
+- 与AIXI的关系：AIXI在通用环境中是贝叶斯最优但不可计算；本文考虑可计算但有限容量的嵌入式智能体
+- 与赋权（Empowerment）的对比：赋权追求最大控制力（动作-未来状态互信息），交互性追求复杂且可预测的行为（过去-未来算法互信息）
+- 与自由能最小化的对比：自由能偏好可预测状态，交互性则主动避免低复杂度可预测状态
+- 暗示了一个猜想：如果智能体能维持特定水平的交互性，它可能也有能力学习任何相同或更低交互性的目标导向行为
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ 从计算嵌入角度重新定义持续学习问题，理论框架原创性极高
+- 实验充分度: ⭐⭐⭐ 实验规模受限于meta-gradient的计算开销，但足以验证核心观点
+- 写作质量: ⭐⭐⭐⭐⭐ 逻辑链清晰完整，从形式化定义到定理到实验验证一气呵成
+- 价值: ⭐⭐⭐⭐⭐ 为持续学习提供了全新的理论基础，"交互性论纲"具有深远影响
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Meta-World+: An Improved, Standardized, RL Benchmark](meta-world_an_improved_standardized_rl_benchmark.md)
+- [\[NeurIPS 2025\] Bootstrap Off-policy with World Model (BOOM)](bootstrap_off-policy_with_world_model.md)
+- [\[NeurIPS 2025\] Emergent World Beliefs: Exploring Transformers in Stochastic Games](emergent_world_beliefs_exploring_transformers_in_stochastic_games.md)
+- [\[NeurIPS 2025\] Open-World Drone Active Tracking with Goal-Centered Rewards](open-world_drone_active_tracking_with_goal-centered_rewards.md)
+- [\[NeurIPS 2025\] Foundation Models as World Models: A Foundational Study in Text-Based GridWorlds](foundation_models_as_world_models_a_foundational_study_in_text-based_gridworlds.md)
+
+</div>
+
+<!-- RELATED:END -->

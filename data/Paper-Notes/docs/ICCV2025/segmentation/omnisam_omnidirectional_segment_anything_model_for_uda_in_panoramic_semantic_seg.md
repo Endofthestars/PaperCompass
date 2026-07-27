@@ -1,0 +1,163 @@
+---
+title: >-
+  [论文解读] OmniSAM: Omnidirectional Segment Anything Model for UDA in Panoramic Semantic Segmentation
+description: >-
+  [ICCV 2025][语义分割][图像分割] 提出 OmniSAM，首次将 SAM2 应用于全景语义分割的无监督域适应任务，通过滑动窗口将全景图切分为 patch 序列并利用 SAM2 的记忆机制捕获跨 patch 对应关系，结合 FoV-based 原型自适应和动态伪标签更新策略，在室内外场景均大幅超越 SOTA（+10.22% / +6.58%）。
+tags:
+  - "ICCV 2025"
+  - "语义分割"
+  - "图像分割"
+  - "SAM2"
+  - "域适应"
+  - "prototypical adaptation"
+  - "pseudo label"
+---
+
+# OmniSAM: Omnidirectional Segment Anything Model for UDA in Panoramic Semantic Segmentation
+
+**会议**: ICCV 2025  
+**arXiv**: [2503.07098](https://arxiv.org/abs/2503.07098)  
+**代码**: [https://github.com/Ding-Zhong/OmniSAM](https://github.com/Ding-Zhong/OmniSAM)  
+**领域**: 图像分割  
+**关键词**: panoramic segmentation, SAM2, unsupervised domain adaptation, prototypical adaptation, pseudo label
+
+## 一句话总结
+
+提出 OmniSAM，首次将 SAM2 应用于全景语义分割的无监督域适应任务，通过滑动窗口将全景图切分为 patch 序列并利用 SAM2 的记忆机制捕获跨 patch 对应关系，结合 FoV-based 原型自适应和动态伪标签更新策略，在室内外场景均大幅超越 SOTA（+10.22% / +6.58%）。
+
+## 研究背景与动机
+
+全景相机的 360°×180° 宽视场为自动驾驶和虚拟现实等应用带来了优势，但全景图的等距柱状投影引入不可避免的畸变和物体变形。由于大规模精确标注全景图困难，无监督域适应（UDA）被提出来弥合针孔图像和全景图像之间的域差距。
+
+SAM2 在针孔图像分割中表现出强大的零样本能力，但直接应用于全景语义分割面临两大挑战：
+
+**视场差距**：针孔图像（70°×70°）与全景图像（180°×360°）之间存在巨大的 FoV gap，导致严重的畸变和特征对齐困难
+
+**语义缺失**：SAM2 提供实例级 mask 但缺乏语义知识
+
+## 方法详解
+
+### 整体框架
+
+OmniSAM 框架包含以下关键组件：
+- 使用滑动窗口将原始图像（源域针孔图和目标域全景图）裁剪为重叠的 patch 序列
+- 以 SAM2 的 Hiera 编码器（通过 LoRA 微调）作为骨干网络提取多尺度特征
+- 利用 SAM2 的记忆机制捕获跨 patch 对应关系
+- 自定义语义解码器替代原始 mask 解码器进行语义预测
+- FoV-based 原型自适应模块进行跨域特征对齐
+
+### 关键设计
+
+1. **SAM2 适配**: 对图像编码器使用 LoRA 微调（仅 query 和 value 层），可训练参数 <3MB。记忆机制中，记忆编码器将当前帧输出 mask 与最低分辨率特征 $f_{low}$ 融合后存入固定大小的记忆库（$n$ 个 slot），记忆注意力通过 $L$ 个 transformer block 让当前帧特征条件化于过去记忆。语义解码器对多尺度嵌入 $\{f_{high}, f_{med}, f_{con}\}$ 分别线性投影后上采样至统一分辨率，卷积融合后通过线性分类头输出。
+
+2. **动态伪标签更新机制**: 将适应过程分为多个 epoch，每轮随机采样少量目标域样本生成伪标签。对采样图像进行正向和反向双向 patch 序列处理，获取不同记忆上下文下的预测图。利用像素级覆盖图统计每个像素被多少 patch 覆盖，仅当所有重叠 patch 对某类一致投票且最低置信度超过阈值时才分配标签，否则标记为不确定。相比全量伪标签更新，计算更高效且随模型改善能及时更新。
+
+3. **FoV-based 原型自适应（FPA）**: 基于假设——相同 patch/帧在不同输入序列间共享相似的畸变和统计特性。在每个 patch 预测步 $t$ 计算源域和目标域的类别原型 $\tau_t^k = \frac{1}{M}\sum_{i,j}^{H,W}(y_{(k,i,j)})_t \cdot (\mathbf{f}_{(i,j)})_t$。使用冻结的源模型迭代聚合全局源原型 $\tau_t^{GS}$，通过 MSE 损失对齐目标域原型：$\mathcal{L}_{fpa} = \frac{1}{KC}\|\tau_t^{GS} - \tau_t^T\|_F$。
+
+### 损失函数 / 训练策略
+
+总训练目标：$\mathcal{L} = \mathcal{L}_{seg} + \mathcal{L}_{ssl} + \lambda \mathcal{L}_{fpa}$
+
+- $\mathcal{L}_{seg}$: 源域监督分割损失（交叉熵）
+- $\mathcal{L}_{ssl}$: 目标域基于伪标签的自监督损失
+- $\mathcal{L}_{fpa}$: FPA 原型对齐 MSE 损失
+- 训练配置：2×A800 GPU，学习率 $6 \times 10^{-5}$，多项式衰减，AdamW 优化器
+- 滑动窗口裁剪为 1024×1024 的 9 帧序列，记忆库大小设为 9
+- 提供 Tiny/Small/Base/Large 四种规模变体
+
+## 实验关键数据
+
+### 主实验
+
+**室内 Pin2Pan (SPin8 → SPan8)**:
+
+| 方法 | SPin8 mIoU | SPan8 mIoU | Δ |
+|------|-----------|-----------|-----|
+| Trans4PASS+-S | 67.28 | 63.73 | - |
+| 360SFUDA++ w/ b2 | - | 68.84 | * |
+| OmniSAM-T w/ MA | - | 69.10 | +0.26 |
+| OmniSAM-B w/ MA | - | 74.72 | +5.88 |
+| **OmniSAM-L w/ MA** | **75.18** | **79.06** | **+10.22** |
+
+**室外 Pin2Pan (CS13 → DP13)**:
+
+| 方法 | CS13 mIoU | DP13 mIoU | Δ |
+|------|-----------|-----------|-----|
+| Trans4PASS+-S | 74.52 | 51.48 | - |
+| DATR-S | - | 55.88 | * |
+| OmniSAM-T w/ MA | - | 59.01 | +3.13 |
+| OmniSAM-S w/ MA | - | 60.23 | +4.35 |
+| **OmniSAM-B w/ MA** | **77.00** | **62.46** | **+6.58** |
+
+### 消融实验（记忆注意力 MA 的影响）
+
+**SPin8 → SPan8 场景**:
+
+| 变体 | w/o MA | w/ MA | 提升 |
+|------|--------|-------|------|
+| OmniSAM-T | 68.72 | 69.10 | +0.38 |
+| OmniSAM-S | 70.65 | 70.81 | +0.16 |
+| OmniSAM-B | 73.09 | 74.72 | +1.63 |
+| OmniSAM-L | 78.02 | 79.06 | +1.04 |
+
+**CS13 → DP13 场景**:
+
+| 变体 | w/o MA | w/ MA | 提升 |
+|------|--------|-------|------|
+| OmniSAM-T | 53.73 | 59.01 | +5.28 |
+| OmniSAM-S | 57.03 | 60.23 | +3.20 |
+| OmniSAM-B | 59.34 | 62.46 | +3.12 |
+| OmniSAM-L | 59.02 | 61.63 | +2.61 |
+
+记忆注意力在室外场景提升更显著（+2.6~5.3%），室内场景提升相对适中（+0.2~1.6%）。
+
+### 关键发现
+
+- 模型规模增大持续带来性能提升：Tiny→Large 在 SPan8 上从 69.10 提升至 79.06
+- 域差距分析：室内 Pin2Pan 域差距小（FoV gap ≈ 0.5%），室外显著更大（≈ -20%）
+- 在 Syn2Real 场景（SP13→DP13）下，OmniSAM-B 的 mIoU 达 45.51（+2.34），验证了跨合成-真实域的泛化能力
+- 可训练参数 <26MB（Large 变体），参数效率优异
+
+## 亮点与洞察
+
+- 首次将 SAM2 引入全景语义分割 UDA 任务，开辟了新的研究方向
+- 将全景图裁剪为 patch 序列并利用视频分割的记忆机制处理——这种视角转换非常巧妙
+- FoV-based 按帧对齐原型优于传统全图原型对齐，更好地处理了空间变化的畸变
+- 动态伪标签更新中的双向序列处理和覆盖图投票策略增强了伪标签可靠性
+- LoRA 微调保持了优秀的参数效率（<3MB 可训练参数用于编码器）
+
+## 局限与展望
+
+- Large 和 Base 变体的模型尺寸（209.2M / 72.0M）较大，可能限制实时应用
+- 推理速度较慢（需要处理 9 帧序列），可探索更高效的序列处理策略
+- 滑动窗口的步长和尺寸对不同分辨率数据需要手动调整
+- 室外场景的域差距仍然很大（约 -20%），相比室内场景仍有较大改进空间
+
+## 相关工作与启发
+
+- 将图像裁剪为序列并利用视频模型处理的思路可推广到其他大幅面图像分析（如遥感、医学全景图）
+- FoV-based 原型对齐概念可启发其他涉及空间变化域差距的 UDA 任务
+- SAM2 记忆机制的跨 patch 建模能力值得在更多密集预测任务中探索
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐⭐ 首次将 SAM2 用于全景语义分割 UDA，视角转换巧妙，FPA 设计新颖
+- **实验充分度**: ⭐⭐⭐⭐ 三种 UDA 场景、四种模型规模、完整消融、逐类结果
+- **写作质量**: ⭐⭐⭐⭐ 框架描述清晰，动机充分，图示丰富
+- **价值**: ⭐⭐⭐⭐ 大幅度超越 SOTA，为全景分割 UDA 提供了新的强基线
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2025\] SAM2-LOVE: Segment Anything Model 2 in Language-Aided Audio-Visual Scenes](../../CVPR2025/segmentation/sam2-love_segment_anything_model_2_in_language-aided_audio-visual_scenes.md)
+- [\[CVPR 2026\] Denoise and Align: Towards Source-Free UDA for Robust Panoramic Semantic Segmentation](../../CVPR2026/segmentation/denoise_and_align_towards_source-free_uda_for_robust_panoramic_semantic_segmenta.md)
+- [\[ICCV 2025\] E-SAM: Training-Free Segment Every Entity Model](e-sam_training-free_segment_every_entity_model.md)
+- [\[AAAI 2026\] Segment and Matte Anything in a Unified Model (SAMA)](../../AAAI2026/segmentation/segment_and_matte_anything_in_a_unified_model.md)
+- [\[ICML 2025\] InfoSAM: Fine-Tuning the Segment Anything Model from An Information-Theoretic Perspective](../../ICML2025/segmentation/infosam_fine-tuning_the_segment_anything_model_from_an_information-theoretic_per.md)
+
+</div>
+
+<!-- RELATED:END -->

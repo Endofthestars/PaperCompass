@@ -1,0 +1,199 @@
+---
+title: >-
+  [论文解读] OmniAudio: Generating Spatial Audio from 360-Degree Video
+description: >-
+  [ICML 2025][音频/语音][空间音频生成] 提出 OmniAudio 框架，首次实现从 360 度全景视频生成 First-order Ambisonics (FOA) 空间音频，通过 coarse-to-fine 自监督预训练和双分支视频编码架构，在自建的 Sphere360 数据集上取得 SOTA 性能。
+tags:
+  - "ICML 2025"
+  - "音频/语音"
+  - "空间音频生成"
+  - "360度视频"
+  - "First-order Ambisonics"
+  - "Flow Matching"
+  - "自监督预训练"
+---
+
+# OmniAudio: Generating Spatial Audio from 360-Degree Video
+
+**会议**: ICML 2025  
+**arXiv**: [2504.14906](https://arxiv.org/abs/2504.14906)  
+**代码**: [github.com/liuhuadai/OmniAudio](https://github.com/liuhuadai/OmniAudio)  
+**领域**: 音频语音  
+**关键词**: 空间音频生成, 360度视频, First-order Ambisonics, Flow Matching, 自监督预训练
+
+## 一句话总结
+
+提出 OmniAudio 框架，首次实现从 360 度全景视频生成 First-order Ambisonics (FOA) 空间音频，通过 coarse-to-fine 自监督预训练和双分支视频编码架构，在自建的 Sphere360 数据集上取得 SOTA 性能。
+
+## 研究背景与动机
+
+传统视频转音频方法面临两个关键限制：(1) 仅生成单声道/立体声等非空间音频，缺乏 3D 方向性信息；(2) 仅处理有限视场角（FoV）的透视视频，遗漏了视野外的声源信息。例如一列火车从全景视频中经过但不在正面视角中可见时，传统方法无法捕获该声源。
+
+空间音频（尤其是 FOA 格式）可以保留 3D 声音定位信息，但现有方法（ViSAGe、Diff-SAGe 等）仍依赖固定视角输入。360 度全景视频天然提供完整的球面视觉覆盖，能同时观察所有发声物体及其空间关系。
+
+本文定义了 **360V2SA** 新任务（360度视频→空间音频），面临三大挑战：(1) 配对数据稀缺；(2) 球面上精确的视听同步；(3) 高保真空间音频生成的复杂性。
+
+## 方法详解
+
+### 整体框架
+
+OmniAudio 包含两个核心阶段：
+
+1. **Coarse-to-Fine 自监督预训练**：利用大规模非空间音频和 FOA 空间音频进行两阶段预训练，学习通用音频模式
+2. **空间感知有监督微调**：以双分支视频表征为条件，微调 Diffusion Transformer (DiT) 生成 FOA 音频
+
+生成骨干采用 **Conditional Flow Matching**，通过学习从噪声到数据的速度向量场进行生成，相比 DDPM 训练更稳定。
+
+### 关键设计
+
+#### 1. Spatial Audio VAE（空间音频变分自编码器）
+
+FOA 音频包含四个通道（W/X/Y/Z），分别编码全方向声压、前后、左右和上下声音。传统 VAE 仅支持立体声，本文提出以下改进：
+
+- 使用预训练立体声 VAE 权重初始化四通道 FOA VAE
+- 去除针对立体声的 Mid-Side STFT 损失，改为对 W/X/Y/Z 四通道分别施加等权（1/4）重建损失
+- 基于 Stable Audio 框架，采用 Snake 激活函数和 Descript Audio Codec 架构，实现高压缩比下的高质量重建
+
+#### 2. 双分支视频表征（Dual-Branch Video Representation）
+
+为同时建模全局场景上下文和局部细节：
+
+- **全局分支**：将 360 度等距投影视频填充为 1:1 正方形后输入冻结的 MetaCLIP-Huge 图像编码器，提取全局全景特征
+- **局部分支**：从 360 度视频中提取正面 120° 透视视频，经线性投影后输入同一 MetaCLIP 编码器，捕获局部细节特征
+
+融合方式：局部 FoV 特征上采样至音频潜表征序列长度后逐元素相加；全局 360 特征经最大池化后作为 DiT 的全局条件。
+
+#### 3. Coarse-to-Fine 自监督预训练
+
+- **粗粒度阶段**：在 ~2M 非空间音频样本（FreeSound + AudioSet + VGGSound）上训练。先将非空间音频转为 FOA 格式（Y/Z 置零，W=左+右，X=左-右），通过 Spatial VAE 压缩为潜表征，施加 token 掩码后训练 Flow Matching 模型重建被掩码部分
+- **细粒度阶段**：仅使用 FOA 空间音频进行预训练，让模型学习 FOA 特有的空间动态特征
+
+掩码策略：以概率 $p_{cond}=0.1$ 对音频潜表征施加条件掩码，随机选择帧进行掩码，设定最小掩码跨度。
+
+### 损失函数 / 训练策略
+
+**预训练损失**：标准 Conditional Flow Matching 目标（仅对掩码部分计算）。
+
+**微调损失**：加入双分支视频条件的 Flow Matching 目标，时间步从 logit-normal 分布采样。推理时使用 CFG-Scale = 5。
+
+**VAE 损失**：加权四通道多分辨率 STFT 损失 + KL 散度损失 + 判别器损失。
+
+**训练细节**：
+
+- VAE：24× A800 GPU，batch size 144，500K 步 + 冻结编码器再训 300K 步
+- 预训练：8× A100 GPU，batch size 256，100K 步
+- 微调：8× A100 GPU，batch size 256，50K 步，学习率 5e-5 (AdamW)
+- DiT 架构（Large）：1536 嵌入维度，24 层，24 注意力头，共 1.2B 参数
+
+### Sphere360 数据集
+
+自建首个大规模 360V2SA 数据集：103K 视频片段（每段 10 秒），288 小时，覆盖 288 种音频事件。
+
+数据收集流水线：YouTube 关键词搜索 → 360°/FOA 技术过滤 → 频道级+视频级两阶段爬取 → 半自动清洗（静止视频去除、静音检测、语音过滤、ImageBind 视听对齐检查）。
+
+## 实验关键数据
+
+### 主实验
+
+| 模型 | 参数量 | FD ↓ | KL ↓ | ΔAngular ↓ | MOS-SQ ↑ | MOS-AF ↑ | 推理时间 |
+|------|--------|------|------|------------|----------|----------|---------|
+| **Sphere360-Bench (In-distribution)** | | | | | | | |
+| GT | - | - | - | - | 88.41 | 90.12 | - |
+| Diff-Foley + AS | 0.94B | 331.05 | 3.56 | - | 69.87 | 71.12 | 2.40s |
+| MMAudio + AS | 1.03B | 271.15 | 2.39 | - | 75.34 | 77.56 | 3.01s |
+| ViSAGe (FoV) | 0.36B | 210.87 | 2.90 | 1.49 | 73.45 | 74.89 | 22.37s |
+| ViSAGe (360) | 0.36B | 219.66 | 2.96 | 1.51 | 74.12 | 75.34 | 22.37s |
+| **OmniAudio** | **1.22B** | **88.30** | **1.58** | **1.28** | **84.67** | **87.23** | **0.92s** |
+| **YT360-Test (Out-of-distribution)** | | | | | | | |
+| Diff-Foley + AS | 0.94B | 361.65 | 2.22 | - | 67.21 | 70.34 | 2.40s |
+| MMAudio + AS | 1.03B | 190.40 | 1.71 | - | 73.25 | 76.77 | 3.01s |
+| ViSAGe (FoV) | 0.36B | 199.09 | 1.86 | 1.99 | 71.82 | 72.17 | 22.37s |
+| ViSAGe (360) | 0.36B | 225.52 | 1.95 | 1.98 | 72.45 | 72.96 | 22.37s |
+| **OmniAudio** | **1.22B** | **92.57** | **1.64** | **1.27** | **80.37** | **83.49** | **0.92s** |
+
+### 消融实验
+
+**自监督预训练策略消融**：
+
+| 配置 | FD ↓ | KL ↓ | ΔAngular ↓ | 说明 |
+|------|------|------|------------|------|
+| Coarse-to-Fine | **88.30** | **1.58** | **1.28** | 完整两阶段预训练 |
+| w/ fine only | 97.57 | 1.82 | 1.28 | 仅用 FOA 预训练 |
+| w/ coarse only | 97.26 | 1.78 | 1.30 | 仅用非空间音频预训练 |
+| w/o PT | 104.57 | 1.83 | 1.32 | 无预训练 |
+
+**双分支设计消融**：
+
+| 配置 | FD ↓ | KL ↓ | ΔAngular ↓ | 说明 |
+|------|------|------|------------|------|
+| ERP + Per（双分支） | **88.30** | **1.58** | 1.28 | 全景 + 透视双分支 |
+| w/ Per only | 88.80 | 1.87 | 1.33 | 仅透视视频 |
+| w/ EAC only | 93.37 | 1.84 | 1.30 | 仅立方体映射 |
+| w/ ERP only | 97.83 | 1.87 | 1.28 | 仅等距投影 |
+
+**模型规模消融**：
+
+| 规模 | 参数量 | FD ↓ | KL ↓ | ΔAngular ↓ |
+|------|--------|------|------|------------|
+| Large | 1.2B | **88.30** | **1.58** | **1.26** |
+| Medium | 472M | 104.19 | 1.82 | 1.28 |
+| Small | 291M | 108.50 | 1.91 | 1.29 |
+
+### 关键发现
+
+1. **OmniAudio 大幅超越所有基线**：FD 从最佳基线的 210.87 降至 88.30（Sphere360），推理速度 0.92s 远快于 ViSAGe 的 22.37s（快 24 倍）
+2. **360 度视频比透视视频关键**：全景输入在非空间和空间指标上均显著优于仅透视输入
+3. **Coarse-to-fine 预训练不可或缺**：去掉任一阶段都会导致 FD 上升 9-16 分
+4. **OOD 泛化性强**：在 YT360 测试集（分布外）上仍保持显著优势
+5. **级联方案（V2A + 空间化）效果差**：直接端到端生成 FOA 优于级联方式
+
+## 亮点与洞察
+
+1. **任务定义的前瞻性**：360V2SA 是一个被忽视但重要的任务，VR/AR 场景天然需要全景视频配合空间音频
+2. **巧妙的领域迁移策略**：通过 Spatial VAE 将非空间音频转为 FOA 格式参与预训练，有效弥补空间音频数据不足
+3. **双分支设计的互补性**：全局分支提供场景上下文（"哪些声源存在"），局部分支提供精细细节（"声音具体来自何处"），融合方式简洁高效
+4. **数据集工程价值**：Sphere360 的半自动采集清洗流水线具有良好的可复用性，包含静止检测、静音检测、语音过滤和视听对齐检查等完整环节
+5. **推理效率优势**：flow matching + DiT 的方案推理仅需 0.92s，远快于自回归方法
+
+## 局限与展望
+
+1. **多声源场景困难**：当场景中存在大量发声物体时，模型容易混淆事件类型（如将乐器声误判为掌声）
+2. **数据规模仍然有限**：103K 样本对真实世界 360V2SA 仍不够充分
+3. **FOA 仅为一阶 Ambisonics**：空间分辨率有限，更高阶 Ambisonics 可进一步提升空间精度
+4. **FoV 提取策略固定**：仅使用正面 120° 视角作为局部分支，可考虑自适应选择包含主要声源的视角
+5. **缺乏时间动态建模**：当前逐帧提取视觉特征，未显式建模声源的移动轨迹
+
+## 相关工作与启发
+
+- **Diff-Foley / MMAudio**：传统 V2A 方法代表，可作为 OmniAudio 的非空间音频生成基线
+- **ViSAGe**：最接近的竞品，但仍限于透视视频输入，且推理速度慢 24 倍
+- **SpeechFlow**：自监督 Flow Matching 预训练的先驱，启发了 OmniAudio 的预训练策略
+- **Stable Audio / Audiobox**：音频 VAE 和掩码预训练范式的来源
+- **MetaCLIP-Huge**：冻结的视觉编码器，免去视觉端训练开销
+
+## 评分
+
+| 维度 | 分数 (1-5) | 说明 |
+|------|-----------|------|
+| 创新性 | ⭐⭐⭐⭐⭐ | 首次定义 360V2SA 任务，端到端框架设计完整 |
+| 技术深度 | ⭐⭐⭐⭐ | Spatial VAE + 双分支 + coarse-to-fine 预训练环环相扣 |
+| 实验充分度 | ⭐⭐⭐⭐⭐ | 主实验 + 3 组消融 + 主观评测，覆盖全面 |
+| 数据集贡献 | ⭐⭐⭐⭐⭐ | 103K 样本的 Sphere360 + 标准化基准，社区价值高 |
+| 写作质量 | ⭐⭐⭐⭐ | 结构清晰，图表丰富，动机阐述到位 |
+| 综合评分 | ⭐⭐⭐⭐⭐ | 任务新颖 + 方法完整 + 数据集贡献 = 高影响力工作 |
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2026\] Towards Streaming Synchronized Spatial Audio Generation via Autoregressive Diffusion Transformer](../../ICML2026/audio_speech/towards_streaming_synchronized_spatial_audio_generation_via_autoregressive_diffu.md)
+- [\[CVPR 2026\] AudioStory: Generating Long-Form Narrative Audio with Large Language Models](../../CVPR2026/audio_speech/audiostory_generating_long-form_narrative_audio_with_large_language_models.md)
+- [\[ICLR 2026\] Query-Guided Spatial-Temporal-Frequency Interaction for Music Audio-Visual Question Answering](../../ICLR2026/audio_speech/query-guided_spatial-temporal-frequency_interaction_for_music_audio-visual_quest.md)
+- [\[ICML 2025\] ETTA: Elucidating the Design Space of Text-to-Audio Models](etta_elucidating_the_design_space_of_text-to-audio_models.md)
+- [\[NeurIPS 2025\] Node-Based Editing for Multimodal Generation of Text, Audio, Image, and Video](../../NeurIPS2025/audio_speech/node-based_editing_for_multimodal_generation_of_text_audio_image_and_video.md)
+
+</div>
+
+<!-- RELATED:END -->

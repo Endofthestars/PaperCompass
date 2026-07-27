@@ -1,0 +1,132 @@
+---
+title: >-
+  [论文解读] Text-Guided Channel Perturbation and Pretrained Knowledge Integration for Unified Multi-Modality Image Fusion
+description: >-
+  [AAAI2026][信号/通信][多模态图像融合] 提出 UP-Fusion 统一多模态图像融合框架，通过语义感知通道剪枝 (SCPM)、几何仿射调制 (GAM) 和 CLIP 文本引导通道扰动 (TCPM) 三个模块，用单组权重（仅在红外-可见光数据上训练）同时处理 IVIF 和医学图像融合，在两类任务上均达到 SOTA。
+tags:
+  - "AAAI2026"
+  - "信号/通信"
+  - "多模态图像融合"
+  - "统一模型"
+  - "通道扰动"
+  - "CLIP文本引导"
+  - "预训练知识"
+---
+
+# Text-Guided Channel Perturbation and Pretrained Knowledge Integration for Unified Multi-Modality Image Fusion
+
+**会议**: AAAI2026  
+**arXiv**: [2511.12432](https://arxiv.org/abs/2511.12432)  
+**代码**: 待确认  
+**领域**: 图像融合 / 多模态  
+**关键词**: 多模态图像融合, 统一模型, 通道扰动, CLIP文本引导, 预训练知识
+
+## 一句话总结
+提出 UP-Fusion 统一多模态图像融合框架，通过语义感知通道剪枝 (SCPM)、几何仿射调制 (GAM) 和 CLIP 文本引导通道扰动 (TCPM) 三个模块，用单组权重（仅在红外-可见光数据上训练）同时处理 IVIF 和医学图像融合，在两类任务上均达到 SOTA。
+
+## 研究背景与动机
+
+**领域现状**：多模态图像融合包括红外-可见光融合 (IVIF) 和医学图像融合 (MEIF) 两大类。现有方法通常为每类任务单独设计模型，缺乏统一框架。
+
+**现有痛点**：(1) 任务特定模型无法跨模态泛化——IVIF 模型在医学融合上表现差，反之亦然；(2) 统一方法要么牺牲融合质量、要么需要多任务训练数据；(3) 直接注入模态特征容易导致模态过拟合。
+
+**核心矛盾**：如何用一个模型和一组权重同时处理多种模态组合，在不同融合任务间保持质量？
+
+**本文目标** 构建一个仅在单一任务（IVIF）上训练即可泛化到其他模态融合任务的统一框架。
+
+**切入角度**：通过通道扰动（而非直接特征注入）减少模态依赖，用预训练知识（ConvNeXt + CLIP）提供跨任务泛化能力。
+
+**核心 idea**：通道扰动+预训练知识实现"模态无关"的统一融合。
+
+## 方法详解
+
+### 整体框架
+Transformer 编码器-解码器架构（4层编码/4层解码）。编码器提取多模态特征后，SCPM 做语义感知通道剪枝，GAM 做几何仿射调制，TCPM 做文本引导通道扰动。仅在 LLVIP（红外-可见光）训练。
+
+### 关键设计
+
+1. **语义感知通道剪枝模块 (SCPM)**:
+
+    - 功能：融合预训练语义知识指导的通道选择
+    - 核心思路：SE-block 计算通道重要性 $\omega_C$，预训练 ConvNeXt 提取语义特征映射为 $\omega_S$，融合权重 $\omega_F = \omega_C + \alpha \cdot \sigma(\omega_S)$（$\alpha$ 可学习）。Top-k 保留 70% 通道，1×1 卷积扩展回原维度
+    - 设计动机：ConvNeXt 的语义先验帮助在不同模态上做正确的通道选择——是跨任务泛化的关键
+
+2. **几何仿射调制模块 (GAM)**:
+
+    - 功能：使融合特征适配各模态的几何特性
+    - 核心思路：对原始模态特征做全局平均池化，两层 1×1 卷积生成缩放 $\gamma$ 和偏移 $\beta$，仿射变换：$F_O^M = Fuse^M \cdot (1 + \gamma) + \beta$
+    - 设计动机：使用仿射变换而非直接特征注入，避免模态过拟合
+
+3. **文本引导通道扰动模块 (TCPM)**:
+
+    - 功能：用 CLIP 文本特征引导通道重排列
+    - 核心思路：拼接多模态特征→通道注意力选 top-50%→1×1 卷积扩展到 2× 通道→CLIP 编码文本→线性映射→bootstrap 权重→通道重排列→自注意力（扰动做 Q，原始做 K/V）
+    - 设计动机：通道扰动比直接条件化更不容易过拟合特定模态
+
+### 损失函数 / 训练策略
+$L_T = L_{grad} + L_{l_1}$。仅在 LLVIP 训练，100 epochs，192×192，Adam，LR 0.0001→0.00001 余弦衰减。
+
+## 实验关键数据
+
+### 主实验（红外-可见光融合）
+
+| 方法 | MSRS $Q_P$ | MSRS VIF | LLVIP VIF | M3FD VIF |
+|------|-----------|---------|----------|---------|
+| SAGE | 0.5210 | 0.4359 | 0.3590 | 0.4110 |
+| TDFusion | 0.5529 | 0.4257 | 0.3577 | 0.4041 |
+| **UP-Fusion** | **0.5671** | **0.4587** | **0.3817** | **0.4582** |
+
+### 医学融合（超越专用方法）
+
+| 方法 | Harvard $Q_P$ | Harvard VIF |
+|------|-------------|------------|
+| ALMFnet (专用) | 0.5434 | 0.3003 |
+| **UP-Fusion** | **0.5665** | **0.3190** |
+
+### 消融实验
+
+| 变体 | $Q_P$ | VIF | SSIM |
+|------|------|-----|------|
+| w/o SCPM | 0.5343 | 0.3046 | 0.2645 |
+| w/o TCPM | 0.5221 | 0.3016 | 0.2824 |
+| **UP-Fusion** | **0.5665** | **0.3190** | **0.3639** |
+
+### 关键发现
+- 仅训练 IVIF 即可超越专用 MEIF 方法
+- TCPM 是最关键模块——去掉后 $Q_P$ 降 0.044
+- 下游任务同样最优：分割 mIoU 78.28，检测 mAP@0.5 0.841
+
+## 亮点与洞察
+- **"单任务训练，多任务泛化"**是最大亮点：通道扰动+预训练知识实现了真正的模态无关性
+- **通道扰动替代直接条件化**：不直接注入模态特征而通过通道重排列间接影响，巧妙避免过拟合
+
+## 局限与展望
+- CLIP 文本引导需为每种融合任务提供文本描述——自动化程度有限
+- 仅在红外-可见光和医学融合上验证，SAR/多光谱等遥感融合的效果未知
+- SCPM 的 70% 和 TCPM 的 50% 保留率是固定超参
+
+## 相关工作与启发
+- **vs EMMA**: EMMA 做统一融合但需多任务训练数据。UP-Fusion 仅需单一任务训练
+- **vs TDFusion**: TDFusion 用文本驱动融合但模态特化。UP-Fusion 的通道扰动更模态无关
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 通道扰动+CLIP 文本引导+预训练知识的组合实现单任务训练多任务泛化
+- 实验充分度: ⭐⭐⭐⭐⭐ IVIF(3 数据集)+MEIF(2 数据集)+下游任务+详细消融
+- 写作质量: ⭐⭐⭐⭐ 模块设计清晰
+- 价值: ⭐⭐⭐⭐ 统一融合框架对工业应用有直接价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2025\] DiTASK: Multi-Task Fine-Tuning with Diffeomorphic Transformations](../../CVPR2025/signal_comm/ditask_multi-task_fine-tuning_with_diffeomorphic_transformations.md)
+- [\[NeurIPS 2025\] Memory-Integrated Reconfigurable Adapters: A Unified Framework for Settings with Multiple Tasks](../../NeurIPS2025/signal_comm/memory-integrated_reconfigurable_adapters_a_unified_framework_for_settings_with_.md)
+- [\[CVPR 2025\] ABC-Former: Auxiliary Bimodal Cross-domain Transformer with Interactive Channel Attention](../../CVPR2025/signal_comm/abc-former_auxiliary_bimodal_cross-domain_transformer_with_interactive_channel_a.md)
+- [\[AAAI 2026\] Balancing Multimodal Domain Generalization via Gradient Modulation and Projection](balancing_multimodal_domain_generalization_via_gradient_modulation_and_projectio.md)
+- [\[AAAI 2026\] Task Aware Modulation Using Representation Learning for Upscaling of Terrestrial Carbon Fluxes](task_aware_modulation_using_representation_learning_for_upsaling_of_terrestrial_.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,137 @@
+---
+title: >-
+  [论文解读] ScaleDiff: Higher-Resolution Image Synthesis via Efficient and Model-Agnostic Diffusion
+description: >-
+  [NeurIPS 2025][图像生成][高分辨率生成] 提出 ScaleDiff 框架，通过 Neighborhood Patch Attention (NPA) 消除传统 patch 方法中的重叠计算冗余，结合潜空间频率混合 (LFM) 和结构引导 (SG)，在无需额外训练的前提下将预训练扩散模型扩展到高分辨率（如 4096²），在 U-Net 和 DiT 架构上均实现了 training-free 方法中的 SOTA 质量和显著的推理加速（相比 DemoFusion 快 8.9 倍）。
+tags:
+  - "NeurIPS 2025"
+  - "图像生成"
+  - "高分辨率生成"
+  - "免训练"
+  - "Patch注意力"
+  - "频率混合"
+  - "结构引导"
+---
+
+# ScaleDiff: Higher-Resolution Image Synthesis via Efficient and Model-Agnostic Diffusion
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.25818](https://arxiv.org/abs/2510.25818)  
+**代码**: 无  
+**领域**: 扩散模型 / 高分辨率图像生成  
+**关键词**: 高分辨率生成, 免训练, Patch注意力, 频率混合, 结构引导
+
+## 一句话总结
+
+提出 ScaleDiff 框架，通过 Neighborhood Patch Attention (NPA) 消除传统 patch 方法中的重叠计算冗余，结合潜空间频率混合 (LFM) 和结构引导 (SG)，在无需额外训练的前提下将预训练扩散模型扩展到高分辨率（如 4096²），在 U-Net 和 DiT 架构上均实现了 training-free 方法中的 SOTA 质量和显著的推理加速（相比 DemoFusion 快 8.9 倍）。
+
+## 研究背景与动机
+
+文本到图像扩散模型在标准分辨率（如 1024²）下表现出色，但当生成超出训练分辨率的高分辨率图像（如 2048² 或 4096²）时，性能严重退化，出现重复模式和结构扭曲等伪影。直接在高分辨率数据上重新训练模型代价极高，因此研究者转向了"免训练"的方法来扩展分辨率。
+
+现有免训练高分辨率方法存在几个核心矛盾：
+
+**架构兼容性差**：ScaleCrafter 等方法依赖于 U-Net 的膨胀卷积修改，无法直接应用到 DiT 架构。
+
+**计算开销大**：MultiDiffusion 等 patch 方法虽然架构无关，但需要大量重叠区域来保证过渡平滑，导致非自注意力层的计算量膨胀约 4 倍。
+
+**细节缺失与过度平滑**：DiffuseHigh 等基于 RGB 空间上采样的编辑方法由于上采样与训练时的 resize 操作相似，模型倾向于生成过度平滑的纹理。
+
+ScaleDiff 的核心思路是：**只在自注意力层使用 patch 分割（且 query 不重叠），其他层直接处理全分辨率张量，从而在保持边界平滑的同时消除冗余计算**。同时通过潜空间频率混合引导去噪过程生成精细细节。
+
+## 方法详解
+
+### 整体框架
+
+ScaleDiff 采用迭代式的 "上采样→加噪→去噪" (SDEdit) 流水线。从低分辨率图像潜变量出发，先通过 LFM 上采样到高分辨率参考潜变量 Z_ref，再注入噪声到中间时间步 τ，最后在每个去噪步骤中使用 NPA 进行高效去噪，并施加结构引导 (SG) 来维持全局一致性。整体流程为 1024² → 2048² → 4096²。
+
+### 关键设计
+
+1. **Neighborhood Patch Attention (NPA)**：核心创新在于区分自注意力层和非自注意力层的处理方式。对于线性层、卷积层、交叉注意力层等——它们的操作是逐 token 或局部的，不受输入分辨率影响——直接处理完整的高分辨率张量 Z_t，避免了 patch 重叠带来的重复计算。对于自注意力层，NPA 将 query 划分为**不重叠**的小块（大小 h/2 × w/2），每个 query 块对应一个**更大的重叠** key/value 邻域窗口（大小 h × w）。这样 query token 总量不变（避免重复），而 key/value 的重叠保证了 patch 边界处的平滑过渡。理论分析表明，NPA 的自注意力 FLOPs 为 s²h²w²d，远低于 MultiDiffusion 的 (2s-1)²h²w²d，同时非自注意力层的 FLOPs 也从 (2s-1)² 降回 s²。
+
+2. **Latent Frequency Mixing (LFM)**：解决上采样方式的两难困境。RGB 空间上采样 (Z_RU) 产生的潜变量包含丰富频率信息但会让模型偏向过度平滑；潜空间直接上采样 (Z_LU) 虽然偏离训练分布（有利于避免平滑），但缺少高频成分会产生解码伪影。LFM 将两者互补结合：取 Z_RU 的高频分量（细节清晰）和 Z_LU 的低频分量（偏离平滑分布），混合得到参考潜变量 Z_ref = Z_RU^h + Z_LU^l。
+
+3. **Structure Guidance (SG)**：在每个去噪时间步 t，从噪声潜变量估计一个干净预测 Z_{0|t}，然后将其低频分量与参考潜变量 Z_ref 的低频分量混合（混合系数 γ_t 随时间步变化），强制去噪过程保持全局结构一致，同时允许模型自由合成高频细节。与先前工作不同，ScaleDiff 在潜空间而非 RGB 空间执行 SG，减少了不必要的编解码开销。
+
+### 损失函数 / 训练策略
+
+ScaleDiff 是一个完全免训练的推理时方法，不涉及任何训练或微调。关键超参数为噪声时间步 τ：SDXL 设为 400，FLUX 设为 600，在结构保真和细节生成之间取得最佳平衡。
+
+## 实验关键数据
+
+### 主实验
+
+在 LAION-5B 上采样 1000 个文本-图像对进行评估，涵盖 FID、KID、IS 及其 patch 级变体和 CLIP Score。
+
+| 模型/分辨率 | 方法 | FID↓ | KID↓ | FIDp↓ | ISp↑ | CLIP↑ | 时间(s)↓ |
+|-------------|------|------|------|-------|------|-------|----------|
+| SDXL/4096² | DemoFusion | 65.06 | 0.0041 | 41.29 | 19.59 | 32.61 | 1005 |
+| SDXL/4096² | DiffuseHigh | 63.91 | 0.0034 | 42.30 | 19.54 | 32.68 | 325 |
+| SDXL/4096² | AccDiffusion v2 | 64.64 | 0.0037 | 40.92 | 18.42 | 32.34 | 1599 |
+| SDXL/4096² | **ScaleDiff** | **61.87** | **0.0025** | **38.89** | 20.41 | **33.04** | **113** |
+| FLUX/4096² | FLUX+BSRGAN | 64.76 | 0.0051 | 49.30 | 16.92 | 31.19 | 34 |
+| FLUX/4096² | **ScaleDiff** | **64.06** | **0.0044** | **44.29** | **17.41** | 31.14 | 407 |
+
+ScaleDiff 在 SDXL 4096² 上仅需 113 秒，是所有免训练方法中最快的，比 DemoFusion 快 **8.9 倍**。
+
+### 消融实验
+
+| 注意力机制 | LFM | SG | FID↓ | FIDp↓ | 时间(s)↓ | 说明 |
+|-----------|-----|-----|------|-------|----------|------|
+| Base | ✓ | ✓ | 61.91 | 39.94 | 185 | 直接高分辨率推理，有局部伪影 |
+| MultiDiffusion | ✓ | ✓ | 61.71 | 38.08 | 239 | 最佳质量但计算开销大 |
+| **NPA** | ✓ | ✓ | 61.87 | 38.89 | **113** | 接近 MultiDiffusion 质量，速度快 2.1× |
+| NPA | ✗ | ✗ | 64.17 | 41.55 | 113 | 无 LFM+SG，严重重复伪影 |
+| NPA | ✓ | ✗ | 62.34 | 39.49 | 113 | 无 SG，细节提升但重复未消除 |
+| NPA | ✗ | ✓ | 64.12 | 41.50 | 113 | 无 LFM，结构一致但过度平滑 |
+
+### 关键发现
+
+- NPA 在 FLUX 上相比 MultiDiffusion 实现了 **2.8 倍加速**（407s vs 1148s），质量相当
+- LFM 和 SG 各自解决不同问题（细节 vs 结构），两者互补不可或缺
+- 噪声时间步 τ 对两种架构最优值不同：SDXL 偏好 τ=400，FLUX 偏好 τ=600
+- ScaleDiff 确实是**架构无关**的：在 SDXL（U-Net）、FLUX（DiT）、Lumina-T2X 上均有效
+
+## 亮点与洞察
+
+- **patch 方法计算冗余的根源分析精辟**：指出非自注意力层本身不受分辨率影响，完全不需要 patch 化处理——这一洞见简单但极有价值
+- **频率混合的互补设计巧妙**：RGB 上采样和潜空间上采样各有优劣，通过频率域分离取长补短
+- **真正的模型无关性**：在 U-Net 和 DiT 上均有效，而大多数先前方法要么只支持 U-Net、要么在 DiT 上效果有限
+- NPA 的 query 不重叠 + key/value 重叠的设计在保证效率的同时解决了边界伪影问题
+
+## 局限与展望
+
+- 作为免训练方法，生成质量受限于底层扩散模型的能力上限
+- Patch 方法本质上依赖模型对裁剪图像区域的先验知识，生成特写图像时可能出现局部内容不一致
+- 背景区域仍可能出现重复伪影，这是 patch 方法的通病
+- 论文未探索视频生成或 3D 场景等更复杂的高分辨率需求
+
+## 相关工作与启发
+
+- MultiDiffusion 开创了 patch 方法的思路，但计算冗余严重——ScaleDiff 的 NPA 是对其的自然改进
+- DiffuseHigh 揭示了 RGB 空间上采样的过度平滑问题——LFM 提供了优雅的解决方案
+- ScaleCrafter 的膨胀卷积方法虽然高效但架构绑定——凸显了模型无关设计的重要性
+- 核心启发：在 patch 方法中精确区分哪些操作需要局部化、哪些不需要，可以大幅削减计算冗余
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐
+- 实验充分度: ⭐⭐⭐⭐⭐
+- 写作质量: ⭐⭐⭐⭐⭐
+- 价值: ⭐⭐⭐⭐
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] InfGen: A Resolution-Agnostic Paradigm for Scalable Image Synthesis](../../ICCV2025/image_generation/infgen_a_resolution-agnostic_paradigm_for_scalable_image_synthesis.md)
+- [\[NeurIPS 2025\] DOVE: Efficient One-Step Diffusion Model for Real-World Video Super-Resolution](dove_efficient_one-step_diffusion_model_for_real-world_video_super-resolution.md)
+- [\[ECCV 2024\] AccDiffusion: An Accurate Method for Higher-Resolution Image Generation](../../ECCV2024/image_generation/accdiffusion_an_accurate_method_for_higher-resolution_image_generation.md)
+- [\[ICCV 2025\] PatchScaler: An Efficient Patch-Independent Diffusion Model for Image Super-Resolution](../../ICCV2025/image_generation/patchscaler_an_efficient_patch-independent_diffusion_model_for_image_super-resol.md)
+- [\[ECCV 2024\] FouriScale: A Frequency Perspective on Training-Free High-Resolution Image Synthesis](../../ECCV2024/image_generation/fouriscale_a_frequency_perspective_on_training-free_high-resolution_image_synthe.md)
+
+</div>
+
+<!-- RELATED:END -->

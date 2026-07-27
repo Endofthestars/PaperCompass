@@ -1,0 +1,150 @@
+---
+title: >-
+  [论文解读] Infogen: Generating Complex Statistical Infographics from Documents
+description: >-
+  [ACL 2025][信息图生成] 提出Infogen框架，将文本文档转化为复杂统计信息图（多子图组合），采用两阶段设计——先用微调LLM生成结构化中间元数据，再用LLM代码生成器和反馈模块迭代生成最终信息图代码。 统计信息图是将复杂数据转化为直观可视化的强大工具。现有的AI驱动可视化方法（如LIDA、ChartGPT）主要…
+tags:
+  - "ACL 2025"
+  - "信息图生成"
+  - "数据可视化"
+  - "LLM代码生成"
+  - "元数据"
+  - "多子图对齐"
+---
+
+# Infogen: Generating Complex Statistical Infographics from Documents
+
+**会议**: ACL 2025  
+**arXiv**: [2507.20046](https://arxiv.org/abs/2507.20046)  
+**代码**: 无（数据集Infodat的样本已公开）  
+**领域**: 其他  
+**关键词**: 信息图生成, 数据可视化, LLM代码生成, 元数据, 多子图对齐
+
+## 一句话总结
+
+提出Infogen框架，将文本文档转化为复杂统计信息图（多子图组合），采用两阶段设计——先用微调LLM生成结构化中间元数据，再用LLM代码生成器和反馈模块迭代生成最终信息图代码。
+
+## 研究背景与动机
+
+统计信息图是将复杂数据转化为直观可视化的强大工具。现有的AI驱动可视化方法（如LIDA、ChartGPT）主要聚焦于从结构化数据（CSV/表格）生成单一的简单图表（柱状图、折线图等）。然而，真实场景中用户往往需要从非结构化的文本文档出发，生成包含多个子图（如柱状图+饼图+折线图）的复杂统计信息图。
+
+这种任务的挑战在于：
+1. 需要从长文本中识别并提取统计数据
+2. 需要决定子图的数量、类型和内容
+3. 需要将多个子图排列成视觉协调的整体布局
+
+作者认为，直接从文本生成信息图质量不高，引入结构化的中间元数据（metadata）作为桥梁可以显著提升生成质量。
+
+## 方法详解
+
+### 整体框架
+
+Infogen 包含两个主要模块：
+1. **元数据生成模块**：将文本文档转化为结构化元数据 $M = f(T)$
+2. **代码生成模块**：将元数据转化为可执行的Python代码 $C = g(M)$
+
+完整流程为 $C = g(f(T))$
+
+### 关键设计
+
+1. **元数据定义**：包含信息图的标题、文本摘要、以及每个子图的详细信息——图表类型（线图/柱状图/饼图等）、坐标轴标签、数据点、对齐方式、位置、字体、背景色等。元数据是引导最终代码生成的蓝图。
+
+2. **元数据生成三阶段**：
+
+    - **QLoRA微调**：对Qwen-2 Large (72B)、LLAMA 3 (70B)、Phi-3 Medium三个大模型分别用QLoRA进行微调，优化交叉熵损失
+    - **DPO对齐**：为每个数据点从微调模型生成两个元数据输出（不同temperature），由GPT-3.5 Turbo排序形成合成偏好数据集，然后用DPO loss微调模型
+    - **排序LLM（Ranker）**：用微调的LLAMA 3 (70B)评估三个DPO模型的输出，选择最准确的结果，解决单一模型可能产生幻觉的问题
+
+3. **代码生成双模块**：
+
+    - **Coder Module（编码器模块）**：使用GPT-4o，通过in-context learning将元数据转换为Python代码（使用Plotly/Plotnine库），包含子图设置、数据集成和布局编排
+    - **Feedback Module（反馈模块）**：审查生成的代码是否准确对应元数据，检查数据映射、子图属性、布局一致性等问题，提供修改建议。最多迭代5轮精化
+
+### 损失函数 / 训练策略
+
+- 微调阶段：标准交叉熵损失 $\mathcal{L} = -\sum_{i=1}^{N} y_i \log(\hat{y}_i)$
+- DPO阶段：合成偏好数据集上的DPO损失，使用GPT-3.5 Turbo作为偏好标注者
+- 训练超参：batch size=2, gradient accumulation=4, lr=2e-4, AdamW 8-bit, A100 80GB
+
+## 实验关键数据
+
+### 主实验
+
+| 模型 | 子图准确率 | RSE | 标题Rouge-L | 子图类型准确率 | 统计准确率 |
+|------|-----------|-----|------------|--------------|-----------|
+| Infogen (large) | **74.69** | **1.80** | **0.56** | 84.23 | **89.56** |
+| GPT-4o 20-shot | 56.73 | 2.06 | 0.36 | 72.10 | 87.77 |
+| Phi3 QLoRA large DPO | 72.11 | 1.96 | 0.56 | 83.03 | 89.44 |
+| LLAMA3 QLoRA large DPO | 68.65 | 2.05 | 0.55 | 82.98 | 88.27 |
+| In-context merge | 65.57 | 2.24 | 0.51 | 83.46 | 88.79 |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|---------|------|
+| Prompting vs Fine-tuning | 子图准确率 56.73→72+ | 微调显著优于few-shot prompting |
+| 无DPO vs 有DPO | Phi3: 63.46→72.11 | DPO对齐带来显著提升 |
+| Small vs Large LLM | 子图准确率 37~54→63~72 | 大模型一致性地优于小模型 |
+| Infogen small vs large | 59.2→74.69 | 多LLM协作+大模型显著受益 |
+| BM25聚类选examples vs 随机 | 55.76→57.69 | 精选提升有限但一致 |
+
+人类评估（5分制）：
+
+| 模型 | 可读性 | 视觉吸引力 | 数据准确对齐 |
+|------|--------|-----------|-------------|
+| Infogen | **4.1** | **3.8** | **4.1** |
+| Phi3 (DPO) | 3.7 | 3.2 | 3.4 |
+| GPT-4o (20-shot) | 3.4 | 2.8 | 2.4 |
+
+### 关键发现
+
+1. 微调LLM一致性地优于prompting方法，包括GPT-4o的few-shot
+2. DPO对齐对所有evaluated的模型都带来了显著提升，即使偏好数据由GPT-4o合成
+3. 多LLM协作（Ranker选最优）优于单一模型，体现了ensemble的优势
+4. Feedback模块有效修复了代码中的文本重叠、布局错位等问题
+5. 即使使用较小的LLM，Infogen框架也优于单独模型
+
+## 亮点与洞察
+
+- **中间元数据作为桥梁**：这是本文的核心insight。直接从文本到代码太难，元数据作为结构化的中间表示降低了任务复杂度，类似于"内容规划"
+- **三阶段渐进式优化**：微调→DPO→Ranker的递进策略是工程上的巧妙设计
+- **Feedback模块的迭代精化**：借鉴了代码调试的思想，类似于最近很火的LLM agent自我修正范式
+- **数据集构建方法论**：半自动化的合成数据管线（GPT-4o生成+人工验证）值得参考
+
+## 局限与展望
+
+1. Infodat数据集规模有限（3,463个样本），可能影响领域泛化能力
+2. 子图对齐仍有改进空间，错位可能导致关键数据结构细节丢失
+3. 不支持基于上下文的模板自定义选择
+4. 代码生成模块依赖GPT-4o的in-context learning，成本较高
+5. 评估指标为自定义的，尚未被社区广泛验证
+
+## 相关工作与启发
+
+- LIDA和ChartGPT处理简单图表生成，Infogen将问题扩展到多子图复杂信息图
+- 元数据作为中间表示的思路借鉴了instruction tuning中"显式指令提升质量"的发现
+- DataNarrative的双agent框架与Infogen的coder+feedback模块思路类似
+- 未来可扩展到医疗、金融等垂直领域
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 首次形式化定义了文本到复杂信息图的任务，中间元数据设计合理
+- 实验充分度: ⭐⭐⭐⭐ 自动评估+人类评估+定性分析，基线覆盖广
+- 写作质量: ⭐⭐⭐⭐ 架构图清晰，但部分细节散落在附录中
+- 价值: ⭐⭐⭐⭐ 应用价值较高，数据集和任务定义有基准贡献
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Statistical Deficiency for Task Inclusion Estimation](statistical_deficiency_task_inclusion.md)
+- [\[ACL 2025\] Generating Synthetic Relational Tabular Data via Structural Causal Models](generating_synthetic_relational_tabular_data_via_structural_causal_models.md)
+- [\[NeurIPS 2025\] Statistical Inference Under Performativity](../../NeurIPS2025/others/statistical_inference_under_performativity.md)
+- [\[ACL 2025\] Generating Plausible Distractors for Multiple-Choice Questions via Student Choice Prediction](distractor_gen_multiple_choice.md)
+- [\[NeurIPS 2025\] Robust Sampling for Active Statistical Inference](../../NeurIPS2025/others/robust_sampling_for_active_statistical_inference.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,153 @@
+---
+title: >-
+  [论文解读] Doubly Robust Fusion of Many Treatments for Policy Learning
+description: >-
+  [ICML2025][AI安全][个体化治疗规则] 提出校准加权治疗融合（Calibration-Weighted Treatment Fusion）方法，通过双重稳健地合并具有相似效果的治疗组来降低动作空间维度，使得现有多臂策略学习方法（如策略树）可高效应用于大量治疗选项的个体化推荐场景。 在精准医学中…
+tags:
+  - "ICML2025"
+  - "AI安全"
+  - "个体化治疗规则"
+  - "治疗融合"
+  - "校准加权"
+  - "双重稳健"
+  - "Fused Lasso"
+  - "策略树"
+---
+
+# Doubly Robust Fusion of Many Treatments for Policy Learning
+
+**会议**: ICML2025  
+**arXiv**: [2505.08092](https://arxiv.org/abs/2505.08092)  
+**代码**: 待确认  
+**领域**: AI安全  
+**关键词**: 个体化治疗规则, 治疗融合, 校准加权, 双重稳健, Fused Lasso, 策略树
+
+## 一句话总结
+
+提出校准加权治疗融合（Calibration-Weighted Treatment Fusion）方法，通过双重稳健地合并具有相似效果的治疗组来降低动作空间维度，使得现有多臂策略学习方法（如策略树）可高效应用于大量治疗选项的个体化推荐场景。
+
+## 研究背景与动机
+
+在精准医学中，个体化治疗规则（ITR）旨在依据患者特征推荐最优治疗方案。现有 ITR 学习方法（Q-learning、A-learning、策略树等）在治疗选项数 $K$ 较大时面临两大核心挑战：
+
+**数据稀疏**：每个治疗组样本量少，难以准确估计治疗效果
+
+**协变量偏移**：不同治疗组间协变量分布差异大，逆倾向得分加权（IPW）不稳定
+
+关键观察：许多治疗（如针对相同疾病机制的不同药物）具有相似甚至相同的效果，存在潜在的分组结构。若能正确地将 $K$ 个治疗融合为 $M \ll K$ 个组，则可显著降低 ITR 学习的复杂度。
+
+然而，治疗融合本身也受数据稀疏和协变量偏移的困扰——稀疏数据限制了只能使用线性工作模型（容易误设定），严重的协变量偏移使传统 IPW 平衡不可靠。现有方法（Ma et al., 2022）要求结果模型正确设定，一旦模型误设定则融合质量急剧下降。
+
+## 方法详解
+
+### 整体框架
+
+方法分两阶段：
+1. **治疗融合**（Algorithm 1）：用校准加权 + Fused Lasso 发现潜在分组 $\delta: \mathcal{A} \to \mathcal{B}$
+2. **策略学习**（Algorithm 2）：在融合后的分组空间上应用 CAIPWL + 策略树学习最优 ITR
+
+### 校准加权（Calibration Weighting）
+
+对每个治疗组 $a$，通过求解约束优化问题为组内样本分配权重 $\{w_i\}$：
+
+$$\min_{w_i} \sum_{i:A_i=a} h_\gamma(w_i), \quad \text{s.t.} \sum_{i:A_i=a} w_i X_i = \bar{X}, \quad \sum_{i:A_i=a} w_i = 1$$
+
+其中 $h_\gamma$ 来自 Cressie-Read 散度族。该加权使得每个治疗组的加权协变量均值与总体样本均值对齐，从而消除协变量偏移的影响。
+
+### 校准加权 Fused Lasso 进行治疗融合
+
+设线性工作模型 $Y = M_0(X) + \sum_a \mathbb{I}(A=a) X^\top \boldsymbol{\zeta}_a + \epsilon$，通过加权 Fused Lasso 求解：
+
+$$\min_{\boldsymbol{\zeta}} \left\{ \frac{1}{2n} \sum_{a \in \mathcal{A}} \sum_{i:A_i=a} \hat{w}_i (\tilde{Y}_i - X_i^\top \boldsymbol{\zeta}_a)^2 + \sum_{1 \leq a < a' \leq K} p_{\lambda_n}(\|\boldsymbol{\zeta}_a - \boldsymbol{\zeta}_{a'}\|_1) \right\}$$
+
+惩罚项鼓励不同治疗的参数向量 $\boldsymbol{\zeta}_a$ 融合，当 $\hat{\boldsymbol{\zeta}}_a = \hat{\boldsymbol{\zeta}}_{a'}$ 时，治疗 $a$ 和 $a'$ 被归为同一组。
+
+### 双重稳健性
+
+核心理论贡献在于：治疗融合的一致性仅需以下两个条件之一成立：
+
+- **校准加权正确**：$w_i^* = 1/\pi_{A_i}(X_i)$（即正确估计倾向得分）
+- **结果模型正确**：$\mathbb{E}\{\varepsilon(a) \mid X\} = 0$（即线性工作模型正确设定）
+
+这是相比前人工作（Ma et al., 2022）的显著改进——后者要求结果模型必须正确设定。
+
+### 理论保证
+
+- **Oracle 估计量一致性**（Theorem 3.8）：在双重稳健条件和正则性假设下，$\|\hat{\boldsymbol{\zeta}}^{\text{or}} - \boldsymbol{\zeta}^*\|_\infty \leq C\sqrt{p \cdot n \cdot \log(n)}/N_{\min}$
+- **Oracle 性质**（Theorem 3.12）：Fused Lasso 的局部极小值以概率趋于 1 等于 Oracle 估计量，即能正确恢复潜在分组
+- **策略树 Regret 界**（Proposition 3.18）：$R(\hat{d}^{\mathcal{B}}) = O_\mathbb{P}\left(\left\{\sqrt{(2^D-1)\log p + 2^D \log M} + \frac{4}{3} D^{1/4}\sqrt{2^D-1}\right\}\sqrt{V_*/n}\right)$
+
+关键条件：允许 $K$、$M$、$p$ 随 $n$ 增长，要求 $M = o(\sqrt{n/\{p\log(n)\}})$。
+
+### 策略学习阶段
+
+融合完成后，在分组空间 $\mathcal{B}$ 上使用 Cross-Fitted AIPW Learning（CAIPWL）：
+1. L-fold 交叉拟合估计组级倾向得分 $\pi_b(x)$ 和结果函数 $\mu_b(x)$
+2. 构建 AIPW 值函数估计量
+3. 在策略树类上最大化值函数
+
+## 实验关键数据
+
+### 仿真实验（K=16，M=4）
+
+| 方法 | ARI | 组数 | 策略值 |
+|------|-----|------|--------|
+| Policy tree（基线） | / | 16 | 8.77 (0.08) |
+| Fusion + policy tree | 0.26 (0.14) | 10.73 (1.93) | 8.78 (0.09) |
+| **CW + fusion + policy tree** | **0.96 (0.06)** | **4.34 (0.60)** | **8.89 (0.11)** |
+| Ma et al. (2022) | 0.26 (0.14) | 10.73 (1.93) | 8.51 (0.12) |
+
+- 校准加权使 ARI 从 0.26 提升至 0.96，几乎完美恢复真实 4 组结构
+- Ma et al. (2022) 因结果模型误设定，策略值低于基线（8.51 vs 8.77）
+
+### 真实数据：CLL/SLL 患者治疗推荐
+
+- 数据集：Flatiron Health 电子病历，10,346 名 CLL/SLL 患者，7 种一线治疗
+- 融合结果：7 种治疗被分为 5 组（两种单药治疗合并，联合疗法各自独立，单独化疗自成一组）
+- 学习到的策略树（深度 5）发现：老年或确诊时间短的患者倾向推荐化疗；年轻或慢性病程患者倾向推荐联合疗法
+
+## 亮点与洞察
+
+1. **双重稳健的治疗融合**：首次将双重稳健性引入治疗分组问题，显著提升对模型误设定的鲁棒性
+2. **模块化设计**：融合阶段和策略学习阶段解耦，可灵活使用不同协变量（融合用全部协变量，策略树用可操作的子集，避免种族等敏感变量进入决策，兼顾公平性）
+3. **理论完备**：从一致性到 Oracle 性质到 Regret 界，提供了完整的理论保证链
+4. **实用性强**：方法易于实现，与现有 R 包 `policytree` 无缝集成
+
+## 局限与展望
+
+1. **极端稀疏场景**：某些治疗臂样本极少或为零时，校准加权可能不稳定
+2. **一次性融合**：当前融合只执行一次，迭代交替融合+加权估计可提升稳定性
+3. **单一数据源**：未考虑多中心/多源数据整合或向目标人群泛化
+4. **不确定性量化缺失**：缺乏对推荐策略的置信度或不确定性估计
+5. **连续治疗**：方法针对离散治疗，对连续治疗或组合治疗需不同框架
+
+## 相关工作与启发
+
+- **Ma et al. (2022, 2023)**：提出 Fused Lasso 治疗融合，但无校准加权，要求结果模型正确设定
+- **Zhou et al. (2023)**：CAIPWL + 策略树，本文在此基础上增加融合前处理
+- **Lee et al. (2023); Wu & Yang (2023)**：校准加权方法的基础
+- **Athey & Wager (2021)**：策略树的理论框架
+- 启发：双重稳健思想可推广到其他需要降维/分组的因果推断问题
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ — 双重稳健融合是新颖组合，理论贡献扎实
+- 实验充分度: ⭐⭐⭐⭐ — 仿真+真实医疗数据，但缺少更多大规模场景
+- 写作质量: ⭐⭐⭐⭐ — 理论陈述清晰，符号体系完整
+- 价值: ⭐⭐⭐⭐ — 解决了精准医学中的实际痛点，方法实用且有理论支撑
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2026\] FedAFD: Multimodal Federated Learning via Adversarial Fusion and Distillation](../../CVPR2026/ai_safety/fedafd_multimodal_federated_learning_via_adversarial_fusion_and_distillation.md)
+- [\[ICML 2026\] Position: Machine Learning for Heart Transplant Allocation Policy Optimization Should Account for Incentives](../../ICML2026/ai_safety/position_machine_learning_for_heart_transplant_allocation_policy_optimization_sh.md)
+- [\[ACL 2025\] Building a Long Text Privacy Policy Corpus with Multi-Class Labels](../../ACL2025/ai_safety/building_a_long_text_privacy_policy_corpus_with_multi-class_labels.md)
+- [\[ECCV 2024\] Fisher Calibration for Backdoor-Robust Heterogeneous Federated Learning](../../ECCV2024/ai_safety/fisher_calibration_for_backdoor-robust_heterogeneous_federated_learning.md)
+- [\[NeurIPS 2025\] Machine Unlearning Doesn't Do What You Think: Lessons for Generative AI Policy and Research](../../NeurIPS2025/ai_safety/machine_unlearning_doesnt_do_what_you_think_lessons_for_generative_ai_policy_and.md)
+
+</div>
+
+<!-- RELATED:END -->

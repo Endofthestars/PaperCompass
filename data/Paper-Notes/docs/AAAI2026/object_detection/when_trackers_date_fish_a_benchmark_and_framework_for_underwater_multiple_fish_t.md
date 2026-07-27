@@ -1,0 +1,220 @@
+---
+title: >-
+  [论文解读] When Trackers Date Fish: A Benchmark and Framework for Underwater Multiple Fish Tracking
+description: >-
+  [AAAI 2026 Oral][目标检测][水下多鱼跟踪] 提出 MFT25 大规模水下多鱼跟踪数据集（15 序列, 408K 标注）和 SU-T 跟踪框架（UKF + FishIoU），实现 34.1 HOTA 和 44.6 IDF1 的 SOTA 性能，并通过统计分析揭示鱼类跟踪与陆地目标跟踪的本质差异。
+tags:
+  - "AAAI 2026 Oral"
+  - "目标检测"
+  - "水下多鱼跟踪"
+  - "MOT 基准"
+  - "无迹卡尔曼滤波"
+  - "FishIoU"
+  - "非线性运动模型"
+---
+
+# When Trackers Date Fish: A Benchmark and Framework for Underwater Multiple Fish Tracking
+
+**会议**: AAAI 2026 Oral  
+**arXiv**: [2507.06400](https://arxiv.org/abs/2507.06400)  
+**代码**: [https://vranlee.github.io/SU-T/](https://vranlee.github.io/SU-T/)  
+**领域**: 目标检测  
+**关键词**: 水下多鱼跟踪, MOT 基准, 无迹卡尔曼滤波, FishIoU, 非线性运动模型
+
+## 一句话总结
+
+提出 MFT25 大规模水下多鱼跟踪数据集（15 序列, 408K 标注）和 SU-T 跟踪框架（UKF + FishIoU），实现 34.1 HOTA 和 44.6 IDF1 的 SOTA 性能，并通过统计分析揭示鱼类跟踪与陆地目标跟踪的本质差异。
+
+## 研究背景与动机
+
+**水下多鱼跟踪（MFT）** 是海洋生态研究、水产养殖优化和渔业资源管理的核心技术，通过连续跟踪和关联视频序列中的个体目标，实现鱼类运动模式、群体交互和环境适应机制的定量分析。
+
+**水下跟踪的独特挑战**：
+
+**高形态相似性**：同种鱼个体在体型、颜色、纹理上极为相似（t-SNE 分析显示鱼类特征的类内重叠和类间间距远不如行人数据集），导致频繁的身份切换和轨迹碎片化
+
+**非线性运动模式**：鱼类游泳方向变化剧烈且不可预测（角速度分布分析显示方向不稳定性远高于行人等陆地目标），标准卡尔曼滤波的线性运动假设不再适用
+
+**独特形态学**：鱼体呈纺锤形/流线形，不同于行人/车辆的矩形；前端（头部）包含更重要的特征
+
+**现有数据集的不足**：
+- BrackishMOT（49K 标注）、3D-ZeF（86K 标注）、MFT22（155K 标注）规模有限
+- 环境多样性不足，多为受控条件下的简化场景
+- 缺乏高质量、标准化的大规模基准
+
+## 方法详解
+
+### 整体框架
+
+SU-T（Scale-aware and Unscented Tracker）遵循 SDE（Separate Detection and Embedding）范式，包含三个核心组件：
+
+1. **检测器**：基于 YOLOX 的金字塔设计 + 解耦头
+2. **关联模块**：UKF 运动预测 + FishIoU 匹配代价 + 匈牙利算法
+3. **可选 Re-ID 模块**：GeM Pooling 提取外观特征
+
+### 关键设计
+
+#### 1. **MFT25 数据集构建**
+
+- **采集设备**：Canon EOS R6 和 Sony α7M3
+- **场景覆盖**：工业循环水养殖池和实验室水箱，包含不同光照条件（日光至夜间）、俯视和侧视视角
+- **鱼种**：石斑鱼和锦鲤（不同发育阶段），提供显著的外观变化
+- **规模**：15 个视频序列，223 条轨迹，48,066 帧，**408,578 个精确标注**（比以往数据集多 2.6-8.3 倍）
+- **全部为真实视频**，无合成增强
+
+| 数据集 | 序列数 | 轨迹数 | FPS | 帧数 | 标注框数 |
+|--------|--------|--------|-----|------|---------|
+| BrackishMOT | 98 | 638 | 25 | 14,017 | 49,364 |
+| 3D-ZeF | 8 | 32 | 60 | 14,398 | 86,452 |
+| MFT22 | 10 | 234 | 25 | 9,100 | 155,437 |
+| **MFT25** | **15** | **223** | **25** | **48,066** | **408,578** |
+
+#### 2. **无迹卡尔曼滤波（UKF）**
+
+标准 KF 假设线性运动模型，不适合鱼类的非线性游泳模式。UKF 通过确定性采样处理非线性：
+
+**Sigma 点生成**：对状态向量 $\mathbf{x} \in \mathbb{R}^n$，生成 $2n+1$ 个 sigma 点：
+- $\mathcal{X}_0 = \mathbf{x}$
+- $\mathcal{X}_i = \mathbf{x} + (\sqrt{(n+\lambda)\mathbf{P}})_i$，$i=1,...,n$
+- $\mathcal{X}_{i+n} = \mathbf{x} - (\sqrt{(n+\lambda)\mathbf{P}})_i$
+
+**预测步**：将 sigma 点通过非线性状态转移函数 $\mathbf{f}$ 传播，加权求和得到预测状态和协方差。
+
+**更新步**：通过非线性测量函数 $\mathbf{h}$ 变换，计算卡尔曼增益 $\mathbf{K}_k = \mathbf{P}_{xz} \mathbf{P}_{zz}^{-1}$，更新状态估计。
+
+#### 3. **FishIoU：尺度感知关联**
+
+针对鱼类独特形态和运动模式设计的关联度量，由五个分量加权组合：
+
+$$\text{FishIoU} = \omega_1 \cdot \text{IoU} + \omega_2 \cdot \text{cIoU} + \omega_3 \cdot \alpha_r + \omega_4 \cdot \alpha_a - \omega_5 \cdot s \cdot d_c$$
+
+各分量含义：
+- **标准 IoU**（$\omega_1=1.0$）：基础重叠度
+- **中心区域 IoU cIoU**（$\omega_2=0.3$）：使用非对称内缩定义中心区域 $B^c = [x_1+\alpha w, y_1+\beta h, x_2-\gamma w, y_2-\beta h]$（$\alpha=0.15, \beta=0.3, \gamma=0.25$），强调鱼体前端特征
+- **宽高比一致性** $\alpha_r$（$\omega_3=0.1$）：$\min(r_1,r_2)/\max(r_1,r_2)$
+- **面积比一致性** $\alpha_a$（$\omega_4=0.2$）：鱼的尺寸帧间不会突变
+- **中心距离惩罚** $d_c$（$\omega_5=0.4$）：含小目标缩放因子 $s=1-e^{-\min(a_1,a_2)/1000}$
+
+### 关联策略
+
+采用渐进式置信度处理的三级级联关联（借鉴 ByteTrack/OC-SORT/HybridSORT）：
+
+1. **第一级**：高置信度检测框与现有轨迹用 FishIoU 匹配
+2. **第二级**：剩余轨迹与低置信度检测框匹配（恢复被遮挡目标）
+3. **第三级**：未匹配检测框与轨迹的历史观测重连接（应对突然方向变化）
+
+### 训练策略
+
+- 检测器：YOLOX，训练在 MFT25 训练集上
+- Re-ID：SBS-S101 模型（消融实验选出最佳）
+- 硬件：NVIDIA A100 GPU
+- 评估指标：HOTA + CLEAR MOT 指标
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | 类型 | HOTA↑ | IDF1↑ | MOTA↑ | AssA↑ | IDs↓ |
+|------|------|-------|-------|-------|-------|------|
+| FairMOT | JDE | 22.2 | 26.9 | 47.5 | 13.9 | 939 |
+| OC-SORT | SDE | 25.0 | 34.6 | 46.7 | 17.8 | 550 |
+| BoT-SORT | SDE | 26.8 | 36.8 | 49.1 | 19.4 | 500 |
+| ByteTrack | SDE | 31.8 | 40.4 | 69.6 | 20.4 | 489 |
+| TrackFormer | Transformer | 30.4 | 35.3 | **74.6** | 17.7 | 718 |
+| HybridSORT† | SDE | 32.7 | 41.7 | 69.2 | 21.7 | 562 |
+| **SU-T†** | **SDE** | **34.1** | **44.6** | 69.0 | **23.6** | **544** |
+
+SU-T† 以 34.1 HOTA 超过此前最佳 1.4 分。在身份保持指标上优势尤为明显（IDF1 44.6，AssA 23.6）。
+
+### 消融实验
+
+**Re-ID 模型选择**：
+
+| 模型 | HOTA↑ | IDF1↑ | IDs↓ |
+|------|-------|-------|------|
+| SBS-R50 | 31.0 | 39.9 | 713 |
+| SBS-R101 | 30.3 | 38.1 | 678 |
+| SBS-S50 | 32.7 | 41.7 | 562 |
+| **SBS-S101** | **33.8** | **43.7** | **550** |
+
+IBN 变体并未一致提升性能，表明陆地跟踪的域适应技术不一定适用于水下场景。
+
+**关联度量消融**：
+
+| 方法 | HOTA↑ | IDF1↑ | IDs↓ |
+|------|-------|-------|------|
+| 中心距离 | 28.9 | 37.3 | 1273 |
+| 标准 IoU | 32.8 | 40.1 | 579 |
+| CIoU | 30.7 | 39.6 | 727 |
+| DIoU | 30.8 | 39.6 | 728 |
+| HMIoU | 32.3 | 38.4 | 613 |
+| GIoU | 32.9 | 40.0 | 573 |
+| **FishIoU** | **33.4** | **41.7** | 607 |
+| **FishIoU†** | **33.6** | **43.3** | **547** |
+
+**运动模型消融**：
+
+| 模型 | IoU类型 | HOTA↑ | IDF1↑ | IDs↓ |
+|------|---------|-------|-------|------|
+| KF | FishIoU | 33.1 | 41.0 | 612 |
+| AKF | FishIoU | 22.6 | 24.0 | 2368 |
+| STF | FishIoU | 31.6 | 38.1 | 663 |
+| **UKF** | FishIoU | **33.2** | **41.6** | **609** |
+| **UKF†** | FishIoU | **34.1** | **44.6** | **544** |
+
+UKF 一致优于其他运动模型，验证非线性运动模型更适合鱼类复杂游泳模式。AKF 表现最差（HOTA 仅 22.6），可能因自适应机制在鱼类高频方向变化下失稳。
+
+### 关键发现
+
+1. **鱼类 vs 陆地跟踪的本质差异**：
+    - 方向不稳定性：鱼类角速度变化远高于行人（图9）
+    - 速度波动：MFT25 的平均速度波动远大于其他数据集（图10）
+    - 特征可分性：鱼类的 track-level 嵌入重叠严重，类间间距远小于行人（余弦相似度热图和 t-SNE 可视化）
+2. **Transformer 跟踪器的局限**：TrackFormer 虽有最高 MOTA（74.6），但身份保持指标弱且计算开销大
+3. **域适应技术不直接迁移**：为陆地优化的 IBN 归一化在水下不一致改善性能
+4. **序列间异质性大**：HOTA 从 20.3 到 65.2，凸显水下跟踪挑战的多样性
+5. SU-T 在 MOT17/MOT20 上也有竞争力（60.4/56.5 HOTA），证明泛化能力
+
+## 亮点与洞察
+
+1. **MFT25 数据集**：目前最大的水下多鱼跟踪基准，标注量是前代的 2.6-8.3 倍，填补了领域空白
+2. **FishIoU 的生物学启发**：非对称内缩强调鱼体前端特征、面积一致性约束反映鱼体大小帧间恒定——将领域知识优雅地编码进度量函数
+3. **UKF 的理论合理性**：鱼类游泳的非线性特性（突然变向、快速加速）使 UKF 比标准 KF 天然更适合
+4. **系统性统计分析**：通过角速度分布、速度演化、特征可分性等多维度定量揭示鱼类跟踪的独特性
+
+## 局限与展望
+
+1. 视觉相似鱼类的外观区分仍是主要瓶颈，Re-ID 效果有限
+2. 极端密度场景（大量鱼群重叠）性能下降明显（SN-011 序列 HOTA 仅 20.3）
+3. FishIoU 的权重参数 $\omega_1-\omega_5$ 和形态参数 $\alpha, \beta, \gamma$ 为手动设定，可自适应学习
+4. 数据集仅包含石斑鱼和锦鲤两种，鱼种多样性可扩展
+5. 未考虑 3D 空间中的鱼类运动（仅 2D 投影）
+
+## 相关工作与启发
+
+- ByteTrack 的双置信度匹配和 OC-SORT 的历史观测恢复被成功集成到 SU-T 中
+- HybridSORT 的 HMIoU 启发了 FishIoU 的设计，但本文加入了鱼类形态学先验
+- BEE24（蜜蜂跟踪）等非人类 MOT 数据集表明领域特定基准的重要性
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ — UKF + FishIoU 组合有领域特色，但整体框架较为经典
+- 实验充分度: ⭐⭐⭐⭐⭐ — 全面对比、丰富消融、跨域泛化验证、详细统计分析
+- 写作质量: ⭐⭐⭐⭐ — 结构清晰，可视化出色，统计分析有说服力
+- 价值: ⭐⭐⭐⭐ — MFT25 数据集的贡献对水下视觉社区有长期价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2025\] Multiple Object Tracking as ID Prediction](../../CVPR2025/object_detection/multiple_object_tracking_as_id_prediction.md)
+- [\[CVPR 2026\] GMT: Effective Global Framework for Multi-Camera Multi-Target Tracking](../../CVPR2026/object_detection/gmt_effective_global_framework_for_multi-camera_multi-target_tracking.md)
+- [\[ECCV 2024\] WALKER: Self-supervised Multiple Object Tracking by Walking on Temporal Appearance Graphs](../../ECCV2024/object_detection/walker_self-supervised_multiple_object_tracking_by_walking_on_temporal_appearanc.md)
+- [\[AAAI 2026\] Towards Multiple Missing Values-Resistant Unsupervised Graph Anomaly Detection](towards_multiple_missing_values-resistant_unsupervised_graph_anomaly_detection.md)
+- [\[AAAI 2026\] AerialMind: Towards Referring Multi-Object Tracking in UAV Scenarios](aerialmind_towards_referring_multi-object_tracking_in_uav_sc.md)
+
+</div>
+
+<!-- RELATED:END -->

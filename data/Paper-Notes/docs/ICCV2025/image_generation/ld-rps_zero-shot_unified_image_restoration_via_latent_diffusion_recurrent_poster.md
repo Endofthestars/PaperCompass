@@ -1,0 +1,188 @@
+---
+title: >-
+  [论文解读] LD-RPS: Zero-Shot Unified Image Restoration via Latent Diffusion Recurrent Posterior Sampling
+description: >-
+  [ICCV 2025][图像生成][零样本图像复原] LD-RPS 提出一种零样本、无数据集的统一图像复原方法，利用预训练潜在扩散模型进行循环后验采样，通过多模态大模型提供语义先验、可学习 F-PAM 模块对齐退化域，实现多种退化类型的高质量盲复原。 统一图像复原（UIR）旨在用单一模型处理多种退化类型（噪声、低光、去雾、着…
+tags:
+  - "ICCV 2025"
+  - "图像生成"
+  - "零样本图像复原"
+  - "后验采样"
+  - "潜在扩散"
+  - "循环精炼"
+  - "多模态先验"
+---
+
+# LD-RPS: Zero-Shot Unified Image Restoration via Latent Diffusion Recurrent Posterior Sampling
+
+**会议**: ICCV 2025  
+**arXiv**: [2507.00790](https://arxiv.org/abs/2507.00790)  
+**代码**: [https://github.com/AMAP-ML/LD-RPS](https://github.com/AMAP-ML/LD-RPS)  
+**领域**: 图像生成  
+**关键词**: 零样本图像复原, 后验采样, 潜在扩散, 循环精炼, 多模态先验
+
+## 一句话总结
+
+LD-RPS 提出一种零样本、无数据集的统一图像复原方法，利用预训练潜在扩散模型进行循环后验采样，通过多模态大模型提供语义先验、可学习 F-PAM 模块对齐退化域，实现多种退化类型的高质量盲复原。
+
+## 研究背景与动机
+
+统一图像复原（UIR）旨在用单一模型处理多种退化类型（噪声、低光、去雾、着色等），是低级视觉的重要方向。现有方法面临三大问题：
+
+**任务特定方法缺乏泛化**：传统方法（如 ZDCE++、AOD-Net）针对特定退化设计网络，无法推广到其他退化类型
+
+**监督统一方法受限于闭集**：AirNet、PromptIR、DiffUIR 等在特定数据集上训练，遇到训练中未见的退化类型时性能显著下降
+
+**现有后验采样方法不稳定**：GDP 等方法依赖像素级扩散和显式退化建模（y = Ax + B），对复杂真实退化不适用
+
+理想的统一复原方案应同时满足：(1) 无监督——不依赖标注数据；(2) 无数据集——不需要训练数据收集；(3) 泛化——能处理未见退化类型。
+
+作者的核心洞察：**潜在空间比像素空间更适合后验采样**——潜在表示过滤了冗余像素信息和退化噪声；**循环采样比单次采样更稳定**——将上一轮结果作为下一轮初始化，逐步提升质量。
+
+## 方法详解
+
+### 整体框架
+
+LD-RPS 的推理流程包含三个核心组件：
+
+1. **MLLM 语义先验生成**：用多模态大模型（如 GPT-4V）对低质量图像生成文本描述，作为扩散模型的 text embedding 引导
+2. **F-PAM（特征与像素对齐模块）**：可学习的轻量网络，桥接退化图像域和扩散模型生成域
+3. **循环后验采样**：将单次后验采样扩展为多轮循环精炼
+
+### 关键设计
+
+**1. 任务盲语义先验生成**
+
+利用 MLLM 的图像理解能力，从退化图像中提取语义信息：输入低质量图像和手工设计的 prompt → MLLM 生成图像内容描述 → 编码为 text embedding c → 引导扩散模型生成目标内容。这避免了需要人工指定退化类型的问题。
+
+**2. F-PAM：特征与像素对齐模块**
+
+这是应对 LD-RPS 特殊挑战的核心设计。需要对齐两个 gap：
+- **空间 gap**：潜在空间 z 与图像空间 x 的维度差异
+- **域 gap**：正常图像域与退化图像域的分布差异
+
+F-PAM 结构：ψ[z̃₀, z̃₀'] = h₂(h₁(f[z̃₀, z̃₀'])) + p ⊙ h₁(f[z̃₀, z̃₀'])
+
+其中 f 是冻结的 VAE 解码器，h₁/h₂ 是可学习卷积网络，p 是可学习通道注意力因子。F-PAM 与反向扩散过程同步优化，使用 L2 loss + 感知 loss + GAN loss。
+
+**3. 两阶段后验采样**
+
+反向扩散过程分两步：
+- **T → t₁（早期）**：仅训练 F-PAM，g = 0，不干预扩散方向
+- **t₁ → 0（后期）**：联合优化 F-PAM 和后验方向，通过梯度 g = ∇_{z_t} log p(y|ẑ₀) 修正采样路径
+
+后验损失包含：
+- **距离 loss L**：L2 + 感知 loss + GAN loss（退化→退化域对齐）
+- **质量 loss Q**：亮度约束 + 色度一致性约束
+
+**4. 循环精炼（Recurrent Refinement）**
+
+核心思想：将第 i 轮的复原结果 x₀^(i) 重新编码、加噪到 γT 步，作为第 (i+1) 轮的初始化。每轮从较低噪声水平开始，稳定性更好。循环因子 γ ∈ (0,1) 控制重新加噪程度。
+
+### 损失函数 / 训练策略
+
+LD-RPS 是**纯推理方法**，不需要预训练。但推理过程中涉及在线优化：
+
+- **F-PAM 训练 loss S_ψ**：L2 重建 + VGG 感知 + GAN 对抗
+- **后验引导 loss L_total**：距离 loss（L2 + 感知 + GAN）+ 质量 loss（亮度 + 色度）
+- **类型判别器 D₂**：区分"正常图像-退化图像"和"生成图像-退化版本"的残差
+
+所有实验在 NVIDIA H20 GPU 上进行，结果取 3 个随机种子的平均值。
+
+## 实验关键数据
+
+### 主实验
+
+**低光增强（LOLv1 数据集）**：
+
+| 方法 | 定义(B/D/U) | PSNR↑ | SSIM↑ | LPIPS↓ | PI↓ | NIQE↓ |
+|------|:-:|:-:|:-:|:-:|:-:|:-:|
+| DiffUIR | ✓/✗/✗ | 21.36 | 0.907 | 0.125 | 4.68 | 5.95 |
+| ZERO-IG | ✗/✓/✓ | 17.22 | 0.794 | 0.184 | 4.92 | 6.22 |
+| GDP | ✗/✓/✓ | 16.52 | 0.690 | 0.261 | 4.16 | 5.73 |
+| TAO | ✓/✓/✓ | 15.84 | 0.757 | 0.363 | 6.34 | 8.79 |
+| **LD-RPS** | ✓/✓/✓ | **17.45** | **0.804** | 0.277 | 4.79 | **5.52** |
+
+**去雾（RESIDE-HSTS 数据集）**：
+
+| 方法 | PSNR↑ | SSIM↑ | LPIPS↓ |
+|------|:-:|:-:|:-:|
+| YOLY | 20.49 | 0.794 | 0.108 |
+| GDP | 13.15 | 0.757 | 0.144 |
+| TAO | 18.38 | 0.823 | 0.147 |
+| **LD-RPS** | **21.45** | 0.813 | 0.177 |
+
+### 消融实验
+
+**循环次数的影响**（LOLv1 / RESIDE / Kodak24）：
+
+| 循环次数 | LOLv1 PSNR↑ | RESIDE PSNR↑ | Kodak24 PSNR↑ |
+|:-:|:-:|:-:|:-:|
+| 0 | 16.78 | 19.35 | 27.75 |
+| 1 | 17.21 | 20.38 | 28.60 |
+| 2 | **17.73** | 20.83 | 28.26 |
+| 3 | 17.10 | **21.60** | 28.49 |
+
+最优循环次数与退化-语义耦合程度相关：耦合越强（如去雾），需要更多循环。
+
+**文本引导的消融**：
+
+| 设置 | LOLv1 PSNR | RESIDE PSNR | Kodak24 PSNR |
+|------|:-:|:-:|:-:|
+| w/o Text | 16.03 | 19.63 | 28.13 |
+| **Full (w/ Text)** | **17.73 (+1.70)** | **21.60 (+1.97)** | **28.60 (+0.47)** |
+
+文本先验对所有任务都有显著提升，尤其是去雾（+1.97 PSNR）。
+
+### 关键发现
+
+1. **LD-RPS 在零样本设置下超越所有后验采样基线**：在低光、去雾、去噪三个任务上均优于 GDP 和 TAO
+2. **循环精炼有效但非越多越好**：存在最优循环次数，过多循环可能导致质量下降
+3. **文本先验是关键加分项**：MLLM 生成的语义描述为扩散模型提供了重要的生成方向引导
+4. **F-PAM 解决了隐式退化建模问题**：相比 GDP 的显式建模 (y=Ax+B)，F-PAM 可以适应复杂非线性退化
+
+## 亮点与洞察
+
+1. **潜在空间后验采样的思路很有远见**：相比像素空间，潜在空间压缩掉了退化噪声，天然有利于复原
+2. **MLLM 提供零样本语义先验**：巧妙利用大模型的图像理解能力弥补缺乏退化类型先验的问题
+3. **循环精炼思路简单有效**：借鉴 bootstrap 思想，将单次采样不稳定性转化为多次迭代的稳定性
+4. **真正的统一零样本**：同时满足 task-blind + dataset-free + unsupervised 三个条件
+
+## 局限与展望
+
+1. **推理速度慢**：循环采样 + F-PAM 在线训练使得单张图片处理时间较长
+2. **颜色偏差问题**：在某些场景下仍有色偏，需要质量 loss Q 来约束
+3. **依赖 MLLM 质量**：文本先验的质量取决于 MLLM 对退化图像的理解能力，MLLM 在严重退化时可能失效
+4. **GAN 判别器训练不稳定**：在线训练判别器可能引入不稳定因素
+5. **缺乏超分辨率和去模糊的评测**：仅验证了增强/去雾/去噪/着色，空间退化类型未覆盖
+
+## 相关工作与启发
+
+- **GDP**：像素扩散后验采样方法，LD-RPS 的直接改进目标
+- **TAO**：测试时自适应扩散方法，另一个后验采样基线
+- **DiffUIR / DA-CLIP**：监督式统一复原，受限于闭集
+- **AirNet / PromptIR**：退化感知统一复原，需要配对训练数据
+- **启发**：潜在空间 + 可学习退化映射 + 循环精炼的组合是零样本复原的有力范式；MLLM 可以作为通用的语义先验提供者
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐
+- 实验充分度: ⭐⭐⭐⭐
+- 写作质量: ⭐⭐⭐⭐
+- 价值: ⭐⭐⭐⭐
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] FlowDPS: Flow-Driven Posterior Sampling for Inverse Problems](flowdps_flow-driven_posterior_sampling_for_inverse_problems.md)
+- [\[CVPR 2025\] Zero-Shot Image Restoration Using Few-Step Guidance of Consistency Models (and Beyond)](../../CVPR2025/image_generation/zero-shot_image_restoration_using_few-step_guidance_of_consistency_models_and_be.md)
+- [\[ICCV 2025\] AnyPortal: Zero-Shot Consistent Video Background Replacement](anyportal_zero-shot_consistent_video_background_replacement.md)
+- [\[ICCV 2025\] Early Timestep Zero-Shot Candidate Selection for Instruction-Guided Image Editing](early_timestep_zero-shot_candidate_selection_for_instruction-guided_image_editin.md)
+- [\[ICCV 2025\] DynamicID: Zero-Shot Multi-ID Image Personalization with Flexible Facial Editability](dynamicid_zero-shot_multi-id_image_personalization_with_flexible_facial_editabil.md)
+
+</div>
+
+<!-- RELATED:END -->

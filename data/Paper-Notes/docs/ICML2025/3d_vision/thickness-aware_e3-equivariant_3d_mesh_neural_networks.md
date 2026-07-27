@@ -1,0 +1,196 @@
+---
+title: >-
+  [论文解读] Thickness-aware E(3)-Equivariant 3D Mesh Neural Networks
+description: >-
+  [ICML 2025][3D视觉][3D Mesh] 提出 T-EMNN，通过引入厚度感知的消息传递机制和基于 PCA 的数据驱动坐标系，在保持表面网格计算效率的同时建模对立面之间的厚度交互，实现 E(3)-等变/不变的节点级 3D 形变预测。 基于网格的 3D 静态分析方法（如 MGN、EGNN、EMNN）已成为传统有限元…
+tags:
+  - "ICML 2025"
+  - "3D视觉"
+  - "3D Mesh"
+  - "E(3)-等变"
+  - "厚度感知"
+  - "静态分析"
+  - "形变预测"
+---
+
+# Thickness-aware E(3)-Equivariant 3D Mesh Neural Networks
+
+**会议**: ICML 2025  
+**arXiv**: [2505.21572](https://arxiv.org/abs/2505.21572)  
+**代码**: 无  
+**领域**: 3D视觉  
+**关键词**: 3D Mesh、E(3)-等变、厚度感知、静态分析、形变预测
+
+## 一句话总结
+
+提出 T-EMNN，通过引入厚度感知的消息传递机制和基于 PCA 的数据驱动坐标系，在保持表面网格计算效率的同时建模对立面之间的厚度交互，实现 E(3)-等变/不变的节点级 3D 形变预测。
+
+## 研究背景与动机
+
+基于网格的 3D 静态分析方法（如 MGN、EGNN、EMNN）已成为传统有限元方法（FEM）的高效替代方案，但现有方法存在两个核心问题：
+
+**忽略厚度信息**：现有方法仅关注表面拓扑和几何，没有建模对立表面之间的交互。实验发现，厚度节点对（thickness node pair）之间的形变相关性远高于半径内邻居节点的平均相关性（Pearson 相关显著更高、L2 Norm 更低），说明厚度建模对精确预测至关重要。
+
+**空间信息缺失**：EGNN/EMNN 等等变方法为避免计算开销，仅使用相对位移等局部几何特征，无法捕获全局空间关系。而球谐函数等高阶方法计算成本太高，不适合大规模工业网格（平均 ~54K 节点、~325K 边）。
+
+核心动机：在保持 E(3)-等变性和计算效率的前提下，同时引入厚度交互建模和全局空间信息。
+
+## 方法详解
+
+### 整体框架
+
+T-EMNN 采用 encode-process-decode 架构，包含四个核心模块：
+
+1. **数据驱动坐标变换**：将原始坐标变换到 E(3)-不变的坐标系
+2. **编码器**：分别编码几何特征、空间特征和实验条件
+3. **双处理器**：表面处理器 + 厚度处理器交替堆叠
+4. **解码器**：融合几何/空间/条件嵌入，预测形变并逆变换回原坐标
+
+### 关键设计
+
+#### 1. E(3)-不变的数据驱动坐标系
+
+四步坐标变换实现 E(3)-不变性：
+
+- **Step 1**：将坐标中心化到质心 $\tilde{\mathbf{x}}_i = \mathbf{x}_i^{\text{orig}} - \mathbf{x}_{\text{cm}}$（消除平移）
+- **Step 2**：对中心化坐标做 PCA 生成三个正交主轴 $\mathbf{b}_1, \mathbf{b}_2, \mathbf{b}_3$，构成旋转矩阵 $\mathbf{R}$
+- **Step 3**：用参考向量 $\mathbf{v} = \mathbf{x}_{\text{cm}} - \mathbf{x}_{\text{bbox}}$（质心到包围盒中心的方向）确定主轴符号，保证一致性
+- **Step 4**：坐标变换 $\mathbf{x}_i^{\text{inv}} = \mathbf{R}^\top \tilde{\mathbf{x}}_i$
+
+关键性质：变换后的坐标对任意平移 $g$ 和正交矩阵 $Q$ 不变（论文附录 H 给出完整证明）。存储 $\mathbf{x}_{\text{cm}}$ 和 $\mathbf{R}$ 用于逆变换回原坐标，最终预测具有 E(3)-等变性。
+
+#### 2. 厚度节点对与厚度边
+
+**厚度节点对定义**：对节点 $v_i$，沿其法向量反方向投射，找到对立表面上最近的节点 $\mathcal{T}(v_i)$：
+
+$$\mathcal{T}(v_i) = \arg\min_{v_j \in V, v_j \neq v_i} \|\mathbf{x}_j - (\mathbf{x}_i - d \cdot \mathbf{n}_i^{\text{node}})\|, \quad \text{s.t.} \ (\mathbf{x}_j - \mathbf{x}_i) \cdot \mathbf{n}_i^{\text{node}} < 0$$
+
+**厚度边特征** $\mathbf{f}_{i,\text{thick}} = [t(v_i), \mathbf{n}_i \cdot \mathbf{n}_i^{\mathcal{T}}]$，包含：
+- 厚度距离 $t(v_i) = \|\mathbf{x}_i - \mathbf{x}_{\mathcal{T}(v_i)}\|$
+- 法向量点积：量化对立面法向对齐程度
+
+#### 3. 可学习厚度阈值与激活函数
+
+并非所有厚度节点对都代表真实厚度（如宽平板的侧面节点对代表的是"宽度"而非"厚度"），因此引入可学习阈值 $\tau$ 和 sigmoid 激活：
+
+$$I_i = \frac{1}{1 + e^{\alpha(t(v_i) - \tau)}}$$
+
+- $t(v_i) \leq \tau$ 时 $I_i \approx 1$（保留厚度边）
+- $t(v_i) > \tau$ 时 $I_i \approx 0$（过滤噪声边）
+- $\alpha = 3$ 控制过渡锐度，$\tau$ 通过训练自动学习（收敛到 5.68，过滤掉 3.83% 的边）
+
+#### 4. 双处理器消息传递
+
+**表面处理器**：在表面边 $E$ 上做标准消息传递
+$$\mathbf{e}_{ij}^{(l+1)} \leftarrow f_{\text{surf}}^M(\mathbf{e}_{ij}^{(l)}, \mathbf{z}_i^{(l)}, \mathbf{z}_j^{(l)})$$
+$$\mathbf{z}_i^{\text{surf},(l)} \leftarrow f_{\text{surf}}^V(\mathbf{z}_i^{(l)}, \sum_{j \in \mathcal{N}(i)} \mathbf{e}_{ij}^{(l+1)})$$
+
+**厚度处理器**：在厚度边上做加权消息传递
+$$\mathbf{e}_{i,\text{thick}}^{(l+1)} \leftarrow I_i \cdot f_{\text{thick}}^M(\mathbf{e}_{i,\text{thick}}^{(l)}, \mathbf{z}_i^{\text{surf},(l)}, \mathbf{z}_{\mathcal{T}(v_i)}^{\text{surf},(l)})$$
+$$\mathbf{z}_i^{(l+1)} \leftarrow f_{\text{thick}}^V(\mathbf{z}_i^{\text{surf},(l)}, \mathbf{e}_{i,\text{thick}}^{(l+1)})$$
+
+每个节点只有一条厚度边（连接到对立面节点），计算开销极低。厚度边实现了对立表面之间的单跳消息传递，取代了表面网格上需要 6+ 步的路径。
+
+#### 5. 编码器与解码器
+
+- **几何编码器**：用 MLP 编码 E(3)-不变特征（距离、半径等）
+- **空间编码器**：$\mathbf{z}_i^{\text{coord}} = \phi_{\text{coord}}(\mathbf{x}_i^{\text{inv}})$，编码变换后的坐标
+- **条件编码器**：$\mathbf{h}_c = \phi_{\text{cond}}(\mathbf{c})$，编码实验条件（温度、压力等）
+- **解码器**：拼接几何嵌入 + 空间嵌入 → combine → 拼接条件嵌入 → 解码 → 逆变换回原坐标
+
+### 损失函数 / 训练策略
+
+- 200 epochs，学习率 0.001，weight decay 5e-4
+- 对厚度阈值 $\tau$ 使用 ReduceLROnPlateau 自适应调度（patience=5，factor=0.5）
+- 3 层消息传递，隐藏维度 32
+- 硬件：NVIDIA RTX 4090，PyTorch 2.0.1 + PyG 2.4.0
+
+## 实验关键数据
+
+### 主实验
+
+数据集：工业注塑成型数据集，504 样本，28 种几何体 × 18 种实验条件，平均 ~54K 节点。
+
+| 方法 | R²(In-Dist)↑ | R²(OOD)↑ | RMSE(In-Dist)↓ | MAE(In-Dist)↓ |
+|------|-------------|-----------|-----------------|---------------|
+| MLP (原坐标) | 0.8984 | 0.7393 | 0.2818 | 0.1164 |
+| MLP (不变坐标) | 0.9154 | 0.9385 | 0.2546 | 0.1043 |
+| MGN (无坐标) | 0.0782 | -0.0903 | 1.2608 | 0.5607 |
+| MGN + 不变坐标 | 0.9113 | 0.9446 | 0.2241 | 0.0938 |
+| EGNN (无坐标) | -14341.0 | -32260.9 | 153.05 | 54.36 |
+| EGNN + 不变坐标 | 0.9129 | 0.9443 | 0.2270 | 0.0963 |
+| EMNN + 不变坐标 | 0.9149 | 0.9473 | 0.2210 | 0.0937 |
+| **T-EMNN** | **0.9228** | **0.9513** | **0.2132** | **0.0892** |
+
+关键发现：不使用坐标嵌入的 EGNN/EMNN 性能极差（R² 为大负数），说明空间信息至关重要；使用原始坐标的方法在 OOD 设置下性能显著下降，验证了 E(3)-不变性的必要性。
+
+### 消融实验
+
+| 配置 | RMSE↓ | MAE↓ | R²↑ | 说明 |
+|------|-------|------|-----|------|
+| w/o thickness | 0.2156 | 0.0908 | 0.9148 | 移除厚度边特征 |
+| w/o dot product | 0.2191 | 0.0912 | 0.9134 | 移除法向量点积 |
+| **T-EMNN (完整)** | **0.2132** | **0.0892** | **0.9228** | 两个特征都使用 |
+
+计算效率对比：
+
+| 方法 | 速度 (it/s) | GPU 显存 (MB) |
+|------|------------|--------------|
+| MGN + 不变坐标 | 22.29 | 3,952 |
+| EMNN + 不变坐标 | 19.99 | 7,322 |
+| **T-EMNN** | **20.21** | **3,714** |
+
+### 关键发现
+
+1. **厚度阈值收敛稳定**：跨 3 个 seed，$\tau$ 稳定收敛到 5.68，过滤 3.83% 噪声厚度边。固定阈值实验验证 5.68 附近性能最优。
+2. **厚度边通用有效**：将厚度处理器加入 MGN/EGNN/EMNN 基线后，所有方法均获提升。
+3. **表面网格 vs 体素网格**：体素网格虽能建模内部结构，但密集连接反而影响几何理解，且 GPU 显存/推理时间大幅增加；T-EMNN 用表面网格 + 厚度边以更低成本达到更好效果。
+4. **动态场景泛化**：在 Deforming Plate 数据集上，加入厚度边的 T-EMNN（R²=0.7579）显著优于不加厚度边的版本（R²=0.7007）。
+
+## 亮点与洞察
+
+- **巧妙的厚度建模**：不修改网格拓扑，仅添加"虚拟"厚度边连接对立面节点，每节点只增加一条边，开销极小但效果显著。
+- **数据驱动坐标系**：用 PCA + 包围盒参考向量实现简洁的 E(3)-不变坐标变换，避免球谐函数等高计算量方案，非常工程友好。
+- **可学习阈值**：用 sigmoid 软阈值替代硬阈值，$\tau$ 端到端学习，自动区分"厚度"和"宽度"。
+- **计算效率**：GPU 显存仅 3,714 MB，约为 EMNN 的一半，适合工业大规模网格。
+
+## 局限与展望
+
+1. **对称性问题**：当形状关于三个主轴完全对称时，PCA 方向不确定（$\mathbf{b}_i \cdot \mathbf{v} = 0$），坐标变换失效。作者承认此情况在实际工业几何中罕见。
+2. **数据集单一**：仅在注塑成型数据集上验证（28 种几何体），泛化到其他工业场景（航空航天结构件、复合材料等）有待验证。
+3. **单材料假设**：厚度处理器假设均匀材料，多材料/各向异性材料场景需要额外设计。
+4. **动态场景受限**：数据驱动坐标系专为静态分析设计，动态场景需回退到原始坐标系。
+
+## 相关工作与启发
+
+- **EGNN** (Satorras et al., 2021)：通过消息传递保证 E(3)-等变性，但无法利用全局空间信息
+- **EMNN** (Trang et al., 2024)：在 EGNN 基础上引入面积/法向量等几何特征，仍受限于局部感受野
+- **MGN** (Pfaff et al., 2020)：encode-process-decode 框架的经典方法，不保证等变性
+- **启发**：该工作展示了"在表面网格上添加跨表面虚拟连接"的通用思路，可推广到医学成像中的薄壁器官分析、CAD 变形预测等领域
+
+## 评分
+
+| 维度 | 分数 (1-5) | 说明 |
+|------|-----------|------|
+| 创新性 | 4 | 厚度边 + 可学习阈值 + PCA 坐标系的组合很巧妙 |
+| 技术质量 | 4 | 理论完整（含等变性证明），消融充分 |
+| 实验充分性 | 3 | 仅单一工业数据集 + 一个公开数据集 |
+| 实用价值 | 4 | 计算高效，直接可用于工业 CAE 场景 |
+| 写作质量 | 4 | 结构清晰，图示直观 |
+| **总分** | **3.8** | 实用导向的等变网格方法，工业适用性强 |
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Copresheaf Topological Neural Networks: A Generalized Deep Learning Framework](../../NeurIPS2025/3d_vision/copresheaf_topological_neural_networks_a_generalized_deep_learning_framework.md)
+- [\[ICML 2025\] SE(3)-Equivariant Diffusion Policy in Spherical Fourier Space](se3-equivariant_diffusion_policy_in_spherical_fourier_space.md)
+- [\[ICCV 2025\] AJAHR: Amputated Joint Aware 3D Human Mesh Recovery](../../ICCV2025/3d_vision/ajahr_amputated_joint_aware_3d_human_mesh_recovery.md)
+- [\[ICML 2025\] FlowDrag: 3D-aware Drag-based Image Editing with Mesh-guided Deformation Vector Flow Fields](flowdrag_3d-aware_drag-based_image_editing_with_mesh-guided_deformation_vector_f.md)
+- [\[CVPR 2025\] HeatFormer: A Neural Optimizer for Multiview Human Mesh Recovery](../../CVPR2025/3d_vision/heatformer_a_neural_optimizer_for_multiview_human_mesh_recovery.md)
+
+</div>
+
+<!-- RELATED:END -->

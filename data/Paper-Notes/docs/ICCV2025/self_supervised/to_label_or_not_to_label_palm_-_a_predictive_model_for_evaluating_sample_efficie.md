@@ -1,0 +1,170 @@
+---
+title: >-
+  [论文解读] To Label or Not to Label: PALM – A Predictive Model for Evaluating Sample Efficiency in Active Learning Models
+description: >-
+  [ICCV 2025][自监督学习][主动学习] 提出 PALM——一个用4个可解释参数（最大精度 $A_{\max}$、覆盖效率 $\delta$、初始学习偏移 $\alpha$、扩展性 $\beta$）描述主动学习轨迹的统一数学模型，能从有限标注数据预测完整学习曲线，实现主动学习策略的定量公平比较。
+tags:
+  - "ICCV 2025"
+  - "自监督学习"
+  - "主动学习"
+  - "样本效率"
+  - "学习曲线预测"
+  - "覆盖效率"
+  - "自监督表示"
+---
+
+# To Label or Not to Label: PALM – A Predictive Model for Evaluating Sample Efficiency in Active Learning Models
+
+**会议**: ICCV 2025  
+**arXiv**: [2507.15381](https://arxiv.org/abs/2507.15381)  
+**代码**: [github.com/juliamachnio/PALM](https://github.com/juliamachnio/PALM)  
+**领域**: 自监督学习 / 主动学习  
+**关键词**: 主动学习, 样本效率, 学习曲线预测, 覆盖效率, 自监督表示
+
+## 一句话总结
+
+提出 PALM——一个用4个可解释参数（最大精度 $A_{\max}$、覆盖效率 $\delta$、初始学习偏移 $\alpha$、扩展性 $\beta$）描述主动学习轨迹的统一数学模型，能从有限标注数据预测完整学习曲线，实现主动学习策略的定量公平比较。
+
+## 研究背景与动机
+
+### 问题定义
+
+主动学习（Active Learning, AL）通过迭代选择最有信息量的样本进行标注来降低标注成本。然而，现有 AL 评估方法仅关注固定标注预算下的最终准确率，忽略了学习过程的全貌——早期学习效率、空间覆盖率和学习增益的可扩展性等关键因素。
+
+### 已有方法的不足
+
+**评估缺乏预测性**：传统方法仅在固定 budget 下比较准确率和 AUC，无法预测未来性能或估计达到目标性能所需的标注量
+
+**缺乏统一模型**：不存在一个通用的预测模型能够跨不同 AL 方法、数据集和标注预算进行评估和比较
+
+**忽视学习动态**：当前协议未考虑不同策略在学习早期 vs 后期的行为差异，也未量化自监督表示对 AL 效率的影响
+
+### 核心 idea
+
+基于随机覆盖问题的概率原理，将 AL 过程建模为数据空间的覆盖过程——每个标注样本覆盖空间的某个比例 $\delta$，随着标注量增加，覆盖率按指数增长趋近于1。引入调整参数 $\alpha$（初始偏移）和 $\beta$（扩展性）增强模型的灵活性。
+
+## 方法详解
+
+### 整体框架
+
+PALM 是一个纯数学模型（非神经网络），通过非线性最小二乘法从 AL 实验的部分观测数据中拟合4个参数，然后用拟合结果预测完整学习曲线并比较不同 AL 策略。
+
+### 关键设计
+
+#### 1. **期望覆盖率公式**
+- **功能**：建模 $B$ 个标注样本覆盖数据空间的期望比例
+- **核心思路**：假设每个标注样本独立覆盖空间比例 $\delta$，则 $B$ 个样本的期望覆盖率为：
+
+$$\mathbb{E}_C = 1 - (1-\delta)^B$$
+
+- **设计动机**：$\delta$ 越大说明每个样本的覆盖效率越高，不同 AL 策略的 $\delta$ 差异可直接反映其采样质量
+
+#### 2. **广义准确率函数（PALM 核心公式）**
+- **功能**：将测试准确率表达为标注预算的函数
+- **核心思路**：
+
+$$A = A_{\max}\left(1 - (1-\delta)^{\left(\frac{B}{b}+\alpha\right)^\beta}\right)$$
+
+其中：
+  - $A_{\max}$：最大可达准确率（渐近上界）
+  - $\delta$：覆盖效率（每个标注样本覆盖空间的比例）
+  - $b$：每轮迭代的平均标注量（归一化因子）
+  - $\alpha$：初始学习偏移（反映未覆盖区域对泛化的贡献）
+  - $\beta$：学习增益的扩展性（控制准确率随标注量增长的速率）
+- **设计动机**：基础覆盖模型无法区分不同方法的早期学习行为和扩展特性，$\alpha$ 和 $\beta$ 的引入使模型能刻画 AL 曲线的"拐点"和"平台"行为
+
+#### 3. **策略比较准则**
+- **功能**：基于拟合参数直接比较两种 AL 方法的优劣
+- **核心思路**：给定预算 $B$，比较 $A_1$ 和 $A_2$ 的大小即可。更细粒度地：
+    - 高 $\delta$ → 更好的采样效率
+    - 低 $\alpha$ → 更快的初始学习
+    - 高 $\beta$ → 更好的后期扩展性
+    - 高 $A_{\max}$ → 更高的渐近性能
+- **设计动机**：独立于数据集和初始条件，提供可量化、可解释的比较框架
+
+### 训练策略
+
+- 使用非线性最小二乘法拟合参数，计算复杂度约 $\mathcal{O}(\log(B))$
+- 对参数施加约束以确保稳定且可解释的拟合
+
+## 实验关键数据
+
+### 主实验（CIFAR-10/100 AL 曲线拟合）
+
+| 数据集 | 方法 | $\delta$ | $\alpha$ | $\beta$ | 说明 |
+|-------|------|---------|---------|--------|------|
+| CIFAR-10 | Margin（无嵌入）| 0.094 | - | - | 低覆盖效率 |
+| CIFAR-10 | Margin（SimCLR嵌入）| 0.535 | - | - | 嵌入显著提升 $\delta$ |
+| CIFAR-100 | Random（无嵌入）| 0.048 | - | - | 低效率 |
+| CIFAR-100 | Random（SimCLR嵌入）| 0.318 | - | - | 5.7× 覆盖提升 |
+| CIFAR-100 | Margin（无嵌入）| - | 10.643 | - | 高 $\alpha$ = 延迟学习 |
+| CIFAR-100 | Margin（SimCLR嵌入）| - | 0.068 | - | 嵌入大幅降低 $\alpha$ |
+
+### 预测能力验证（从部分数据预测完整曲线）
+
+| 数据集 | 最少标注量 | 占数据集比例 | 预测质量 |
+|-------|-----------|-------------|---------|
+| CIFAR-10 | 1,000 样本 | 2% | 准确预测完整动态 |
+| CIFAR-10（最佳情况）| 200-300 样本 | 0.4-0.6% | 合理预测 |
+| CIFAR-100 | 5,000-10,000 样本 | 10-20% | 可靠预测 |
+| CIFAR-100 + TypiClust | 1,000 样本 | 2% | 准确预测 |
+
+### ImageNet 消融（不同 SSL 嵌入的 PALM 参数对比）
+
+| 嵌入方法 | $A_{\max}$ 相对水平 | $\delta$ 水平 | 特点 |
+|---------|-------------------|--------------|------|
+| MoCov3 | 最高 | 最高 | 最优表示，学习最快 |
+| SimCLR | 竞争力强 | 较低 | 对 AL 策略敏感 |
+| BYOL | 低 | 极低 | 学习缓慢，近线性增长 |
+| MoCov2+ | 落后 | 落后 | 总体较弱 |
+
+### 关键发现
+
+1. **SSL 嵌入对 AL 效率的影响巨大**：使用预训练嵌入的方法的 $\delta$ 可达无嵌入方法的5-6倍
+2. **PALM 可从极少数据预测全貌**：CIFAR-10 上仅需2%数据即可预测完整学习曲线
+3. **不同方法的最终准确率可能相近，但学习轨迹截然不同**：PALM 的参数化揭示了这些被终点评估掩盖的差异
+4. **预测误差在2%以内**：即使在数据池接近耗尽的后期阶段
+
+## 亮点与洞察
+
+1. **优雅的数学建模**：从随机覆盖问题出发推导出闭式表达，物理含义清晰，4个参数各有明确语义
+2. **实用性强的预测能力**：实际场景中可以只标注少量数据，评估不同 AL 策略的完整行为，节省大量标注成本
+3. **揭示 SSL 与 AL 的交互规律**：不同 SSL 方法（MoCov3 > SimCLR > MoCov2+ > BYOL）在 AL 场景下的表现差异可通过 PALM 参数精确刻画
+4. **方法论贡献**：将 AL 评估从"点评估"升级为"曲线评估"，提出了新的评估范式
+
+## 局限与展望
+
+1. **假设标注样本独立**：实际 AL 中样本选择是序列决策，存在依赖关系
+2. **假设无限未标注池**：当标注池接近耗尽时模型拟合会出现轻微偏移
+3. **仅验证了分类任务**：未扩展到检测、分割等其他视觉任务
+4. **CIFAR-10 的"拐点"问题**：数据集较简单时学习曲线的急剧转折难以精确拟合
+5. **未考虑标注质量和噪声标签**：真实场景中标注质量不均匀
+
+## 相关工作与启发
+
+- TypiClust 是针对小 budget 场景的 AL 方法，在 PALM 框架下展现出极高的标注效率
+- SimCLR/BYOL/MoCov2+/MoCov3 等 SSL 方法的特征质量差异在 AL 评估中被放大
+- PALM 的数学框架可类比为 AL 领域的"scaling law"——用简洁的参数化模型描述复杂的学习行为
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐⭐ — 首次提出 AL 学习曲线的闭式预测模型，理论推导优雅
+- **实验充分度**: ⭐⭐⭐⭐ — 覆盖 CIFAR-10/100 和 ImageNet 子集，多种 AL 策略和 SSL 方法，但缺少下游任务验证
+- **写作质量**: ⭐⭐⭐⭐⭐ — 数学推导严谨，逻辑链条清晰
+- **价值**: ⭐⭐⭐⭐ — 为 AL 社区提供了统一的评估工具，对实际标注预算规划有指导意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Hybrid Autoencoders for Tabular Data: Leveraging Model-Based Augmentation in Low-Label Settings](../../NeurIPS2025/self_supervised/hybrid_autoencoders_for_tabular_data_leveraging_model-based_augmentation_in_low-.md)
+- [\[CVPR 2025\] BoSS: A Best-of-Strategies Selector as an Oracle for Deep Active Learning](../../CVPR2025/self_supervised/boss_a_best-of-strategies_selector_as_an_oracle_for_deep_active_learning.md)
+- [\[ICML 2026\] Mitigating Label Shift in Tabular In-Context Learning via Test-Time Posterior Adjustment](../../ICML2026/self_supervised/mitigating_label_shift_in_tabular_in-context_learning_via_test-time_posterior_ad.md)
+- [\[ICML 2025\] Deep Learning is Not So Mysterious or Different](../../ICML2025/self_supervised/deep_learning_is_not_so_mysterious_or_different.md)
+- [\[CVPR 2026\] CUE: Concept-Aware Multi-Label Expansion to Mitigate Concept Confusion in Long-Tailed Learning](../../CVPR2026/self_supervised/cue_concept-aware_multi-label_expansion_to_mitigate_concept_confusion_in_long-ta.md)
+
+</div>
+
+<!-- RELATED:END -->

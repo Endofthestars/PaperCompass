@@ -1,0 +1,147 @@
+---
+title: >-
+  [论文解读] Hybrid Quantum-Classical Multi-Agent Pathfinding
+description: >-
+  [ICML 2025][自动驾驶][MAPF] 提出首个最优混合量子-经典MAPF算法QP和QCP，将MAPF的路径选择问题转化为可在量子硬件上求解的QUBO子问题，通过冲突图+列生成框架实现理论最优性，在真实量子硬件上验证可行性。 领域现状 领域现状：领域现状：MAPF是NP-hard问题，在无人机交通等大规模应用中至关重…
+tags:
+  - "ICML 2025"
+  - "自动驾驶"
+  - "MAPF"
+  - "QUBO"
+  - "量子计算"
+  - "列生成"
+  - "Branch-and-Cut-and-Price"
+---
+
+# Hybrid Quantum-Classical Multi-Agent Pathfinding
+
+**会议**: ICML 2025  
+**arXiv**: [2501.14568](https://arxiv.org/abs/2501.14568)  
+**领域**: 自动驾驶  
+**关键词**: MAPF, QUBO, 量子计算, 列生成, Branch-and-Cut-and-Price  
+
+## 一句话总结
+
+提出首个最优混合量子-经典MAPF算法QP和QCP，将MAPF的路径选择问题转化为可在量子硬件上求解的QUBO子问题，通过冲突图+列生成框架实现理论最优性，在真实量子硬件上验证可行性。
+
+## 研究背景与动机
+
+### 领域现状
+
+**领域现状**：领域现状**：MAPF是NP-hard问题，在无人机交通等大规模应用中至关重要。经典最优求解器如CBS和BCP在大规模实例上受限。
+
+### 现有痛点
+
+**现有痛点**：现有痛点**：量子计算有望突破NP-hard问题的瓶颈，但现有QUBO-MAPF方法要么基于边的表示导致问题规模远超当前量子硬件能力，要么缺乏理论最优性保证。
+
+### 核心矛盾
+
+**核心矛盾**：核心矛盾**：NISQ时代的量子硬件有限的量子比特数和高错误率  vs 需要指数级变量数的MAPF问题。
+
+### 解决思路
+
+**解决思路**：本文目标**：设计可在当前量子硬件上运行的、具有理论最优性保证的MAPF量子算法。
+
+### 补充说明
+
+**补充说明**：切入角度**：将BCP框架中的高层ILP问题转化为紧凑的QUBO问题，通过冲突图减少约束数量。
+
+### 补充说明
+
+**补充说明**：核心 idea**：通过迭代扩展路径集+冲突图QUBO求解+理论最优性判定准则，实现可在量子硬件上求解的最优MAPF。
+
+## 方法详解
+
+### 整体框架
+
+采用两层迭代优化：外层（Separation）识别路径冲突并添加约束；内层（Pricing）生成新路径并通过QUBO求解受限主问题（RMP）。当定价判据满足时，解为全局最优。
+
+### 关键设计
+
+**设计1：基于路径的QUBO公式化**
+- **功能**：将每条可能路径编码为二进制变量，通过冲突图将约束嵌入QUBO矩阵。
+- **核心思路**：冲突图中两条路径有冲突时连边，将不等式约束转化为二次惩罚项。冲突图可分解为独立子问题并行求解。
+- **设计动机**：避免直接处理指数级约束数，冲突图提供了紧凑表示。
+
+**设计2：最优性判定准则**
+- **功能**：证明何时可以停止添加新路径，保证当前解即为最优。
+- **核心思路**：基于Lagrangian对偶的reduced cost准则，放松了经典列生成中的非负性假设。
+- **设计动机**：先前量子MAPF方法缺乏停止准则，只能依赖启发式。
+
+**设计3：硬件感知QUBO分解**
+- **功能**：将QUBO问题分解为可在量子退火器上高效求解的独立子问题。
+- **核心思路**：利用冲突图的连通分量识别独立子问题，每个子问题可在不同量子处理器上并行求解。
+- **设计动机**：适配当前量子硬件的有限量子比特数和拓扑约束。
+
+### 损失函数/训练策略
+
+目标函数：$\min \sum_{a \in A} \sum_{p \in \mathcal{P}_a} c_p z_p$，最小化所有路径长度之和，约束每个agent选择恰好一条路径且无冲突。
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | 5 agents | 10 agents | 最优性 |
+|------|----------|-----------|--------|
+| 先前QUBO | 超时 | 超时 | 否 |
+| QP (本文) | ✓ | ✓ | 是 |
+| QCP (本文) | ✓ | ✓ | 是 |
+| CBS | ✓ | 部分 | 是 |
+| BCP | ✓ | ✓ | 是 |
+
+### 消融实验
+
+| 组件 | 影响 |
+|------|------|
+| 冲突图分解 | 平均将QUBO规模减少60-80% |
+| Cut步骤(QCP vs QP) | QCP收敛更快但引入更多约束 |
+| 实际量子硬件 vs 模拟 | D-Wave退火器可处理小实例 |
+
+### 关键发现
+
+1. QP/QCP在benchmark数据上主导先前QUBO方法，且达到与经典BCP相当的解质量。
+2. 冲突图分解是使问题适配当前量子硬件的关键——将所需量子比特数降至可接受范围。
+3. 在D-Wave量子退火器上成功运行小规模实例，验证了框架的实用性。
+
+## 亮点与洞察
+
+1. 首个具有理论最优性保证的量子MAPF算法，填补了重要空白。
+2. 框架设计模块化，兼容未来更强大的量子硬件。
+3. 冲突图+列生成的组合巧妙地将大问题分解为量子可解的小问题。
+
+## 局限与展望
+
+1. 当前量子硬件仅能处理小规模实例，实际大规模应用仍需等待硬件进步。
+2. 未考虑动态环境中的在线重规划场景。
+3. 分支策略尚未与量子计算深度结合。
+
+## 相关工作与启发
+
+- BCP(Lam et al.)是当前最强经典最优MAPF求解器，本文将其量子化。
+- Martín & Martin的QUBO-MAPF缺乏最优性保证，本文通过pricing准则解决。
+- 启发：量子-经典混合范式可能是NISQ时代的正确路径——用量子解决核心子问题，经典算法负责框架和判定。
+
+## 评分
+
+| 维度 | 评分 |
+|------|------|
+| 创新性 | ★★★★★ |
+| 实用性 | ★★★☆☆ |
+| 实验充分性 | ★★★★☆ |
+| 写作清晰度 | ★★★★☆ |
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] R3DM: Enabling Role Discovery and Diversity Through Dynamics Models in Multi-agent Reinforcement Learning](r3dm_enabling_role_discovery_and_diversity_through_dynamics_models_in_multi-agen.md)
+- [\[CVPR 2026\] Unsupervised Multi-agent and Single-agent Perception from Cooperative Views](../../CVPR2026/autonomous_driving/unsupervised_multi-agent_and_single-agent_perception_from_cooperative_views.md)
+- [\[ICCV 2025\] SRefiner: Soft-Braid Attention for Multi-Agent Trajectory Refinement](../../ICCV2025/autonomous_driving/srefiner_soft-braid_attention_for_multi-agent_trajectory_refinement.md)
+- [\[CVPR 2025\] Learning to Detect Objects from Multi-Agent LiDAR Scans without Manual Labels](../../CVPR2025/autonomous_driving/learning_to_detect_objects_from_multi-agent_lidar_scans_without_manual_labels.md)
+- [\[NeurIPS 2025\] BayesG: Bayesian Ego-Graph Inference for Networked Multi-Agent Reinforcement Learning](../../NeurIPS2025/autonomous_driving/bayesian_ego-graph_inference_for_networked_multi-agent_reinforcement_learning.md)
+
+</div>
+
+<!-- RELATED:END -->

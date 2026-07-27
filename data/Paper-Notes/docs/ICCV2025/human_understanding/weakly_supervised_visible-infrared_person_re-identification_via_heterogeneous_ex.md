@@ -1,0 +1,177 @@
+---
+title: >-
+  [论文解读] Weakly Supervised Visible-Infrared Person Re-Identification via Heterogeneous Expert Collaborative Consistency Learning
+description: >-
+  [ICCV 2025][人体理解][可见光-红外行人重识别] 提出首个弱监督可见光-红外行人重识别（VIReID）范式，仅使用各模态内部的身份标注（无需跨模态对应标注），通过异构专家协同一致性学习框架建立跨模态身份对应关系，性能接近全监督方法。 可见光-红外行人重识别（VIReID）是智能安防中的核心任务…
+tags:
+  - "ICCV 2025"
+  - "人体理解"
+  - "可见光-红外行人重识别"
+  - "弱监督学习"
+  - "跨模态匹配"
+  - "异构专家"
+  - "协同一致性学习"
+---
+
+# Weakly Supervised Visible-Infrared Person Re-Identification via Heterogeneous Expert Collaborative Consistency Learning
+
+**会议**: ICCV 2025  
+**arXiv**: [2507.12942](https://arxiv.org/abs/2507.12942)  
+**代码**: [GitHub](https://github.com/KongLingqi2333/WSL-VIReID)  
+**领域**: 人体理解  
+**关键词**: 可见光-红外行人重识别, 弱监督学习, 跨模态匹配, 异构专家, 协同一致性学习
+
+## 一句话总结
+
+提出首个弱监督可见光-红外行人重识别（VIReID）范式，仅使用各模态内部的身份标注（无需跨模态对应标注），通过异构专家协同一致性学习框架建立跨模态身份对应关系，性能接近全监督方法。
+
+## 研究背景与动机
+
+可见光-红外行人重识别（VIReID）是智能安防中的核心任务，需要在可见光和红外图像之间匹配同一行人。现有方法面临三个层次的标注挑战：
+
+**全监督方法**：需要准确标注跨模态样本身份对应关系。但可见光和红外相机通常在不同时段工作（白天/夜间），直接建立跨模态行人对应关系困难且成本极高。
+
+**半监督方法**：利用单模态标注+另一模态未标注数据。但未标注模态的伪标签噪声严重影响性能。
+
+**无监督方法**：完全不使用标注，通过聚类生成伪标签。但跨模态伪标签质量差，噪声累积限制性能上限。
+
+**本文提出的弱监督设定**：每个模态内部有身份标注（可见光模态和红外模态各自标注了哪个人是谁），但不知道两个模态之间的身份对应关系。这个设定有两个关键优势：
+1. 单模态内标注相对容易（同一相机、同一光谱特征下辨认身份简单）
+2. 避免了无监督方法中伪标签噪声的累积问题
+
+## 方法详解
+
+### 整体框架
+
+方法分为两个阶段：
+1. **异构专家学习阶段（HEL）**：分别在各模态内训练身份分类专家
+2. **协同一致性学习阶段（CCL）**：利用专家进行跨模态身份预测，建立对应关系，进行协同训练
+
+### 关键设计
+
+1. **异构专家学习（HEL）**:
+
+    - 功能：为每个模态独立训练身份分类专家
+    - 核心思路：使用 ResNet-50 作为骨干网络，前几层参数不共享（模态特异编码器），后续卷积层参数共享。为可见光和红外模态分别构建分类器 $\boldsymbol{W}^v$ 和 $\boldsymbol{W}^r$。使用交叉熵损失 + 加权正则化三元组损失联合训练：
+    $\mathcal{L}_{phase1} = \mathcal{L}_{id}^{exp} + \lambda_1 \mathcal{L}_{wrt}^{intr}$
+      其中交叉熵损失：$\mathcal{L}_{id}^{exp} = -\sum_{t \in \{v,r\}} \frac{1}{n^t} \sum_i \boldsymbol{y}_i^t \log \boldsymbol{p}_i^t$
+    - 设计动机：两个专家在不同模态上训练，关注不同的身份相关信息，因此称为"异构专家"。它们各自具备强大的模态内身份判别能力，为后续跨模态预测奠定基础
+
+2. **跨模态关系建立（CRE）**:
+
+    - 功能：融合两个专家的跨模态预测，建立可靠的跨模态身份对应关系
+    - 核心思路：让每个专家预测对方模态样本的身份，使用 Count Priority Selection 方法得到决策矩阵 $\boldsymbol{M}^{t \to \bar{t}}$。然后将跨模态对应关系分为三类：
+        - **一致匹配 $\boldsymbol{M}_c$**：两个专家一致认为身份对应，最可靠
+       $$\boldsymbol{M}_c = \boldsymbol{M}^{t \to \bar{t}} \odot (\boldsymbol{M}^{\bar{t} \to t})^T$$
+        - **单一匹配 $\boldsymbol{M}_s$**：仅一个专家给出了对应预测，另一个专家无法判断
+        - **矛盾匹配 $\boldsymbol{M}_w$**：两个专家给出了不同的对应预测
+       $$\boldsymbol{M}_w = \boldsymbol{M}^{v \to r} + (\boldsymbol{M}^{r \to v})^T - 2\boldsymbol{M}_c - \boldsymbol{M}_s$$
+    - 设计动机：单个专家预测跨模态样本可能不准确，但两个专家的预测一致时可信度很高。将对应关系分为三类允许对不同可信度的对应关系采用不同的训练策略
+
+3. **协同一致性学习（CCL）**:
+
+    - 功能：利用跨模态对应关系约束编码器学习模态不变特征，同时提升专家的跨模态判别能力
+    - 核心思路包含两部分：
+        - **跨模态一致性学习（CMCL）**：
+       - 对一致/单一匹配的样本，使用强约束（跨模态交叉熵）：$\mathcal{L}_{id}^{stro}$
+       - 对矛盾匹配的样本，使用弱约束（排除不可能的身份）：$\mathcal{L}_{id}^{weak} = -\frac{1}{n_w^v} \sum_i \boldsymbol{m}_i \log(1 - \boldsymbol{W}^c(\boldsymbol{f}_i^v) + \epsilon)$
+        - **专家协同学习（CLAE）**：
+       - 为每个模态维护身份原型特征：$\mathcal{P}_i^t \leftarrow \lambda \mathcal{P}_i^t + (1-\lambda) \bar{\boldsymbol{f}}_i^t$
+       - 通过协同一致性损失约束专家对跨模态正样本产生一致预测：$\mathcal{L}_{homo}^v = \frac{1}{n^c \times C^v} \sum_i \| \boldsymbol{p}_i^{v \to v} - \boldsymbol{p}_i^{r \to v} \|_2^2$
+       - 使用信息熵自适应调节约束强度：预测越不确定，协同约束越强
+    - 设计动机：CMCL 让编码器学习跨模态一致特征，CLAE 让专家逐步提升跨模态预测能力，两者相互促进。弱约束设计避免了矛盾标签对训练的负面影响
+
+### 损失函数 / 训练策略
+
+协同一致性学习阶段的总损失：
+$$\mathcal{L}_{phase2} = \mathcal{L}_{id}^{exp} + \mathcal{L}_{id}^{stro} + \mathcal{L}_{homo} + \lambda_1 \mathcal{L}_{wrt}^{cros} + \lambda_2 \mathcal{L}_{id}^{weak}$$
+
+训练超参数：
+- 动量更新系数 $\lambda = 0.8$，$\lambda_1 = \lambda_2 = 0.25$
+- 初始学习率：编码器 $3 \times 10^{-4}$，专家和共享分类器 $6 \times 10^{-4}$
+- 协同一致性学习 120 epochs，warmup 10 epochs
+
+## 实验关键数据
+
+### 主实验
+
+**SYSU-MM01（All Search 模式）**：
+
+| 方法 | 类型 | Rank-1 | mAP | 提升 |
+|------|------|--------|-----|------|
+| DPIS (ICCV'23) | 半监督 | 58.4 | 55.6 | - |
+| GUR (ICCV'23) | 无监督 | 63.5 | 61.6 | - |
+| DEEN (CVPR'23) | 全监督 | 74.7 | 71.8 | - |
+| **Ours** | **弱监督** | **70.4** | **66.6** | +12.0/+11.0 vs DPIS |
+
+**LLCM（VIS to IR 模式）**：
+
+| 方法 | 类型 | Rank-1 | mAP | 提升 |
+|------|------|--------|-----|------|
+| OTLA (ECCV'22) | 半监督 | 44.2 | 48.2 | - |
+| PGM (CVPR'23) | 无监督 | 44.9 | 49.0 | - |
+| DEEN (CVPR'23) | 全监督 | 62.5 | 65.8 | - |
+| **Ours** | **弱监督** | **55.3** | **58.7** | +11.1/+10.5 vs OTLA |
+
+### 消融实验
+
+**各模块贡献（SYSU-MM01 All Search）**：
+
+| 配置 | Rank-1 | mAP | 说明 |
+|------|--------|-----|------|
+| Baseline (HEL only) | 47.8 | 47.2 | 仅模态内训练 |
+| B + CMCL\CRE | 66.7 | 62.8 | 仅用一致预测做 CMCL |
+| B + CRE + CMCL | 68.3 | 64.5 | 加入关系融合 |
+| B + CRE + CMCL + CLAE | **70.4** | **66.6** | 完整模型 |
+
+### 关键发现
+
+1. 仅模态内训练（Baseline）已具备一定跨模态检索能力（47.8% Rank-1），说明参数共享层学到了初步的模态不变特征
+2. CMCL 带来最大提升（+18.9% Rank-1），跨模态对应关系的建立是核心贡献
+3. CRE 的关系融合进一步提升了 1.6% Rank-1，证明两个专家的预测融合优于单一专家
+4. CLAE 提供额外 2.1% Rank-1 提升，专家在训练过程中持续改进跨模态判别能力
+5. 弱监督性能（70.4%）已接近全监督方法 DEEN（74.7%），差距仅 4.3%，但标注成本大幅降低
+
+## 亮点与洞察
+
+- **弱监督范式设计巧妙**：既避免了全监督的昂贵标注，又比半监督/无监督有更可靠的模态内监督信号
+- **三类对应关系的分层处理**是核心创新：一致、单一、矛盾分别对应强约束、中等约束、弱约束（排除式约束），避免了噪声标签对训练的损害
+- **专家协同学习**形成正反馈循环：更好的对应关系→更好的特征→更准确的专家预测→更好的对应关系
+- 信息熵自适应加权实现了"越不确定越需要约束"的直觉
+
+## 局限与展望
+
+- 异构专家采用简单的分类器，可考虑更复杂的专家结构（如 MoE）
+- 对应关系建立是离散的一次性过程，可考虑端到端的软对齐方案（如最优传输的连续松弛）
+- 仅在 SYSU-MM01 和 LLCM 两个数据集上验证，泛化性需要更多验证
+- 弱监督设定假设每个模态内部都有完整标注，对于极端场景可能仍然需要较多标注成本
+
+## 相关工作与启发
+
+- OTLA (ECCV 2022) 的最优传输策略与本文的 CRE 有互补性，可尝试融合
+- 对比学习框架（如 InfoNCE）可能替代交叉熵损失实现更鲁棒的跨模态对齐
+- 弱监督范式有望推广到其他跨模态匹配任务（如 RGB-深度、RGB-文本行人重识别）
+- 专家协同机制可借鉴自监督学习的 momentum teacher 范式
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 首创弱监督 VIReID 范式，三类对应关系的设计具有新颖性
+- 实验充分度: ⭐⭐⭐⭐ 消融完整，与全监督/半监督/无监督多范式对比全面
+- 写作质量: ⭐⭐⭐⭐ 问题定义和方法描述清晰，公式推导严谨
+- 价值: ⭐⭐⭐⭐ 在实际部署中显著降低标注成本的同时保持有竞争力的性能
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2026\] Spatial-Frequency Collaborative Learning for Occluded Visible-Infrared Person Re-Identification](../../CVPR2026/human_understanding/spatial-frequency_collaborative_learning_for_occluded_visible-infrared_person_re.md)
+- [\[ICCV 2025\] One-Shot Knowledge Transfer for Scalable Person Re-Identification](one-shot_knowledge_transfer_for_scalable_person_re-identification.md)
+- [\[ICCV 2025\] OpenAnimals: Revisiting Person Re-Identification for Animals Towards Better Generalization](openanimals_revisiting_person_re-identification_for_animals_towards_better_gener.md)
+- [\[CVPR 2026\] Towards Cross-Modal Preservation, Consistency and Alignment for Privacy-Preserving Visible-Infrared Person Re-Identification](../../CVPR2026/human_understanding/towards_cross-modal_preservation_consistency_and_alignment_for_privacy-preservin.md)
+- [\[CVPR 2026\] MFEN: Multi-Frequency Expert Network for Visible-Infrared Person Re-ID](../../CVPR2026/human_understanding/mfen_multi-frequency_expert_network_for_visible-infrared_person_re-id.md)
+
+</div>
+
+<!-- RELATED:END -->

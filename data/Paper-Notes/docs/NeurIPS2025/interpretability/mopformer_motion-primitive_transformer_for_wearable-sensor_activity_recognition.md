@@ -1,0 +1,130 @@
+---
+title: >-
+  [论文解读] MoPFormer: Motion-Primitive Transformer for Wearable-Sensor Activity Recognition
+description: >-
+  [NeurIPS 2025][可解释性][运动原语] 提出 MoPFormer，将可穿戴传感器信号分解为运动原语（motion primitives）序列，通过 Transformer 建模原语间的时序依赖关系，在多个 HAR 基准上超越 SOTA 并保持轻量化。 领域现状：可穿戴传感器的人体活动识别（HAR）广泛应用于健康…
+tags:
+  - "NeurIPS 2025"
+  - "可解释性"
+  - "运动原语"
+  - "Transformer"
+  - "可穿戴传感器"
+  - "活动识别"
+  - "时序分解"
+---
+
+# MoPFormer: Motion-Primitive Transformer for Wearable-Sensor Activity Recognition
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2505.20744](https://arxiv.org/abs/2505.20744)  
+**代码**: 有  
+**领域**: 可解释性  
+**关键词**: 运动原语, Transformer, 可穿戴传感器, 活动识别, 时序分解
+
+## 一句话总结
+
+提出 MoPFormer，将可穿戴传感器信号分解为运动原语（motion primitives）序列，通过 Transformer 建模原语间的时序依赖关系，在多个 HAR 基准上超越 SOTA 并保持轻量化。
+
+## 研究背景与动机
+
+**领域现状**：可穿戴传感器的人体活动识别（HAR）广泛应用于健康监测、运动分析等，主流方法使用 CNN/RNN 直接处理原始信号。
+
+**现有痛点**：(1) 原始信号中噪声大、采样率变化影响泛化；(2) CNN 难以捕捉长程时序依赖；(3) 标准 Transformer 对 HAR 信号的 token 化方式不合理。
+
+**核心矛盾**：传感器信号的连续性 vs Transformer 需要离散 token 的输入格式。
+
+**切入角度**：人体活动可以自然分解为运动原语（如"抬手"、"迈步"等基本运动单元），用原语作为 Transformer 的 token。
+
+## 方法详解
+
+### 整体框架
+
+输入 IMU 信号 → 运动原语提取（学习型分段+编码）→ 原语序列 Transformer → 活动分类。
+
+### 关键设计
+
+1. **运动原语提取**
+
+    - 功能：将连续传感器信号自动分解为离散原语序列
+    - 核心思路：学习型分段网络识别信号中的原语边界，编码器将每个分段映射为固定长度的原语嵌入
+    - 设计动机：原语是更自然、更稳定的表示单元——不受采样率变化影响
+
+2. **Primitive Transformer**
+
+    - 功能：建模原语间的时序依赖
+    - 核心思路：标准 Transformer encoder，位置编码 + 多头自注意力 + 前馈层
+    - 设计动机：原语序列长度远短于原始信号（10-20 个原语 vs 数百个采样点），计算效率高
+
+3. **轻量化设计**
+
+    - 功能：保持模型紧凑以适配边缘设备
+    - 核心思路：小维度嵌入（64-128）、浅层 Transformer（2-4 层）、参数共享
+    - 设计动机：可穿戴设备计算资源有限
+
+### 损失函数 / 训练策略
+
+分类交叉熵损失 + 原语分段辅助损失。端到端训练。
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | UCI-HAR Acc↑ | PAMAP2 F1↑ | Opportunity F1↑ | 参数量↓ |
+|------|-------------|-----------|----------------|--------|
+| DeepConvLSTM | 93.2% | 89.5% | 85.3% | 2.1M |
+| InceptionTime | 94.1% | 90.8% | 86.7% | 3.5M |
+| HAR-Transformer | 94.5% | 91.2% | 87.1% | 4.2M |
+| **MoPFormer** | **95.8%** | **92.7%** | **89.3%** | **0.8M** |
+
+### 消融实验
+
+| 配置 | UCI-HAR Acc | 说明 |
+|------|-----------|------|
+| 固定窗口 token | 93.8% | 标准滑窗分段 |
+| 学习分段，无 Transformer | 94.2% | 原语+MLP |
+| 学习分段 + Transformer | **95.8%** | 完整方案 |
+
+### 关键发现
+
+- MoPFormer 在所有基准上超越 SOTA，同时参数量最小（0.8M vs 4.2M）
+- 运动原语分解贡献最大——即使不用 Transformer 仅用 MLP 也优于标准方法
+- 跨采样率泛化能力强——50Hz→25Hz 性能仅降 1.2%，标准方法降 5%+
+
+## 亮点与洞察
+
+- **运动原语的自然性**：人体运动确实是由基本原语组合而成，这个表示更贴近运动学本质。可迁移到机器人动作识别、手语识别等场景。
+- **效率优势**：原语序列远短于原始信号，Transformer 计算量大幅降低——既提升精度又减少计算。
+- **鲁棒性**：对采样率变化的鲁棒性是实际部署中的关键优势。
+
+## 局限与展望
+
+- 原语分段的可解释性有待验证——学到的原语是否对应真实的运动单元
+- 仅在 IMU 数据上验证，其他传感器（EMG、压力）需扩展
+- 复杂的过渡活动（如"坐下后立即站起"）的原语分解可能不准确
+
+## 相关工作与启发
+
+- **vs HAR-Transformer**：直接对原始信号做固定窗口 token 化，忽略了运动的自然结构；MoPFormer 用学习分段更合理
+- **vs DeepConvLSTM**：CNN-RNN 混合模型，参数量大且长程依赖捕捉不足
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 运动原语作为 token 的思路自然且有效
+- 实验充分度: ⭐⭐⭐⭐⭐ 3 个数据集，充分消融
+- 写作质量: ⭐⭐⭐⭐ 结构清晰
+- 价值: ⭐⭐⭐⭐ 可穿戴 HAR 的实际应用价值高
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Benchmarking Probabilistic Time Series Forecasting Models on Neural Activity](benchmarking_probabilistic_time_series_forecasting_models_on_neural_activity.md)
+- [\[NeurIPS 2025\] Beyond Components: Singular Vector-Based Interpretability of Transformer Circuits](beyond_components_singular_vector-based_interpretability_of_transformer_circuits.md)
+- [\[CVPR 2025\] Geometry-Guided Camera Motion Understanding in VideoLLMs](../../CVPR2025/interpretability/geometry-guided_camera_motion_understanding_in_videollms.md)
+- [\[NeurIPS 2025\] Transformer Key-Value Memories Are Nearly as Interpretable as Sparse Autoencoders](transformer_key-value_memories_are_nearly_as_interpretable_as_sparse_autoencoder.md)
+- [\[NeurIPS 2025\] Discovering Transformer Circuits via a Hybrid Attribution and Pruning Framework](discovering_transformer_circuits_via_a_hybrid_attribution_and_pruning_framework.md)
+
+</div>
+
+<!-- RELATED:END -->

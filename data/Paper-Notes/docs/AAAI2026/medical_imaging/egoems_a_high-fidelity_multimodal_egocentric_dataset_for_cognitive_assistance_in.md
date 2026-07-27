@@ -1,0 +1,128 @@
+---
+title: >-
+  [论文解读] EgoEMS: A High-Fidelity Multimodal Egocentric Dataset for Cognitive Assistance in Emergency Medical Services
+description: >-
+  [AAAI 2026][医学图像][自我中心视角] 发布首个高保真多人多模态自我中心EMS数据集，包含233个试验20小时视频、9项干预67个关键步骤标注，提供三个基准任务（步骤分类/在线分割/CPR质量估计）推动EMS认知协助系统开发。 领域现状：应急医疗服务（EMS）中一线应急人员面临巨大认知压力，AI和LLM的进展为虚…
+tags:
+  - "AAAI 2026"
+  - "医学图像"
+  - "自我中心视角"
+  - "应急医疗服务"
+  - "多模态融合"
+  - "认知协助"
+  - "活动识别"
+---
+
+# EgoEMS: A High-Fidelity Multimodal Egocentric Dataset for Cognitive Assistance in Emergency Medical Services
+
+**会议**: AAAI 2026  
+**arXiv**: [2511.09894](https://arxiv.org/abs/2511.09894)  
+**代码**: [项目页面](https://uva-dsa.github.io/EgoEMS)  
+**领域**: 医学图像 / 数据集 / 多模态学习  
+**关键词**: 自我中心视角, 应急医疗服务, 多模态融合, 认知协助, 活动识别
+
+## 一句话总结
+发布首个高保真多人多模态自我中心EMS数据集，包含233个试验20小时视频、9项干预67个关键步骤标注，提供三个基准任务（步骤分类/在线分割/CPR质量估计）推动EMS认知协助系统开发。
+
+## 研究背景与动机
+**领域现状**：应急医疗服务（EMS）中一线应急人员面临巨大认知压力，AI和LLM的进展为虚拟认知协助系统创造了机遇。现有自我中心数据集大多关注日常活动，缺乏医学高风险领域。
+
+**现有痛点**：(a) 医学领域缺乏大规模高保真标注数据集；(b) 现有EMS数据多为单模态（仅语音）；(c) 应急场景涉及团队协作但现有数据集多为单视角；(d) 医学标注成本高昂。
+
+**核心矛盾**：需要真实性数据训练有效系统，但真实急救涉及伦理困难；需要多模态数据但标注成本倍增。
+
+**本文目标** 创建首个多模态多人自我中心EMS数据集，建立与国家标准对齐的分类法，提供基准任务和基线。
+
+**切入角度**：使用模拟场景保证伦理、招募真实EMS专业人员保证真实性、采用手工+半自动混合标注降低成本。
+
+**核心 idea**：通过与EMS专家协作建立规范分类法，采集模拟场景中62名参与者的多模态自我中心数据，为AI认知协助提供坚实基础。
+
+## 方法详解
+
+### 整体框架
+数据集构成：233试验 × 20小时视频 × 4种模态（视频+音频+IMU+CPR真值）× 2694关键步骤标注。覆盖3种场景（心脏骤停76试、疑似心脏病23试、中风41试）。
+
+### 关键设计
+
+1. **EMS分类法制定**：
+
+    - 功能：基于NREMT/NEMSIS国家标准建立层级分类法
+    - 核心思路：分析1500万+EMS记录+咨询专家，建立3大协议→9项干预→67项关键步骤的三级体系
+    - 设计动机：确保数据与临床实践对齐，便于系统可部署
+
+2. **半自动音频标注流水线**：
+
+    - 功能：生成带时间戳的转录文本并标记说话人
+    - 核心思路：Gemini-2.5零样本语音识别，WER仅0.31（vs Whisper 0.62-0.68），时间戳MAE 0.18s
+    - 设计动机：相比纯手工标注节省约90%时间
+
+3. **半监督目标标注流水线**：
+
+    - 功能：标注医疗工具的边界框和分割掩码
+    - 核心思路：爬取种子图片→Gemini过滤→微调DETR→SAM2分割。平均IoU=0.76
+    - 设计动机：标注时间从66小时减至1小时（98.5%节省）
+
+### 损失函数 / 训练策略
+基准任务使用有监督Transformer、多模态融合、零样本LLM等多种方法。
+
+## 实验关键数据
+
+### 基准任务1：关键步骤分类
+
+| 方法 | Top-1精度 | 说明 |
+|------|----------|------|
+| 有监督Transformer(视频) | **62.3%** | 最佳 |
+| 视频+IMU融合 | 62.2% | 融合未带来增益 |
+| 零样本Qwen-2.5 | 38.3% | LLM有潜力但不够 |
+
+### 基准任务2：关键步骤在线分割
+
+| 方法 | 精度 | 说明 |
+|------|------|------|
+| Transformer(视频+IMU) | **61%** | 比仅视频提升6% |
+| 零样本Qwen-2.5 | 55.5% | LLM表现不错 |
+| 音频(Whisper+GPT-4o) | 38% | 操作人员不总说话 |
+
+### 关键发现
+- 早期融合策略不足，需更高级融合方法（视频+IMU融合几乎无增益）
+- 零样本LLM在某些任务上有潜力但不及有监督方法
+- CPR质量估计中IMU对频率有独特优势（RMSE最低），但视频+IMU融合对深度估计最优（F1=0.83）
+- EMS专业人员CPR性能稳定，公众参与者变异性大
+
+## 亮点与洞察
+- **首创性**：首个多人多模态自我中心EMS数据集，包含CPR质量真值。低成本可复制的数据采集系统（GoPro+Galaxy Watch）。
+- **半自动标注创新**：Gemini-2.5在语音识别上超SOTA（WER 0.31），DETR+SAM2管道节省98.5%标注时间。
+- **完整的分类法**：与国家标准（NREMT/NEMSIS）对齐，确保实际可部署性。
+
+## 局限与展望
+- **规模限制**：62名参与者相对较小，特定地理位置（弗吉尼亚州）
+- **模拟vs真实差距**：模拟场景无法完全复现真实急救的混乱和压力
+- **多人交互建模不足**：基准主要关注主应急人员，团队协调建模待深入
+- **模态融合效果不佳**：视频+IMU融合几乎无增益，需更精巧策略
+
+## 相关工作与启发
+- **vs Ego-Exo4D**：EgoEMS专注单一高风险领域深入建模，后者多领域但较浅
+- **vs EgoSurgery**：EgoEMS多人多模态且包含质量指标，后者仅手术视频
+- 医学AI需缩小真实-模拟鸿沟，且需严格隐私保护
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 首个多模态多人自我中心EMS数据集
+- 实验充分度: ⭐⭐⭐⭐ 三个完整基准但消融不足
+- 写作质量: ⭐⭐⭐⭐⭐ 清晰的伦理考量和详细标注流程
+- 价值: ⭐⭐⭐⭐⭐ 高度实际应用价值且开放资源
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[AAAI 2026\] FIA-Edit: Frequency-Interactive Attention for Efficient and High-Fidelity Inversion-Free Text-Guided Image Editing](fia-edit_frequency-interactive_attention_for_efficient_and_high-fidelity_inversi.md)
+- [\[AAAI 2026\] MAISI-v2: Accelerated 3D High-Resolution Medical Image Synthesis with Rectified Flow and Region-specific Contrastive Loss](maisi-v2_accelerated_3d_high-resolution_medical_image_synthesis_with_rectified_f.md)
+- [\[CVPR 2026\] MedKCO: Medical Vision-Language Pretraining via Knowledge-Driven Cognitive Orchestration](../../CVPR2026/medical_imaging/medkco_medical_vision-language_pretraining_via_knowledge-driven_cognitive_orches.md)
+- [\[AAAI 2026\] NeuroBridge: Bio-Inspired Self-Supervised EEG-to-Image Decoding via Cognitive Priors and Bidirectional Semantic Alignment](neurobridge_bio-inspired_self-supervised_eeg-to-image_decoding_via_cognitive_pri.md)
+- [\[AAAI 2026\] Personality-guided Public-Private Domain Disentangled Hypergraph-Former Network for Multimodal Depression Detection](personality-guided_public-private_domain_disentangled_hypergraph-former_network_.md)
+
+</div>
+
+<!-- RELATED:END -->

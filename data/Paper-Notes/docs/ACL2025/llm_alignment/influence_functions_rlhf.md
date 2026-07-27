@@ -1,0 +1,153 @@
+---
+title: >-
+  [论文解读] Understanding Impact of Human Feedback via Influence Functions
+description: >-
+  [ACL 2025][LLM对齐][influence functions] 首次将影响函数应用于 RLHF 奖励模型的反馈数据审计，结合 OPORP 向量压缩实现 2.5 倍加速，在偏差检测上超越 GPT-4o（AUC 0.8 vs 0.747），并从 Anthropic-HH 数据集中发现 47% 的错标样本。
+tags:
+  - "ACL 2025"
+  - "LLM对齐"
+  - "influence functions"
+  - "RLHF"
+  - "reward model"
+  - "bias detection"
+  - "data quality"
+  - "OPORP"
+---
+
+# Understanding Impact of Human Feedback via Influence Functions
+
+**会议**: ACL 2025  
+**arXiv**: [2501.05790](https://arxiv.org/abs/2501.05790)  
+**代码**: [https://github.com/mintaywon/IF_RLHF](https://github.com/mintaywon/IF_RLHF)  
+**领域**: LLM对齐 / RLHF 数据分析  
+**关键词**: influence functions, RLHF, reward model, bias detection, data quality, OPORP
+
+## 一句话总结
+
+首次将影响函数应用于 RLHF 奖励模型的反馈数据审计，结合 OPORP 向量压缩实现 2.5 倍加速，在偏差检测上超越 GPT-4o（AUC 0.8 vs 0.747），并从 Anthropic-HH 数据集中发现 47% 的错标样本。
+
+## 研究背景与动机
+
+**RLHF 依赖高质量反馈**：奖励模型（RM）的训练完全依赖人类偏好标注，反馈质量直接决定对齐效果——垃圾进、垃圾出。但实际标注中人类标注者不可避免地引入系统性偏差。
+
+**偏差类型多样**：已知的偏差包括长度偏差（标注者倾向选择更长的回复）和谄媚偏差（倾向选择顺从提问者观点的回复），这些偏差会通过 RM 传递到最终 LLM 的行为中。
+
+**缺乏系统性审计方法**：目前对 RLHF 数据质量的审查主要依赖人工抽查或 LLM 辅助评估（如用 GPT-4o 逐条审查），前者不可扩展，后者成本高且准确率有限。
+
+**影响函数的理论优势**：影响函数（Influence Function）可以不重训模型就精确量化每个训练样本对模型预测的贡献，是理想的数据审计工具——但在 LLM 规模上的计算瓶颈严重。
+
+**偏好学习的特殊性**：标准影响函数基于分类/回归损失推导，而偏好学习使用 Bradley-Terry 模型的成对损失，需要专门的理论推导和工程适配。
+
+**核心创新切入点**：通过 DataInf 近似 + OPORP 梯度压缩（160MB→256KB），使影响函数在 Llama-3-8B 级别的 RM 上变得可计算，并设计了偏差敏感的验证集来定向检测特定偏差类型。
+
+## 方法详解
+
+### 整体框架
+
+整体流程分为四个阶段：(1) 在 Anthropic-HH 数据集上用 LoRA 微调 Llama-3-8B 作为 RM；(2) 前向传播提取每个训练/验证样本的梯度，使用 OPORP 压缩到 256KB；(3) 用 DataInf 公式近似计算每个训练样本对验证集损失的影响分数；(4) 影响分数最低（最大负贡献）的样本即为最可疑的偏差/错标样本。
+
+### 关键设计
+
+**1. Bradley-Terry 影响函数推导**
+
+- **功能**：将经典影响函数理论从分类损失扩展到偏好学习的 Bradley-Terry 损失形式
+- **核心思路**：计算移除第 i 个训练样本后模型参数的变化量，进而得到验证损失的变化。对于 BT 损失，推导出损失的 Hessian 和梯度的解析形式
+- **设计动机**：BT 损失对每个样本同时涉及 chosen 和 rejected 两个回复的奖励差，梯度结构与标准交叉熵不同，不能直接套用已有公式
+
+**2. DataInf + OPORP 高效近似**
+
+- **功能**：将 Hessian 逆向量积的计算降低到可行水平
+- **核心思路**：DataInf 使用对角近似分解 Hessian，将 n 个样本的影响计算解耦；OPORP（Orthogonal Random Projection）用随机正交矩阵将梯度从 160MB 压缩到 256KB，保持梯度间的点积不变
+- **设计动机**：Llama-3-8B 的 LoRA rank=16 参数量仍然很大，全量 DataInf 需要 28.8 小时，OPORP 压缩后仅需 92.3 秒（2.5x 加速），使大规模使用成为可能
+
+**3. 偏差敏感验证集设计**
+
+- **功能**：构造专门的验证集使影响分数对特定偏差类型（长度/谄媚）敏感
+- **核心思路**：对于长度偏差检测，验证集由长度差异明显但内容质量相当的样本对组成；对于谄媚偏差检测，验证集包含"顺从但错误"vs"拒绝但正确"的配对
+- **设计动机**：影响分数衡量的是"训练样本对验证损失的贡献"，验证集的偏倚方向决定了能检测到什么偏差——通用验证集只能检测到"一般性问题样本"
+
+**4. 标注策略分析与指导**
+
+- **功能**：将影响分数分析扩展为标注者行为指导工具
+- **核心思路**：对比高影响（有益）和低影响（有害）样本的标注特征差异，提炼出专家标注者的隐含策略，并将这些策略反馈给非专家标注者
+- **设计动机**：不仅检测问题数据，还要从数据中挖掘"什么是好的标注"，实现从数据审计到标注质量提升的闭环
+
+### 损失函数 / 训练策略
+
+RM 训练使用标准 Bradley-Terry 偏好损失。模型为 Llama-3-8B + LoRA（rank=16）。影响函数是训练后的分析工具，不改变训练过程本身。
+
+## 实验关键数据
+
+### 主实验
+
+| 检测任务 | 方法 | AUC | 说明 |
+|----------|------|-----|------|
+| 长度偏差检测 | **IF (本文)** | **0.800** | 最优 |
+| 长度偏差检测 | GPT-4o | 0.747 | 需要 LLM 推理，成本高 |
+| 长度偏差检测 | Mahalanobis | 0.600 | 统计方法基线 |
+| 谄媚偏差检测 | **IF (本文)** | **0.711** | 最优 |
+| 谄媚偏差检测 | 各基线 | ~0.600 | 接近随机 |
+| 错标检测 (Top-100) | **IF (本文)** | **47/100** | 47% 确认为错标 |
+| 错标检测 (Top-100) | 随机抽样 | 13/100 | 基线 |
+
+### 消融实验
+
+| 配置 | 计算时间 | 影响分数质量 |
+|------|----------|------------|
+| DataInf（无压缩） | 28.8 小时 | 基准 |
+| DataInf + OPORP | 92.3 秒 | 与基准高度一致 |
+| 压缩比 160MB→256KB | 2.5x 加速 | 梯度点积保持 |
+| LoRA rank=16 | — | 最佳精度-效率平衡 |
+
+### 关键发现
+
+- 前 100 个最低影响分数的样本中，47% 经人工验证确认为错误标注，远超随机基线的 13%
+- 超越 GPT-4o 在长度偏差检测上的表现（+5.3% AUC），且无需 LLM 推理成本
+- 影响分数揭示了标注者的系统性偏差模式：高负影响样本中长回复被选为 preferred 的比例显著偏高
+- 非专家标注者通过学习高影响样本的特征，标注质量可显著改善
+- OPORP 压缩对影响分数的相对排序几乎无影响，但带来 1000 倍以上的内存节省
+
+## 亮点与洞察
+
+- **影响函数作为数据审计工具的范式**：不同于传统数据清洗（基于规则或异常检测），影响函数提供因果性的样本贡献量化，直接回答"这个样本对模型好还是坏"
+- **OPORP 压缩的通用性**：梯度压缩技术可迁移到其他需要大规模梯度分析的场景（如数据选择、模型解释）
+- **验证集决定检测方向**：这一洞察意味着影响函数是一个可编程的审计框架——换验证集就能检测新类型的偏差，具有很强的灵活性
+- **从审计到改进的闭环**：不只是发现问题，还能提炼出好的标注策略并反馈给标注者
+
+## 局限与展望
+
+- OPORP 梯度压缩仍有信息损失，极细粒度的偏差可能被遗漏，压缩比与检测精度的 trade-off 需要进一步研究
+- 验证集设计依赖对偏差类型的先验知识——如果偏差类型未知或新颖，需要探索自动化验证集构造方法
+- 仅在 RM 层面验证，未探索影响函数在策略模型（PPO/DPO）训练阶段的应用
+- DataInf 的对角近似在参数高度相关时可能不够精确
+- 当前仅覆盖长度和谄媚两种偏差，格式偏差、位置偏差等其他已知偏差类型有待验证
+
+## 相关工作与启发
+
+- **vs GPT-4o 逐条审查**：GPT-4o 需要对每条数据做推理，成本随数据量线性增长；影响函数是一次性计算，之后可以快速查询任意样本
+- **vs 离群值检测（Mahalanobis 距离）**：统计异常检测只关注样本在特征空间中的异常程度，不关注其对模型预测的实际影响
+- **vs TracIn/TRAK**：这些影响函数变体在分类任务上有效，但未针对偏好学习的 BT 损失做适配
+- **启发**：影响函数 + 梯度压缩的组合可以扩展到 DPO/RLHF 的全流程数据审计
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ 首次将影响函数系统应用于 RLHF 数据审计
+- 实验充分度: ⭐⭐⭐⭐ 偏差检测+标注改进两个应用，对比充分
+- 写作质量: ⭐⭐⭐⭐ 理论推导与应用场景结合清晰
+- 价值: ⭐⭐⭐⭐⭐ 为 RLHF 数据质量控制提供了可扩展的工具
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Curiosity-Driven Reinforcement Learning from Human Feedback](curiosity_driven_rlhf.md)
+- [\[NeurIPS 2025\] Strategyproof Reinforcement Learning from Human Feedback](../../NeurIPS2025/llm_alignment/strategyproof_reinforcement_learning_from_human_feedback.md)
+- [\[ACL 2025\] Balancing the Budget: Understanding Trade-offs Between Supervised and Preference-Based Finetuning](balancing_the_budget_understanding_trade-offs_between_supervised_and_preference-.md)
+- [\[ACL 2025\] PKU-SafeRLHF: Towards Multi-Level Safety Alignment for LLMs with Human Preference](pku-saferlhf_towards_multi-level_safety_alignment_for_llms_with_human_preference.md)
+- [\[ICML 2025\] M³HF: Multi-agent Reinforcement Learning from Multi-phase Human Feedback of Mixed Quality](../../ICML2025/llm_alignment/m3hf_multi-agent_reinforcement_learning_from_multi-phase_human_feedback_of_mixed.md)
+
+</div>
+
+<!-- RELATED:END -->

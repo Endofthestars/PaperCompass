@@ -1,0 +1,163 @@
+---
+title: >-
+  [论文解读] CalibraEval: Calibrating Prediction Distribution to Mitigate Selection Bias in LLMs-as-Judges
+description: >-
+  [ACL 2025][LLM评测][LLM评估] 提出 CalibraEval，一种无标签的推理时去偏方法，通过将去偏问题形式化为优化任务，利用非参数保序算法（NOA）学习校准函数，将 LLM 评判器的观测概率分布映射到无偏分布，有效缓解 LLM-as-Judge 中的选择偏差。 "LLMs-as-Judges"范式利用强大…
+tags:
+  - "ACL 2025"
+  - "LLM评测"
+  - "LLM评估"
+  - "选择偏差"
+  - "校准"
+  - "非参数算法"
+  - "去偏"
+---
+
+# CalibraEval: Calibrating Prediction Distribution to Mitigate Selection Bias in LLMs-as-Judges
+
+**会议**: ACL 2025  
+**arXiv**: [2410.15393](https://arxiv.org/abs/2410.15393)  
+**代码**: [github.com/CSHaitao/CalibraEval](https://github.com/CSHaitao/CalibraEval)  
+**领域**: LLM评测  
+**关键词**: LLM评估, 选择偏差, 校准, 非参数算法, 去偏
+
+## 一句话总结
+
+提出 CalibraEval，一种无标签的推理时去偏方法，通过将去偏问题形式化为优化任务，利用非参数保序算法（NOA）学习校准函数，将 LLM 评判器的观测概率分布映射到无偏分布，有效缓解 LLM-as-Judge 中的选择偏差。
+
+## 研究背景与动机
+
+"LLMs-as-Judges"范式利用强大的 LLM（如 GPT-4）对生成文本质量进行自动评估，尤其在成对比较场景中被广泛应用。然而，LLM 评判器存在严重的选择偏差问题：
+
+**位置偏差（Position Bias）**：LLM 倾向于偏好特定位置（如第一个或最后一个）的选项
+
+**Token 偏差（Token Bias）**：LLM 可能为特定选项标识符（如 A 或 B）赋予更高概率
+
+这两种偏差共同构成了选择偏差，导致交换选项位置或标识符后评估结果不一致，严重损害评估的有效性和公平性。
+
+现有解决方案的不足：
+- 排除不一致判断或标记为"平局"会丢失评估信息
+- 多轮交互/讨论方法成本高且效果不确定
+- Pride 方法假设偏差与无偏分布为简单线性乘法关系，过于简化
+- 有监督方法需要标签数据，可扩展性差
+
+## 方法详解
+
+### 整体框架
+
+CalibraEval 的核心思路是：不直接建模偏差的产生机制（即 $f(\cdot)$ 的精确形式），而是学习一个校准函数 $g(\cdot)$，将观测到的有偏概率分布直接映射到无偏分布：
+
+$$P_{debiased}(t_i|I,X_0) = g(P_{observed}(t_i|I,X_0))$$
+
+### 关键设计
+
+1. **四种组合构造优化目标**：对于成对比较中的两个选项 $o_1, o_2$ 和两个标识符 $t_1, t_2$，构造四种排列组合（默认顺序、交换位置、交换标识符、同时交换），利用"无偏评判器在四种组合下应给出一致结果"这一直觉建立优化目标：
+
+    $\min_{g \in \mathcal{G}} \sum_{i=1}^{K} [g(s_0^i) + g(s_2^i) - 1]^2 + [g(s_0^i) - g(s_1^i)]^2 - \lambda[g(s_0^i) - g(s_2^i)]^2$
+
+    - 第一项确保交换标识符后判断一致
+    - 第二项确保交换位置后判断一致
+    - 第三项为正则化项，防止收敛到平凡解 $g(\cdot) = 0.5$
+
+2. **非参数保序算法（NOA）**：解决上述 NP 优化问题的关键算法。核心假设是校准函数 $g(\cdot)$ 对同一标识符保序——更高的观测概率应对应更高的无偏概率。具体步骤：
+
+    - 收集估计集中 K 个样本的三种概率值（默认、交换位置、交换标识符）
+    - 合并并排序所有概率值，附加边界条件 $z_0=0, z_M=1$
+    - 引入参数 $d_k$ 初始化为 $z_k$，通过 softmax 式表达定义保序映射函数：
+    $g(z_k) = \frac{\sum_{i=0}^{k} \exp(d_i)}{\sum_{i=0}^{M} \exp(d_i)}$
+    - 使用梯度下降迭代优化参数 $d_k$，每次迭代后归一化确保唯一解
+    - 收敛后，用加权最小二乘 + PAVA 算法拟合连续校准函数 $g^*(\cdot)$
+
+3. **无标签、推理时校准**：CalibraEval 完全不需要显式标签，仅利用不同排列组合下的预测分布关系来学习校准函数。校准函数可以在观察所有测试样本后计算，也可以用子集估计。
+
+### 损失函数 / 训练策略
+
+- 优化目标见上述公式，$\lambda$ 为正则化超参数
+- 梯度下降更新：$d_k^{(new)} = d_k^{(old)} - \gamma \frac{\partial L}{\partial d_k}$
+- 归一化约束：每次迭代后 $\sum_{i=0}^{M} d_i = 0$
+- 连续函数拟合：PAVA（Pool Adjacent Violators Algorithm）
+
+## 实验关键数据
+
+### 主实验（平均一致性指标）
+
+| 方法 | Kappa↑ | ICC(2,k)↑ | ICC(3,k)↑ |
+|------|--------|-----------|-----------|
+| Llama-3-8B (无去偏) | 31.14 | 71.14 | 77.16 |
+| + DI | 25.15 | 66.95 | 72.25 |
+| + CC | 25.31 | 60.62 | 67.47 |
+| + DC | 33.21 | 74.58 | 76.88 |
+| + Pride | 37.35 | 76.83 | 78.20 |
+| + **CalibraEval** | **39.16** | **83.38** | **84.30** |
+
+Qwen-72B 上的效果：
+
+| 方法 | Kappa↑ | ICC(2,k)↑ | ICC(3,k)↑ |
+|------|--------|-----------|-----------|
+| Qwen-72B (无去偏) | 77.47 | 92.63 | 93.06 |
+| + Pride | 77.86 | 92.81 | 93.19 |
+| + **CalibraEval** | **79.98** | **96.24** | **96.68** |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|---------|------|
+| 仅用第一项（标识符一致性） | Kappa提升但有限 | 单一约束不够 |
+| 仅用第一+第二项（无正则化） | 存在平凡解风险 | 正则化项必要 |
+| 完整三项 | 最优 | 各项互补 |
+| 改变估计集大小 | K≥100即稳定 | 对样本量不敏感 |
+
+### 关键发现
+
+1. **CalibraEval 全面超越所有基线**：在 Llama-3-8B、Llama-3.1-8B、Qwen-14B、Qwen-72B、ChatGPT 等多种模型上，CalibraEval 在一致性和准确率指标上持续领先
+2. **Pride 的局限性**：Pride 假设线性乘法关系，在某些模型上甚至导致性能下降
+3. **DI（Discard Inconsistent）和 CC（Content-level Calibration）的不稳定性**：这些简单方法在不同模型和数据集上表现不一致
+4. **跨模型泛化**：CalibraEval 的校准函数在不同 prompt 模板、选项标识符、few-shot 设置下均保持有效
+5. **大模型也受益**：即使 Qwen-72B 这样的大模型，CalibraEval 仍能在 ICC 上提升 3-4 个百分点
+6. **计算开销极小**：仅需推理时计算一个轻量校准函数，无需额外训练
+
+## 亮点与洞察
+
+1. **问题形式化的优雅性**：将去偏问题转化为优化问题，利用"无偏评估应在四种排列下一致"的直觉设计优化目标，逻辑自然而严密
+2. **非参数方法的灵活性**：NOA 不假设偏差的具体形式，通过保序约束缩小解空间，比 Pride 的线性乘法假设更通用
+3. **无标签设计的实用性**：在实际场景中，获取标签的成本正是使用 LLM 评判器的动机，因此无标签方法具有更高的实用价值
+4. **softmax 保序映射的设计**：累积 softmax 表达式天然满足保序约束，且可微分便于梯度优化，设计精巧
+
+## 局限与展望
+
+- 需要对每个样本做四种排列组合的推理（增加了推理成本约3倍），虽然比多轮讨论方法高效，但仍有额外开销
+- 保序假设可能在极端偏差情况下不完全成立
+- 仅关注成对比较场景，未扩展到 pointwise 评估或多选项比较
+- 校准函数是对特定模型学习的，模型更换时需要重新校准
+- 未探索与模型微调方法（如 BCT）的结合使用
+- $\lambda$ 超参数的选择依赖经验，缺少自动选择机制
+
+## 相关工作与启发
+
+- **与 Pride (Zheng et al., 2023) 的关系**：Pride 假设 $P_{observed} \propto P_{prior} \times P_{debiased}$（线性乘法），是 CalibraEval 的特例。CalibraEval 不做此简化假设，直接学习通用映射函数
+- **与 Contextual Calibration 的关系**：后者在分类任务中校准 LLM 的 token 概率，CalibraEval 将类似思路发展到了成对比较评估场景
+- **对 LLM 评估管线的启发**：CalibraEval 可以作为标准的后处理步骤插入任何 LLM-as-Judge 管线，提升评估可靠性
+- **对 RLHF 的潜在影响**：RLHF 中也使用 LLM 进行偏好评判，偏差校准可提升奖励模型的质量
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 将去偏问题形式化为优化任务的思路新颖，NOA算法的保序设计精巧
+- 实验充分度: ⭐⭐⭐⭐⭐ 多模型、多基准、多指标，鲁棒性验证全面（prompt变化、token变化、few-shot）
+- 写作质量: ⭐⭐⭐⭐ 公式推导清晰，问题动机明确，但部分数学符号较密集
+- 价值: ⭐⭐⭐⭐⭐ 解决了LLM评估中的关键痛点，方法即插即用，实用价值极高
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] ODP-Bench: Benchmarking Out-of-Distribution Performance Prediction](../../ICCV2025/llm_evaluation/odp-bench_benchmarking_out-of-distribution_performance_prediction.md)
+- [\[ACL 2025\] Are Bias Evaluation Methods Biased?](are_bias_evaluation_methods_biased.md)
+- [\[ACL 2025\] JuStRank: Benchmarking LLM Judges for System Ranking](justrank_llm_judge_system_ranking.md)
+- [\[NeurIPS 2025\] On Evaluating LLM Alignment by Evaluating LLMs as Judges](../../NeurIPS2025/llm_evaluation/on_evaluating_llm_alignment_by_evaluating_llms_as_judges.md)
+- [\[ACL 2025\] McBE: A Multi-task Chinese Bias Evaluation Benchmark for Large Language Models](mcbe_a_multi-task_chinese_bias_evaluation_benchmark_for_large_language_models.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,154 @@
+---
+title: >-
+  [论文解读] Looking in the Mirror: A Faithful Counterfactual Explanation Method for Interpreting Deep Image Classification Models
+description: >-
+  [ICCV 2025][图像生成][反事实解释] 将分类器的决策边界视为"镜面"，通过将特征表示"反射"到镜面另一侧生成反事实解释（CFE），并设计三角测量损失保持潜在空间到图像空间的距离关系，实现忠实、可控且可动画化的反事实解释。 反事实解释（Counterfactual Explanation, CFE）旨在回答"如果输…
+tags:
+  - "ICCV 2025"
+  - "图像生成"
+  - "反事实解释"
+  - "决策边界"
+  - "忠实性解释"
+  - "分类器可解释性"
+  - "动画过渡"
+---
+
+# Looking in the Mirror: A Faithful Counterfactual Explanation Method for Interpreting Deep Image Classification Models
+
+**会议**: ICCV 2025  
+**arXiv**: [2509.16822](https://arxiv.org/abs/2509.16822)  
+**代码**: [https://github.com/AIML-MED/Mirror-CFE](https://github.com/AIML-MED/Mirror-CFE)  
+**领域**: 可解释AI/反事实解释  
+**关键词**: 反事实解释, 决策边界, 忠实性解释, 分类器可解释性, 动画过渡
+
+## 一句话总结
+
+将分类器的决策边界视为"镜面"，通过将特征表示"反射"到镜面另一侧生成反事实解释（CFE），并设计三角测量损失保持潜在空间到图像空间的距离关系，实现忠实、可控且可动画化的反事实解释。
+
+## 研究背景与动机
+
+反事实解释（Counterfactual Explanation, CFE）旨在回答"如果输入怎样变化，模型决策就会不同"的问题，在医疗影像等高风险场景中尤为重要。
+
+**现有 CFE 方法的三大问题**：
+
+**不忠实**：基于生成模型的方法（如 StyleGAN2、Diffusion）使用额外的编码器和生成器创建逼真图像，但 CFE 的生成过程不对应分类器的实际决策边界，导致解释与分类器的学习内容脱节。
+
+**缺乏连续性**：现有方法仅生成单一的决策翻转样本，无法展示"变化是如何逐步发生的"。
+
+**对抗样本倾向**：优化接近性约束时，生成器容易学到添加不可感知噪声来翻转决策的捷径。
+
+**核心动机**：一个忠实的 CFE 应当直接在分类器自身的特征空间中操作，利用分类器学到的决策边界生成解释，而非依赖外部生成模型。
+
+## 方法详解
+
+### 整体框架
+
+Mirror-CFE 分为两个阶段：(1) 在分类器潜空间 $\mathcal{Z}$ 中定义 CFE 点的位置；(2) 训练映射函数 $G: \mathcal{Z} \to \mathcal{I}$ 将潜空间点投影到图像空间。
+
+### 关键设计
+
+1. **镜面反射机制（潜空间中的 CFE 定义）**：
+
+    - 给定源类 $s$ 和目标类 $t$ 的分类权重 $\mathbf{W}_s, \mathbf{W}_t$，决策边界（"镜面"）由 $\mathbf{W}_m = \mathbf{W}_t - \mathbf{W}_s$ 参数化。
+    - 位置函数：$P(\mathbf{z}_s, \mathbf{W}_m, \mathbf{b}_m, k) = \mathbf{z}_s - 2k(\mathbf{W}_m^\top \mathbf{z}_s + \mathbf{b}_m)\hat{\mathbf{W}}_m$
+    - $k=0.5$: 到达镜面（投影点 $\mathbf{z}_p$，两类等概率）
+    - $k=1.0$: 完全反射（反射点 $\mathbf{z}_r$，置信度翻转）
+    - $k=0.5+\epsilon$: CFE 点（刚穿过边界）
+    - 通过连续调节 $k \in [0,1]$，可生成动画化的从源类到目标类的渐变过渡。
+
+2. **三角测量损失（Triangulation Loss）**：
+
+    - 传统接近性损失 $\mathcal{L}_{prox} = |\mathbf{x}_s - \mathbf{x}_{cf}|$ 容易导致对抗样本。
+    - 核心思想：**维持潜空间的距离比关系在图像空间中成立**：
+    $\frac{|\mathbf{x}_k - \mathbf{x}_t|}{|\mathbf{x}_s - \mathbf{x}_k|} \approx \frac{\|\mathbf{z}_k - \mathbf{z}_t\|}{\|\mathbf{z}_s - \mathbf{z}_k\|} = \beta$
+    - 通过上下界松弛实现，类似三角定位中通过已知基站距离确定未知位置。
+    - 对称地处理半事实解释（SFE, $k < 0.5$）的距离关系。
+
+3. **Skip Connection Controller (SSC)**：
+
+    - 使用分类器 $F$ 作为编码器（不微调，确保忠实性），训练解码器 $G$。
+    - 对高分辨率数据集引入 U-Net 式跳跃连接传递高频信息。
+    - **SPE 模块**：混合源图像特征与 KFE 编码，控制风格信息。
+    - **CSP 模块**：利用 CAM 计算空间先验掩码 $\mathbf{M}_k^i$，约束变化仅发生在判别性区域。掩码大小随 $k$ 增大而扩大。
+
+### 损失函数 / 训练策略
+
+总损失包括：
+
+- **分类损失** $\mathcal{L}_{cls}$：KLD 散度确保生成的 KFE 图像保持预期分类概率分布。
+- **对抗损失** $\mathcal{L}_{adv}$：促进生成图像的真实性。
+- **重建损失** $\mathcal{L}_{rec} = \mathbb{E}[|\mathbf{x} - G(F(\mathbf{x}))|]$：保证编解码循环一致性。
+- **特征重建损失** $\mathcal{L}_{fea} = \mathbb{E}[\|\mathbf{z}_k - F(G(\mathbf{z}_k))\|]$：KFE 点的一致性。
+- **三角测量损失** $\mathcal{L}_{tri}$：防止对抗样本生成。
+
+## 实验关键数据
+
+### 主实验
+
+| 数据集 | 方法 | L1↓ | LPIPS↓ | FID↓ | D.Val↑ | Val.↑ | %Fail |
+|--------|------|-----|--------|------|--------|-------|-------|
+| MNIST | PGD | 0.42 | 0.31 | 15.62 | 0.74 | 1.0 | 0.0 |
+| MNIST | C3LT | 0.17 | 0.25 | 8.95 | 0.79 | 1.0 | 0.0 |
+| MNIST | **Mirror-CFE (1st)** | **0.16** | **0.17** | **3.25** | **0.99** | **1.0** | **0.0** |
+| F-MNIST | PGD | 0.34 | 0.28 | 10.12 | 0.88 | 1.0 | 0.0 |
+| F-MNIST | C3LT | 0.32 | 0.30 | 11.55 | 0.87 | 1.0 | 0.0 |
+| F-MNIST | **Mirror-CFE (1st)** | **0.12** | **0.10** | **2.80** | **0.99** | **0.99** | **0.0** |
+| B-MNIST | C3LT | 0.16 | 30.14 | 96.03 | 0.99 | 0.99 | 0.0 |
+| B-MNIST | **Mirror-CFE (1st)** | **0.05** | **11.81** | **86.02** | **0.99** | **0.99** | **0.0** |
+
+Mirror-CFE 在所有数据集上同时达到最优或次优的接近性（L1/LPIPS）和真实性（FID），且去噪后的有效性（D.Val）极高，说明不是对抗样本。
+
+### 消融与定性分析
+
+| 特性 | Mirror-CFE 优势 | 对比方法不足 |
+|------|----------------|-------------|
+| 忠实性 | 直接使用分类器特征空间和决策边界 | 外部编码器引入偏差 |
+| 对抗样本检测 | D.Val ≈ 0.99（去噪后仍有效） | CEM/REVISE D.Val 低至 0.03-0.16 |
+| 可控性 | 连续调节 $k$ 控制变化幅度 | 仅生成单一 CFE |
+| 动画过渡 | 从 $k=0$ 到 $k=1$ 逐帧渐变 | 无此能力 |
+
+### 关键发现
+
+- Mirror-CFE 的 1st CFE（刚过决策边界）展示了分类器认为的"最关键变化"，$k=1$ 的反射点则展示完整的类别转换。
+- CelebA-HQ 实验中，C3LT 生成的 CFE 虽然嘴型正确但丢失人物身份；Mirror-CFE 通过跳跃连接控制器保持身份的同时精确修改嘴部。
+- 收敛失败率为 0%（$\% Fail = 0$），而 CEM 和 REVISE 分别有 16.72% 和 9.77% 的失败率。
+
+## 亮点与洞察
+
+- **"镜面"隐喻**直观清晰：决策边界 = 镜面，CFE = 反射，将复杂的解释问题简化为几何操作。
+- **三角测量损失**巧妙解决了 CFE 中的对抗样本问题，通过维持潜-像空间的距离比约束实现。
+- **SSC 模块**在保持忠实性（不微调分类器）的前提下解决了高分辨率生成的模糊问题。
+
+## 局限与展望
+
+- 当前仅验证在全连接分类层的线性决策边界上；对于非线性决策边界（如深层特征空间中的非线性分类头）需要扩展。
+- 高分辨率数据集（如 CelebA-HQ 224×224）上的效果依赖 SSC 模块的设计，更大分辨率可能需要更精细的架构。
+- 仅支持两类之间的 CFE，多类场景需在不同类对间分别建镜面。
+
+## 相关工作与启发
+
+- 与 GAN/Diffusion-based CFE 方法的根本区别在于**忠实性**：不使用外部生成模型，而是直接操作分类器学到的特征空间。
+- 从决策边界的几何结构出发设计 CFE 的思路，可启发其他需要忠实解释的任务。
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ — 镜面反射机制和三角测量损失独特
+- **技术深度**: ⭐⭐⭐⭐ — 损失函数设计严谨，几何推导清晰
+- **实验充分度**: ⭐⭐⭐⭐ — 四个数据集、六种指标、多方法对比
+- **实用价值**: ⭐⭐⭐⭐ — 动画化 CFE 在医疗影像解释中有直接价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] LeapFactual: Reliable Visual Counterfactual Explanation Using Conditional Flow Matching](../../NeurIPS2025/image_generation/leapfactual_reliable_visual_counterfactual_explanation_using_conditional_flow_ma.md)
+- [\[ICCV 2025\] Revelio: Interpreting and Leveraging Semantic Information in Diffusion Models](revelio_interpreting_and_leveraging_semantic_information_in_diffusion_models.md)
+- [\[ICCV 2025\] DC-AR: Efficient Masked Autoregressive Image Generation with Deep Compression Hybrid Tokenizer](dc-ar_efficient_masked_autoregressive_image_generation_with_deep_compression_hyb.md)
+- [\[NeurIPS 2025\] V-CECE: Visual Counterfactual Explanations via Conceptual Edits](../../NeurIPS2025/image_generation/v-cece_visual_counterfactual_explanations_via_conceptual_edits.md)
+- [\[ICML 2025\] Towards a Mechanistic Explanation of Diffusion Model Generalization](../../ICML2025/image_generation/towards_a_mechanistic_explanation_of_diffusion_model_generalization.md)
+
+</div>
+
+<!-- RELATED:END -->

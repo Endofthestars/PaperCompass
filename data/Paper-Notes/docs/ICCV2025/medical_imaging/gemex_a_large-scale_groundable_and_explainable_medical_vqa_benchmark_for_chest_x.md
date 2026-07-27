@@ -1,0 +1,161 @@
+---
+title: >-
+  [论文解读] GEMeX: A Large-Scale, Groundable, and Explainable Medical VQA Benchmark for Chest X-ray Diagnosis
+description: >-
+  [ICCV 2025][医学图像][医学视觉问答] 构建了当前最大的胸部X光 VQA 数据集 GEMeX（151K 图像、1.6M 问题），首次同时提供文本推理解释和视觉区域定位，涵盖四种问题类型，并系统评估了 12 个代表性大视觉语言模型。 现有医学 VQA 数据集存在两个关键缺陷： 缺乏可解释性：仅给出答案但不提供视觉和…
+tags:
+  - "ICCV 2025"
+  - "医学图像"
+  - "医学视觉问答"
+  - "胸部X光"
+  - "可解释性"
+  - "视觉定位"
+  - "大规模基准"
+---
+
+# GEMeX: A Large-Scale, Groundable, and Explainable Medical VQA Benchmark for Chest X-ray Diagnosis
+
+**会议**: ICCV 2025  
+**arXiv**: [2411.16778](https://arxiv.org/abs/2411.16778)  
+**代码**: [www.med-vqa.com/GEMeX](https://www.med-vqa.com/GEMeX)  
+**领域**: 医学影像 / Medical VQA  
+**关键词**: 医学视觉问答, 胸部X光, 可解释性, 视觉定位, 大规模基准
+
+## 一句话总结
+
+构建了当前最大的胸部X光 VQA 数据集 GEMeX（151K 图像、1.6M 问题），首次同时提供文本推理解释和视觉区域定位，涵盖四种问题类型，并系统评估了 12 个代表性大视觉语言模型。
+
+## 研究背景与动机
+
+现有医学 VQA 数据集存在两个关键缺陷：
+
+**缺乏可解释性**：仅给出答案但不提供视觉和文本解释，难以帮助患者和初级医生理解诊断依据
+
+**问题类型单一**：通常仅包含开放式和封闭式问题，不包括选择题，无法反映实际临床场景的多样需求
+
+现有数据集如 VQA-RAD (3.5K QA)、SLAKE (14K QA)、MIMIC-CXR-VQA (377K QA) 等，规模有限且均缺乏多模态可解释性。
+
+GEMeX 的核心创新是**同时提供文本推理和视觉定位（bounding box）的多模态可解释性**，并支持四种问题类型。
+
+## 方法详解
+
+### 整体框架
+
+两阶段构建流程：
+- **Stage I**: 报告重定位（Re-grounding）—— 精化 Chest ImaGenome 中的解剖区域-文本对应关系
+- **Stage II**: VQA 生成 —— 基于精化报告用 GPT-4o 生成多样化的 QA 对
+
+### 关键设计
+
+1. **报告重定位 (Re-grounding)**:
+
+    - **问题**：Chest ImaGenome 中一个句子可对应多个解剖区域（如"右肋膈角钝化"对应"右肺"和"右下肺区"），导致模糊性
+    - **解决方案**：与放射科医生合作，将 29 个区域精简/合并为 30 个核心病理区域，确保每句话对应单一精确区域
+    - 使用 OpenBioLLM-70B 进行自动重定位，通过放射科医生反馈的迭代 prompt 精炼，最终准确率达 98.4%
+    - 对涉及多区域的句子进行拆分重写（如 "cardiomediastinal silhouette is normal" → 分别对应 cardiac silhouette 和 mediastinum）
+
+2. **VQA 生成与质量控制**:
+
+    - 使用 GPT-4o (2024-08-06) 作为生成器
+    - 每张图像生成 11 个问题：3 开放式 + 2 封闭式 + 3 单选 + 3 多选
+    - 每个 QA 对附带：答案 + 文本推理 + 视觉区域标注
+    - 问题内容覆盖 7 类：abnormality、disease、location、cause、size、severity、implication
+    - 质量控制：手工标注 30 张图像作为 few-shot demo，50 样本预审 prompt 效果
+    - 测试集由放射科医生逐一审核：仅修正 10 个错误答案和 3 个不准确定位
+
+3. **LLaVA-Med-GEMeX 基线模型**:
+
+    - 基于 LLaVA-Med-v1-7B 的 question-type-aware instruction tuning
+    - 对每个样本添加类型提示 (Type prompt) + 答案 + 文本推理 + 视觉位置
+    - 四种类型分别设置不同的 Supplement 格式（如封闭式为 "yes or no"）
+
+### 损失函数 / 训练策略
+
+- 标准 LLaVA 指令微调损失（next token prediction）
+- 训练集包含完整的答案、推理和位置信息
+
+## 实验关键数据
+
+### 主实验（GPTScore AR-score, %）
+
+| 模型 | Open AR | Closed AR | Single AR | Multi AR | Avg |
+|------|---------|-----------|-----------|----------|-----|
+| GPT-4o-mini | 97.68 | 71.14 | 77.47 | 82.91 | 82.30 |
+| LLaVA-v1 | 76.14 | 38.02 | 50.47 | 66.52 | 57.79 |
+| LLaVA-v1.5 | 77.62 | 57.00 | 57.05 | 65.17 | 64.21 |
+| DeepSeek-VL | 79.30 | 59.86 | 62.03 | 70.35 | 67.89 |
+| LLaVA-Med-v1 | 90.34 | 69.91 | 61.74 | 68.14 | 72.53 |
+| LLaVA-Med-v1.5 | 94.43 | 76.54 | 66.04 | 67.28 | 76.07 |
+| RadFM | 88.57 | 67.91 | 57.82 | 62.41 | 69.18 |
+| **LLaVA-Med-GEMeX** | **97.05** | **80.72** | **81.42** | **84.98** | **86.04** |
+
+V-score (mIoU) - 视觉定位：LLaVA-Med-GEMeX 在四种题型上分别达到 51.47/53.20/54.57/47.99，远超其他模型。
+
+### 消融实验 / 更多分析
+
+| 评估指标 | LLaVA-Med-v1 (Open) | LLaVA-Med-GEMeX (Open) | 提升 |
+|---------|---------------------|------------------------|------|
+| GPTScore AR | 90.34 | 97.05 | +6.71 |
+| BERTScore | 25.14 | 42.69 | +17.55 |
+| ROUGE-L | 19.63 | 32.75 | +13.12 |
+| BLEU-1 | 15.93 | 25.28 | +9.35 |
+
+迁移学习 (SLAKE-CXR 零样本测试)：
+
+| 模型 | Open AR-score | A-score | Closed AR-score |
+|------|--------------|---------|-----------------|
+| LLaVA-Med-v1 | 73.31 | 56.17 | 62.35 |
+| LLaVA-Med-GEMeX | 82.78 | 69.79 | 75.06 |
+
+### 关键发现
+
+- **现有模型性能普遍较弱**：除 GPT-4o-mini 外，大多数模型在 GEMeX 上表现不佳，验证了数据集的挑战性
+- **强模型依赖捷径推理**：GPT-4o-mini 虽然 AR-score 高，但 V-score（视觉定位 mIoU）仅 18-28%，说明它更多利用预训练记忆而非真正的多模态推理
+- **选择题暴露模型短板**：大多数医学领域模型无法在选择题中给出明确答案，尽管能分析选项
+- **简单微调即可大幅提升**：LLaVA-Med-GEMeX 比基线 LLaVA-Med-v1 平均 AR-score 提升 13.5%
+- **GPTScore vs NLG 指标**：未微调模型更适合用语义理解的 GPTScore 评估；微调后 NLG 指标能更好反映学习效果
+
+## 亮点与洞察
+
+- **首个多模态可解释医学 VQA 数据集**：同时提供文本推理和视觉定位，填补了关键空白
+- **规模优势**：151K 图像 + 1.6M QA 对，是当前最大的胸部 X 光 VQA 数据集
+- **四种问题类型设计**：更贴近实际临床问诊场景，选择题格式便于标准化评估
+- **质量保障流程**：放射科医生参与的迭代精炼 + GPT-4o 生成 + 人工审核，实现了 98%+ 准确率
+- **测试集价值**：300 张图像经放射科医生逐一审核，含额外人工补充的 600 个问题
+
+## 局限与展望
+
+- 基线模型 LLaVA-Med-GEMeX 是任务特定的，在其他任务上可能性能下降
+- 仅覆盖胸部 X 光单一模态，未涵盖 CT、MRI 等其他影像
+- 数据集构建依赖 GPT-4o 和 OpenBioLLM，可能引入这些模型的偏差
+- 视觉定位使用 bounding box 而非分割掩码，精度有限
+- 测试集仅 300 张图像（3960 个 QA 对），规模可进一步扩大
+
+## 相关工作与启发
+
+- Chest ImaGenome 提供了高质量的结构化报告基础，但需要精化
+- LLaVA-Med 系列展示了 instruction tuning 在医学领域的有效性
+- 多模态可解释性的设计思路可推广到其他医学影像诊断任务
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ 多模态可解释性 + 多类型问题的组合是重要贡献，但核心是数据集构建而非方法创新
+- **实验充分度**: ⭐⭐⭐⭐⭐ 12 个模型的系统评估、多维度指标、迁移学习验证和详细 case study
+- **写作质量**: ⭐⭐⭐⭐ 结构清晰，数据统计和分析详实
+- **价值**: ⭐⭐⭐⭐⭐ 为医学 VQA 研究提供了重要的基础设施，可解释性设计有实际临床意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] RadZero: Similarity-Based Cross-Attention for Explainable Vision-Language Alignment in Chest X-ray](../../NeurIPS2025/medical_imaging/radzero_similarity-based_cross-attention_for_explainable_vision-language_alignme.md)
+- [\[CVPR 2026\] Instruction-Guided Lesion Segmentation for Chest X-rays with Automatically Generated Large-Scale Dataset](../../CVPR2026/medical_imaging/instruction-guided_lesion_segmentation_for_chest_x-rays_with_automatically_gener.md)
+- [\[NeurIPS 2025\] CXReasonBench: A Benchmark for Evaluating Structured Diagnostic Reasoning in Chest X-rays](../../NeurIPS2025/medical_imaging/cxreasonbench_a_benchmark_for_evaluating_structured_diagnostic_reasoning_in_ches.md)
+- [\[ECCV 2024\] OphNet: A Large-Scale Video Benchmark for Ophthalmic Surgical Workflow Understanding](../../ECCV2024/medical_imaging/ophnet_a_large-scale_video_benchmark_for_ophthalmic_surgical_workflow_understand.md)
+- [\[CVPR 2025\] Enhanced Contrastive Learning with Multi-view Longitudinal Data for Chest X-ray Report Generation](../../CVPR2025/medical_imaging/enhanced_contrastive_learning_with_multi-view_longitudinal_data_for_chest_x-ray_.md)
+
+</div>
+
+<!-- RELATED:END -->

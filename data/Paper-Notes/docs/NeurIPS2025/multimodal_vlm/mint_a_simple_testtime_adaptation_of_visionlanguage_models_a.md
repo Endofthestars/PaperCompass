@@ -1,0 +1,188 @@
+---
+title: >-
+  [论文解读] Mint: A Simple Test-Time Adaptation of Vision-Language Models against Common Corruptions
+description: >-
+  [NeurIPS 2025][多模态VLM][test-time adaptation] 发现 CLIP 在图像损坏下的性能退化根源在于**嵌入方差坍缩**——类内与类间方差同步缩小导致嵌入空间判别性丧失；提出 Mint，通过最大化伪标签类间方差（PL-inter）在线修复嵌入几何，仅凭均值累加器和梯度累加器两个极简组件即可在 BS=1 的在线场景下稳定提升 CLIP 在多种损坏基准上的分类精度，同时比最强 baseline 快 45 倍。
+tags:
+  - "NeurIPS 2025"
+  - "多模态VLM"
+  - "test-time adaptation"
+  - "CLIP"
+  - "corruption robustness"
+  - "embedding variance collapse"
+  - "inter-class variance"
+  - "伪标签"
+  - "LayerNorm"
+---
+
+# Mint: A Simple Test-Time Adaptation of Vision-Language Models against Common Corruptions
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.22127](https://arxiv.org/abs/2510.22127)  
+**代码**: [https://github.com/baowenxuan/Mint](https://github.com/baowenxuan/Mint)  
+**领域**: 多模态VLM  
+**关键词**: test-time adaptation, CLIP, corruption robustness, embedding variance collapse, inter-class variance, pseudo-label, LayerNorm
+
+## 一句话总结
+发现 CLIP 在图像损坏下的性能退化根源在于**嵌入方差坍缩**——类内与类间方差同步缩小导致嵌入空间判别性丧失；提出 Mint，通过最大化伪标签类间方差（PL-inter）在线修复嵌入几何，仅凭均值累加器和梯度累加器两个极简组件即可在 BS=1 的在线场景下稳定提升 CLIP 在多种损坏基准上的分类精度，同时比最强 baseline 快 45 倍。
+
+## 背景与动机
+CLIP 等预训练视觉-语言模型（VLM）具备强零样本泛化能力，但面对高斯噪声、运动模糊、雾、雪、JPEG 压缩等常见图像损坏时性能大幅下降。现有测试时适配（TTA）方法主要分三条路线：
+
+1. **文本端调整**（TPT、TPS）：通过 prompt tuning 或 prompt weighting 修改文本嵌入以改善图文对齐，但完全没有触碰图像嵌入质量问题
+2. **样本相似度方法**（TDA、DMN-ZS）：存储高置信样本嵌入，利用图像间相似度调整预测分布
+3. **图像编码器修复**（CLIPArTT、WATT-S）：调整归一化层参数对齐图-图和文-文相似度矩阵，但**严重依赖大 batch**（WATT-S 需 50 分钟处理 10k 图片）
+
+本文的关键洞察是：上述方法要么不修复图像嵌入问题，要么缺乏对"嵌入为何退化"的理论理解。作者首次从嵌入空间几何角度揭示了退化的根本原因——**方差坍缩（variance collapse）**：随着损坏加剧，嵌入空间被压缩，所有样本不论类别都趋于相似。
+
+## 方法详解
+
+### 1. 方差坍缩现象的发现与度量
+受 Fisher score 和对比学习目标启发，作者定义了三种方差来衡量嵌入质量：
+- **GT-total**：所有样本嵌入到全局均值的平均 L2 距离
+- **GT-inter**：各类中心到全局均值的平均距离（类间分离度）
+- **GT-intra**：类内样本到各自类中心的平均距离（类内紧致度）
+
+三者满足分解关系：GT-total = GT-inter + GT-intra（类似 ANOVA 方差分解）。
+
+在 CIFAR-100-C 的 76 种设置（15 类损坏 × 5 级严重度 + clean）上的实验揭示了核心发现：
+- 随着损坏严重度增加，**三种方差全部下降**——嵌入空间在各个维度上被"压扁"
+- GT-inter 与分类准确率的相关系数高达 **0.98**（GT-intra 仅 0.86，GT-total 为 0.94）
+- **类间方差坍缩是性能退化的直接原因**：不同类别在嵌入空间中变得无法区分
+
+这一发现的直觉理解是：损坏引入的共性模式（如全局噪声纹理）被编码器捕获后，成为所有样本共享的"主信号"，将原本分散在不同方向的类别嵌入拉向同一区域。
+
+### 2. 理论分析
+作者建立了一个解耦表示模型来解释方差坍缩。假设每张图像的潜在表示 v 由四个正交分量组成：
+- **任务相关特征** v_cls = ±μ：直接编码类别信息
+- **任务无关特征** v_irr ~ Rademacher：背景等与分类无关的信息
+- **结构化偏移** v_shift = s·δ：损坏类型带来的系统性分布变化（如高斯模糊的特定频谱特征）
+- **非结构化噪声** v_noise ~ s·Rademacher：损坏引入的随机噪声
+
+嵌入经过 RMSNorm（LayerNorm 的简化形式）+ L2 归一化后：
+
+**定理 3.1（方差坍缩的理论解释）**：
+$$\mathcal{V}_{\text{inter}}^{\text{GT}} \to \frac{\|\mu\|^2}{\|\mu\|^2 + d_{\text{irr}} + s^2 \|\delta\|^2 + s^2 d_{\text{noise}}}$$
+- 分母中 s² 项随损坏程度单调增大 → GT-inter 严格递减
+- 物理意义：归一化操作使总变量"预算"固定，损坏信号占据更大份额后挤压了类别判别信号的占比
+- 当结构化偏移 ‖δ‖ 足够大（满足 ‖δ‖ ≥ √(d_noise/d_irr)·‖μ‖）时 GT-intra 也递减
+
+**定理 3.2（PL-inter 最大化的理论保证）**：即使用伪标签（模型自身预测）代替真实标签，对 LayerNorm 权重做梯度上升最大化 PL-inter 方差时：
+- ∇_{w_shift} ≤ 0：结构化偏移对应的权重**被抑制**——算法自动识别并削弱损坏信号
+- ∇_{w_cls} ≥ 0：任务相关特征对应的权重**被增强**（条件：伪标签与真实标签协方差 σ² 大于噪声分量的协方差上界）
+- 这意味着只要模型预测不是完全随机的，PL-inter 最大化就能正确地重新加权嵌入分量
+
+### 3. Mint 算法设计
+
+核心思路：在测试时通过梯度上升最大化 PL-inter 方差来更新图像编码器的 LayerNorm 参数。关键挑战是在线场景中 batch 极小（20 甚至 1），直接计算 PL-inter 方差会产生严重偏差。
+
+#### 均值累加器（Mean Accumulator）
+**解决"估什么"的问题。**
+
+将 PL-inter 分解为 PL-total − PL-intra 后可以看出：最大化 PL-inter 等价于鼓励每个样本远离全局均值 z̃ 且靠近自己的类均值 z̃_c，梯度方向约为 z̃_c − z̃。因此 z̃ 和 z̃_c 的估计质量至关重要。
+
+直接用当前 batch 估计的问题：ImageNet 有 1000 类而 batch=20 时大多数类只有 1 个样本，导致 z̃_c 退化为样本自身，PL-intra=0，目标函数退化为 PL-total 而非真正的 PL-inter。
+
+解决方案：在线维护全局均值和每个伪类均值的**累积平均**：
+- 每来一个新样本 z_i（伪标签 ŷ_i），增量更新 z̃ 和 z̃_{ŷ_i}
+- 空间复杂度 O(Cd)，不存储历史样本
+- 结合当前 batch 的样本和跨 batch 累积的均值计算 PL-inter
+
+#### 梯度累加器（Gradient Accumulator）
+**解决"怎么更新"的问题。**
+
+即使有了准确的均值估计，单个 batch 的梯度仍有噪声。梯度累加器维护跨 batch 的梯度方向累积平均：ḡ ← (b-1)/b · ḡ + 1/b · g_b，等效于用所有历史 batch 的平均梯度方向来指导更新。每 batch 仅做一步梯度上升。
+
+#### 文本嵌入调整
+利用累积类均值修正文本嵌入，实现图文模态对齐的在线改善：
+$$\tilde{t}_c \leftarrow \text{normalize}\left(\frac{K_{\text{prior}}}{K_{\text{prior}}+K} \cdot t_c + \frac{K}{K_{\text{prior}}+K} \cdot \tilde{z}_c\right)$$
+K_prior=10000 控制先验强度——初期偏信原始文本嵌入，后期渐渐偏信适配后的图像类均值。
+
+#### 训练策略的精巧设计
+- **仅更新 LayerNorm 参数**，每 batch 做一步梯度上升后**重置模型参数和优化器状态**
+- **累加器跨 batch 保留**——信息持续聚合，模型参数每 batch 从头适配
+- 这种"积累知识但每次从零适配"的设计避免了在线 TTA 常见的误差累积和灾难性遗忘
+- Adam 优化器，学习率 ViT-B 用 0.007、ViT-L 用 0.015
+
+## 实验结果
+
+### 主实验（严重度=5，BS=20）
+
+| 设置 | CLIP | 最佳 baseline | **Mint** | 提升 |
+|------|------|---------------|---------|------|
+| ViT-B/32 + CIFAR-10-C | 59.0% | 67.1% (WATT-S) | **71.0%** | +3.9% |
+| ViT-B/16 + CIFAR-100-C | 35.8% | 41.9% (WATT-S) | **44.1%** | +2.2% |
+| ViT-L/14 + ImageNet-C | 39.6% | 43.9% (WATT-S) | **47.0%** | +3.1% |
+
+在所有 15 种损坏类型上均为最佳或接近最佳。尤其在高斯/脉冲噪声等严重损坏下优势最大（CIFAR-10-C 噪声类：59.0→54.2~62.4%，WATT-S 仅 50.7~54.9%）。
+
+### Batch Size 鲁棒性
+
+| BS | CIFAR-10-C | CIFAR-100-C | ImageNet-C |
+|----|-----------|-------------|-----------|
+| 1 | 70.5% | 43.1% | 45.8% |
+| 20 | 71.0% | 44.1% | 47.0% |
+| 200 | 70.6% | 44.6% | 46.8% |
+
+BS=1 到 BS=200 波动极小（±0.5%），WATT-S 和 CLIPArTT 在小 batch 下性能骤降。
+
+### 效率对比（CIFAR-100-C，10,000 张图）
+
+| 方法 | 时间 | 准确率 |
+|------|------|--------|
+| WATT-S | 50m20s | 41.9% |
+| TPT | 23m21s | 36.0% |
+| CLIPArTT | 7m40s | 40.7% |
+| **Mint** | **1m07s** | **44.1%** |
+| CLIP | 21s | 35.8% |
+
+Mint 比最强 baseline WATT-S 快 **45 倍**且准确率高 2.2%。高效的原因：每 batch 仅需单次前向+单步梯度更新，无需多次迭代或多增强视图。
+
+### 消融实验
+- 去掉均值累加器：BS=1 时**完全失效**（单样本无法构成有意义的类间方差）
+- 去掉梯度累加器：小 batch 下性能显著下降，梯度噪声导致适配不稳定
+- 两者角色互补：均值累加器保证目标函数有意义，梯度累加器保证更新方向正确
+
+### 方差坍缩的缓解验证
+适配前后对比显示 Mint 成功提升了 PL-inter 和 GT-inter 方差，且 GT-inter 提升与准确率提升高度一致，验证了理论假说。
+
+## 亮点与贡献
+- **方差坍缩**作为核心洞察：首次揭示损坏导致 VLM 性能退化的嵌入空间几何机制，GT-inter 与准确率相关性 0.98，为后续工作提供了清晰的诊断指标
+- **理论闭环**：定理 3.1 解释"为什么坍缩"→ 定理 3.2 证明"为什么最大化 PL-inter 有效"→ 方法设计自然导出
+- **极致简洁**：整个方法仅两个累加器 + 单步梯度上升，无需增强视图、无需记忆库、无需多次迭代
+- **设计哲学**：将信息聚合（累加器持久化）与参数更新（每 batch 重置）解耦，巧妙规避在线 TTA 的误差累积
+
+## 局限性
+- 伪标签错误在极端损坏下可能累积，理论仅分析了"伪标签足够准"的条件但未给出定量上界
+- 仅在分类任务上验证，检测、分割等密集预测场景待探索
+- 理论假设潜在表示分量正交解耦，真实损坏可能违反此假设
+- 对每 batch 重置模型参数的设计是否最优未做探讨——持续适配策略可能进一步提升长序列场景性能
+- 未测试在域偏移（非损坏型）如风格变化、对抗攻击下的效果
+
+## 与相关工作的对比
+- **vs TPT**：TPT 用 prompt tuning 减少增强视图的边际熵，需每个样本 63 次前向传播；Mint 单次前向+单步梯度，快一个数量级，且直接修复嵌入质量
+- **vs WATT-S**：WATT-S 对齐图-图/文-文相似度矩阵修复模态对齐，需大 batch 和多次迭代（50 分钟/10k 图）；Mint 1 分钟完成且 BS=1 即可工作
+- **vs TDA/DMN-ZS**：这些方法通过样本相似度调整预测分布但不修复嵌入质量；Mint 从嵌入空间几何根源解决问题
+- **vs CLIPArTT**：同样调整 LayerNorm，但 CLIPArTT 基于模态对齐目标且各 batch 独立；Mint 基于类间方差最大化且通过累加器跨 batch 聚合信息
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 方差坍缩发现 + 完整理论 + 极简方法三位一体
+- 实验充分度: ⭐⭐⭐⭐ 3 架构 × 3 基准 × 15 种损坏 + batch size 鲁棒性 + 效率 + 消融
+- 写作质量: ⭐⭐⭐⭐⭐ 现象→理论→方法→实验逻辑链条完美
+- 价值: ⭐⭐⭐⭐⭐ 极简方法解决实际部署中 VLM 损坏鲁棒性问题，兼顾效果与效率
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] DOTA: DistributiOnal Test-time Adaptation of Vision-Language Models](dota_distributional_testtime_adaptation_of_visionlanguage_mo.md)
+- [\[NeurIPS 2025\] The Illusion of Progress? A Critical Look at Test-Time Adaptation for Vision-Language Models](the_illusion_of_progress_a_critical_look_at_testtime_adaptat.md)
+- [\[AAAI 2026\] Panda: Test-Time Adaptation with Negative Data Augmentation](../../AAAI2026/multimodal_vlm/panda_test-time_adaptation_with_negative_data_augmentation.md)
+- [\[CVPR 2025\] Realistic Test-Time Adaptation of Vision-Language Models](../../CVPR2025/multimodal_vlm/realistic_test-time_adaptation_of_vision-language_models.md)
+- [\[NeurIPS 2025\] Test-Time Spectrum-Aware Latent Steering for Zero-Shot Generalization in Vision-Language Models](test-time_spectrum-aware_latent_steering_for_zero-shot_generalization_in_vision-.md)
+
+</div>
+
+<!-- RELATED:END -->

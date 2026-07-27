@@ -1,0 +1,157 @@
+---
+title: >-
+  [论文解读] Controlling Underestimation Bias in Constrained Reinforcement Learning for Safe Exploration
+description: >-
+  [ICML 2025 Oral][强化学习][约束强化学习] 提出 MICE（Memory-driven Intrinsic Cost Estimation）——通过闪光灯记忆机制存储历史高代价状态，构建内在代价信号来纠正代价值函数的低估偏差，在约束 RL 的训练过程中显著减少约束违反次数。 领域现状：约束强化学习（CRL）…
+tags:
+  - "ICML 2025 Oral"
+  - "强化学习"
+  - "约束强化学习"
+  - "安全探索"
+  - "低估偏差"
+  - "内在代价"
+  - "闪光灯记忆"
+---
+
+# Controlling Underestimation Bias in Constrained Reinforcement Learning for Safe Exploration
+
+**会议**: ICML 2025 Oral  
+**arXiv**: [2601.11953](https://arxiv.org/abs/2601.11953)  
+**代码**: [https://github.com/ShiqingGao/MICE](https://github.com/ShiqingGao/MICE)  
+**领域**: 强化学习  
+**关键词**: 约束强化学习, 安全探索, 低估偏差, 内在代价, 闪光灯记忆
+
+## 一句话总结
+提出 MICE（Memory-driven Intrinsic Cost Estimation）——通过闪光灯记忆机制存储历史高代价状态，构建内在代价信号来纠正代价值函数的低估偏差，在约束 RL 的训练过程中显著减少约束违反次数。
+
+## 研究背景与动机
+
+**领域现状**：约束强化学习（CRL）旨在最大化累积奖励同时满足安全约束（如机器人不碰撞、自动驾驶不违规），是安全 RL 的核心范式。主流方法分为原始-对偶法（如 NPG-PD）和原始法（如 CPO、CUP）。
+
+**现有痛点**：现有 CRL 算法在训练期间经常出现严重的约束违反。原始-对偶法对初始参数敏感，原始法虽有理论保证但实际训练中违约频繁。根本原因被忽视了。
+
+**核心矛盾**：代价值函数的低估偏差——函数近似中的噪声在最小化目标下打破了零均值假设，导致高代价状态"看起来"比实际安全，吸引智能体去探索。这与奖励值的高估偏差（已被广泛研究）是镜像问题。
+
+**本文目标**：纠正代价值函数的低估偏差，减少训练期间的约束违反。
+
+**切入角度**：受认知科学中"闪光灯记忆"（flashbulb memory）启发——人类会生动地记住危险经历以避免风险。给智能体一个闪光灯记忆模块，存储过去探索过的不安全状态。
+
+**核心 idea**：内在代价 = 当前状态对记忆中高代价区域的"伪访问计数"，在高代价区域提供额外的代价信号来抵消低估。
+
+## 方法详解
+
+### 整体框架
+MICE 在标准 CRL 框架上增加三个组件：
+1. **闪光灯记忆模块**：记录历史高代价状态集合
+2. **内在代价计算**：基于伪访问计数的内在代价信号
+3. **外在-内在代价值更新**：融合外在代价和内在代价，带偏差校正策略
+4. 在信赖域内优化，确保策略更新与记忆采样策略一致
+
+### 关键设计
+
+1. **闪光灯记忆机制**:
+
+    - 功能：持续存储智能体遇到过的高代价状态
+    - 核心思路：当外在代价 $c^E(s,a) > \text{threshold}$ 时，将状态 $s$ 存入记忆缓冲区 $\mathcal{M}$
+    - 设计动机：类比人类的闪光灯记忆——我们会特别清晰地记住危险场景（如差点发生车祸），这种记忆帮助我们未来避开类似情境
+    - 实现：FIFO 缓冲区，容量有限，保留最近的高代价经历
+
+2. **内在代价（Intrinsic Cost）**:
+
+    - 功能：基于当前状态与记忆中高代价状态的相似度计算附加代价
+    - 核心思路：$c^I(s) = \frac{1}{\sqrt{N(s, \mathcal{M})}}$，其中 $N(s, \mathcal{M})$ 是状态 $s$ 在记忆附近的伪访问计数
+    - 关键特性：在高代价区域（记忆中有很多相似状态），$c^I$ 较大 → 纠正低估；在低代价区域，$c^I$ 较小 → 不干扰正常学习
+    - 设计动机：靶向性纠正——只在需要的地方（高代价区域）增加代价估计，而非全局提升
+
+3. **外在-内在代价值更新 + 偏差校正**:
+
+    - 功能：将外在代价和内在代价融合到统一的代价值函数中
+    - 核心思路：$V^\pi_{C+I}(s) = V^\pi_C(s) + \alpha V^\pi_I(s) - \beta(s)$，其中 $\alpha$ 控制内在代价权重，$\beta(s)$ 是偏差校正项
+    - 设计动机：$\alpha$ 确保在高代价区域纠正低估，$\beta(s)$ 防止过度校正导致过于保守
+
+4. **信赖域优化**:
+
+    - 功能：在信赖域内基于外在-内在代价值函数优化策略
+    - 核心思路：约束策略更新步长，确保新策略与生成记忆样本的旧策略足够接近
+    - 设计动机：策略变化过大会使记忆中的信息失效
+
+### 损失函数 / 训练策略
+- 奖励目标：最大化 $V^\pi_R(s)$（标准 RL 目标）
+- 约束：$V^\pi_{C+I}(s) \leq d$（外在-内在代价值 ≤ 阈值）
+- 信赖域约束：$D_{KL}(\pi_{new} || \pi_{old}) \leq \delta$
+- 收敛保证：Theorem 1 证明外在-内在代价值函数收敛到正确的代价值
+- 约束违反界：Theorem 2 提供最坏情况下的约束违反上界
+
+## 实验关键数据
+
+### 主实验
+Safety Gymnasium 基准（多种安全约束环境）：
+
+| 方法 | 奖励 ↑ | 约束违反次数 ↓ | 约束违反率 ↓ |
+|------|--------|-------------|-----------|
+| CPO | 25.1 | 342 | 18.5% |
+| CUP | 27.3 | 287 | 15.2% |
+| PCPO | 24.8 | 315 | 16.8% |
+| PPO-Lagrangian | 28.5 | 425 | 22.1% |
+| **MICE (CPO+)** | **26.8** | **89** | **4.7%** |
+| **MICE (CUP+)** | **28.1** | **72** | **3.8%** |
+
+### 消融实验
+
+| 配置 | 违反次数 ↓ | 奖励 ↑ | 说明 |
+|------|----------|--------|------|
+| 无内在代价 | 287 | 27.3 | CUP 基线 |
+| 内在代价（无校正） | 105 | 23.1 | 过于保守 |
+| **内在代价 + 偏差校正** | **72** | **28.1** | 最优平衡 |
+| 随机记忆（非高代价筛选） | 198 | 26.5 | 闪光灯筛选重要 |
+| 全局内在代价（非靶向） | 142 | 24.8 | 靶向优于全局 |
+
+### 关键发现
+- MICE 将约束违反减少 75%+（287→72），同时奖励几乎不变（27.3→28.1）
+- 偏差校正项 $\beta(s)$ 至关重要——没有它，内在代价会导致过于保守
+- 闪光灯记忆的筛选（只记高代价状态）比随机记忆有效得多
+- 靶向内在代价（只在高代价区域）优于全局内在代价
+- MICE 可以叠加到任何现有 CRL 方法上（CPO、CUP 等）
+
+## 亮点与洞察
+- **代价低估偏差**的发现是重要的，填补了 CRL 研究的关键拼图——低估↔高估是镜像问题，但代价低估之前被忽视
+- 闪光灯记忆的认知科学类比非常直观——人类确实通过记住恐怖经历来避免风险
+- 靶向纠正的策略优雅——不是全局提高保守性（那会损害奖励），而是只在危险区域"加码"
+- 理论保证（收敛 + 约束违反界）增强了方法的可靠性
+- 即插即用的设计使方法立即可用于各种 CRL 框架
+
+## 局限与展望
+- 记忆缓冲区大小和阈值是超参数，需要调优
+- 伪访问计数在高维连续状态空间中的估计可能不够精确
+- 仅在 Safety Gymnasium 验证，真实机器人场景待测试
+- 偏差校正因子 $\beta(s)$ 的估计依赖于当前代价值的准确性，存在循环依赖
+- 未讨论多约束场景（同时有多个不同的安全约束）
+
+## 相关工作与启发
+- **vs CPO/PCPO/CUP**: 标准原始方法，不处理低估偏差，MICE 作为附加模块纠正偏差
+- **vs PPO-Lagrangian**: 原始-对偶法，对初始参数敏感；MICE 不改变优化框架
+- **vs TD3 (奖励高估)**: TD3 用双 Q 网络处理奖励高估，MICE 用内在代价处理代价低估——问题的"镜像"
+- **vs ROSARL**: 将约束解释为内在奖励，但方向相反——ROSARL 用内在奖励鼓励安全，MICE 用内在代价阻止危险
+- **启发**：低估/高估偏差的控制可能是 CRL 中被低估的研究方向
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 识别并解决了 CRL 中被忽视的根本问题
+- 实验充分度: ⭐⭐⭐⭐ 多环境、多基方法、完整消融
+- 写作质量: ⭐⭐⭐⭐ 动机清晰，理论+实验兼备
+- 价值: ⭐⭐⭐⭐⭐ 对安全 RL 研究有重要推动
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Risk-Averse Constrained Reinforcement Learning with Optimized Certainty Equivalents](../../NeurIPS2025/reinforcement_learning/risk-averse_constrained_reinforcement_learning_with_optimized_certainty_equivale.md)
+- [\[NeurIPS 2025\] Adaptive Neighborhood-Constrained Q Learning for Offline Reinforcement Learning](../../NeurIPS2025/reinforcement_learning/adaptive_neighborhoodconstrained_q_learning_for_offline_rein.md)
+- [\[ICML 2025\] Extreme Value Policy Optimization for Safe Reinforcement Learning](extreme_value_policy_optimization_for_safe_reinforcement_learning.md)
+- [\[NeurIPS 2025\] Online Optimization for Offline Safe Reinforcement Learning](../../NeurIPS2025/reinforcement_learning/online_optimization_for_offline_safe_reinforcement_learning.md)
+- [\[ICML 2026\] Safe In-Context Reinforcement Learning](../../ICML2026/reinforcement_learning/safe_in-context_reinforcement_learning.md)
+
+</div>
+
+<!-- RELATED:END -->

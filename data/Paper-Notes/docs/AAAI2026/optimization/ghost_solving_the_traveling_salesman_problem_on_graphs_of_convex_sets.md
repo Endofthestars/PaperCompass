@@ -1,0 +1,224 @@
+---
+title: >-
+  [论文解读] GHOST: Solving the Traveling Salesman Problem on Graphs of Convex Sets
+description: >-
+  [AAAI 2026][优化/理论][旅行商问题] 提出 GHOST 框架，一种层次化最优搜索算法，用于求解凸集图（GCS）上的旅行商问题。通过结合组合路径搜索与凸轨迹优化，并利用新颖的抽象路径展开算法计算可容许下界指导最佳优先搜索，GHOST 在保证最优性的同时比统一混合整数凸规划基线快数个数量级。
+tags:
+  - "AAAI 2026"
+  - "优化/理论"
+  - "旅行商问题"
+  - "凸集图"
+  - "轨迹优化"
+  - "层次搜索"
+  - "机器人运动规划"
+---
+
+# GHOST: Solving the Traveling Salesman Problem on Graphs of Convex Sets
+
+**会议**: AAAI 2026  
+**arXiv**: [2511.06471](https://arxiv.org/abs/2511.06471)  
+**代码**: [https://github.com/reso1/ghost](https://github.com/reso1/ghost)  
+**领域**: 优化  
+**关键词**: 旅行商问题, 凸集图, 轨迹优化, 层次搜索, 机器人运动规划
+
+## 一句话总结
+
+提出 GHOST 框架，一种层次化最优搜索算法，用于求解凸集图（GCS）上的旅行商问题。通过结合组合路径搜索与凸轨迹优化，并利用新颖的抽象路径展开算法计算可容许下界指导最佳优先搜索，GHOST 在保证最优性的同时比统一混合整数凸规划基线快数个数量级。
+
+## 研究背景与动机
+
+机器人运动规划中广泛依赖轨迹优化，但即使单个障碍物就能使构型空间非凸且计算困难。**凸集图（GCS）**框架将构型空间分解为通过图结构连接的凸区域，将非凸轨迹规划转化为凸优化子问题。
+
+GCS 上的最短路径问题已被充分研究，但许多现实机器人任务（如区域覆盖、巡检、结构化探索）需要**以低成本顺序访问多个区域**——这自然引出了 GCS 上的旅行商问题（GCS-TSP）。
+
+GCS-TSP 与经典 TSP 的核心区别：**边权不是固定的，而是依赖于穿过每个凸集的具体轨迹**。这将组合优化（访问顺序）与连续运动学可行性紧密耦合，使经典 TSP 方法无法直接应用：
+
+1. 不存在静态度量闭包——每次转换成本取决于凸集内的具体轨迹端点
+2. MICP（混合整数凸规划）统一求解可扩展性差，对含复杂约束的不完整 GCS 无法处理
+3. 现有方法要么不保证最优性，要么不能处理高阶连续性约束
+
+## 方法详解
+
+### 整体框架
+
+GHOST 采用**两级层次搜索**架构：
+
+- **高层**：在由 GCS 诱导的完全图 $\hat{G}$ 上系统探索 TSP 路径，按下界成本的非递减顺序排列
+- **低层**：对每条抽象路径，搜索可行的 GCS 路径（展开），并通过凸优化计算最优轨迹
+
+核心组件是**抽象路径展开算法**，计算实现给定抽象路径（连续集合的任意序列）的可容许下界，提供强大的剪枝能力，减少不必要的凸优化调用。
+
+### 关键设计
+
+#### 1. **下界图（LBG）构建**: 基于三元组的紧致下界估计
+
+**问题**：标准图中边权提供路径成本估计，但 GCS 中边 $(u,v)$ 的遍历成本依赖于轨迹端点 $\mathbf{x}_u \in \mathcal{X}_u$ 和 $\mathbf{x}_v \in \mathcal{X}_v$，除非完整路径确定否则端点不受约束。因此边成本给出的下界很松。
+
+**解决方案**：在每个**三元组** $(u,v,w)$（前驱-当前-后继）上定义 LBG，而非仅在边上。这捕获了凸集 $\mathcal{X}_v$ 的"体积"信息，提供更紧的下界。
+
+LBG $\mathcal{H} = (\mathcal{P}, \mathcal{F})$ 是有向超图：
+- **通道** $(u,v,w) \in \mathcal{P}$：由每对相邻边 $(u,v), (v,w) \in E$ 形成
+- **超边** $(p, p')$：连接每个 $p = (\cdot, u, v)$ 到 $p' = (u, v, \cdot)$
+- 每个三元组 $p$ 标记下界成本 $lb_p$：通过约束松弛后的凸规划计算
+
+**关键定理（Theorem 1 - 下界路径成本）**：对任意抽象路径 $\hat{\pi}$ 和从中展开的下界成本最小路径 $\pi^*$：
+
+$$\mathcal{L}(\pi^*) \leq \mathcal{L}(\pi) \leq c(\tau)$$
+
+对任意从 $\hat{\pi}$ 展开的路径 $\pi$ 和条件于 $\pi$ 的轨迹 $\tau$ 成立。
+
+**设计动机**：三元组比边提供更紧的下界，因为它考虑了凸集的几何信息；更紧的下界 → 更强的剪枝 → 更少的凸优化调用。
+
+#### 2. **路径展开算法（Algorithm 1）**: 多标签 A* 式搜索
+
+**功能**：给定抽象路径 $\hat{\pi} = (v_1, v_2, \ldots, v_k)$（连续顶点可能不在 GCS 中相邻），枚举所有从 $\hat{\pi}$ 展开的 GCS 路径，按下界成本的非递减顺序输出。
+
+**核心思路**：
+
+搜索状态由三元组 $p$ 和标签 $\ell$ 组成，标签指示向下一个端点 $v_{\ell+1}$ 的进度。搜索节点 $n$ 存储：
+- 当前路径 $n.\pi$
+- 当前成本 $n.g$
+- 估计最终成本 $n.f = n.g + h_{\hat{\pi}}(p, n.\ell)$
+
+**可容许启发式（Lemma 2）**：
+
+$$h_{\hat{\pi}}(p, n.\ell) = \mathcal{L}(\pi^*_{w, v_{\ell+1}}) + \sum_{i=\ell+1}^{k-1}\mathcal{L}(\pi^*_{v_i, v_{i+1}})$$
+
+聚合剩余子路径的最小可能成本，永不高估实际成本。
+
+可选地，$n_c.f > \bar{c}$ 的节点被剪枝（支持 GHOST 中的层次搜索效率）。
+
+#### 3. **限制 TSP（RTSP）重新表述**: 基于抽象三元组的 ILP
+
+经典 TSP ILP 使用边变量，但 GCS 中边成本不能提供有意义的估计。本文引入**三元组变量** $y_{\hat{p}}$，最小化下界路径成本：
+
+$$\min_{y_{\hat{p}}} \sum_{\hat{p} \in \hat{\mathcal{P}}} b(\hat{p}) y_{\hat{p}}$$
+
+约束：
+- 每个顶点恰好被访问一次（公式 6）
+- 流守恒（公式 7）
+- 包含/排除边约束（公式 8-9）
+- DFJ 类子回路消除（公式 10）
+
+三元组的下界成本：$b(\hat{p}) = \frac{1}{2}\mathcal{L}(\pi^*_{u,v}) + b_{\text{mid}}(\hat{p}) + \frac{1}{2}\mathcal{L}(\pi^*_{v,w})$
+
+**Theorem 3（下界路径成本）**：抽象路径 $\hat{\pi}$ 的下界 $\mathcal{L}(\hat{\pi}) \leq \mathcal{L}(\pi) \leq c(\tau)$。
+
+### GHOST 框架（Algorithm 2）
+
+**高层搜索**（Lawler-Murty 过程推广）：
+- OPEN 列表按下界路径成本 $n.\underline{c}$ 排序
+- 每次弹出最小成本节点，调用 EvalNode 展开并评估
+- 当 $n.\underline{c} \geq c(n^*.\tau)$（当前最优轨迹成本）时终止
+
+**低层评估（EvalNode）**：
+- 调用路径展开算法生成路径
+- 对每条路径通过凸优化计算最优轨迹
+- 当展开路径的下界 $\geq$ 当前最优时停止
+
+### 有界次优变体 ε-GHOST
+
+给定参数 $\epsilon \in [0, 1)$：
+- 终止条件松弛为 $c(n^*.\tau) - n.\underline{c} \leq \epsilon \cdot c(n^*.\tau)$
+- 剪枝阈值调整为 $(1-\epsilon) \cdot c(n^*.\tau)$
+
+**Theorem 4**：$\epsilon$-GHOST 产生的解成本至多为最优的 $\frac{1}{1-\epsilon}$ 倍。
+
+**Corollary 5**：$\epsilon=0$ 时 GHOST 返回最优解。
+
+## 实验关键数据
+
+### 主实验
+
+三种 GCS-TSP 问题类型：
+
+**Point-GCS**（完整 GCS，2D 点集，N=5-25 个顶点）：
+
+| 方法 | 解质量 | 运行时间 | 最优性保证 |
+|------|--------|---------|-----------|
+| **GHOST** | **最优** | **最快** | **有** |
+| ECG | 非最优 | 较慢 | 无 |
+| Greedy | 非最优 | 中等 | 无 |
+| MICP | 最优 | N>13 失败 | 有 |
+
+**Linear-GCS**（不完整 GCS，M=10-50 条边）：
+
+| 方法 | 可处理的最大规模 | 说明 |
+|------|----------------|------|
+| GHOST | M=50+ | 所有实例 |
+| MICP | M≤19 | 更大规模失败 |
+
+**Bézier-GCS**（不完整 GCS，4阶 Bézier 曲线，M=10-50）：
+
+| 方法 | 结果 |
+|------|------|
+| GHOST | 成功求解 |
+| MICP | 完全无法处理 |
+
+### 消融实验
+
+| 配置 | 解质量 | 运行时间 | 最优性 |
+|------|--------|---------|--------|
+| GHOST (完整) | 最优 | 基准 | 有 |
+| ECG (无 LBG) | 质量下降 | 更慢 | 无 |
+| Greedy (无系统搜索) | 质量最差 | 不稳定 | 无 |
+| 0.5-GHOST | 接近最优 | 更快 | 有界次优 |
+
+关键比较：
+- LBG vs ECG：LBG 提供的可证明下界使 GHOST 能够监控最优性间隙并及早剪枝
+- 系统搜索 vs 贪心：系统搜索得到更好解和更可靠性能
+- 0.5-GHOST 通常获得与 GHOST 相同质量的解但效率更高
+
+### 关键发现
+
+1. **GHOST 比 MICP 快数个数量级**：MICP 在 Point-GCS N>13、Linear-GCS M>19、任何 Bézier-GCS 上都无法生成可行解
+2. **LBG 集成是关键**：提供了可证明的下界和强剪枝能力
+3. **GHOST 能处理以前无法解决的问题**：包含高阶连续性约束和不完整 GCS 的复杂实例
+4. **ε-GHOST 提供了灵活的最优性-效率权衡**：在时间关键场景中非常实用
+5. **轨迹缓存有效**：相同路径可能从不同抽象路径展开，缓存避免重复凸优化
+
+## 亮点与洞察
+
+1. **问题建模贡献**：GCS-TSP 捕获了机器人规划中组合优化与连续优化紧耦合的本质，是经典 TSP 到实际机器人应用的有意义推广
+2. **层次搜索架构设计精巧**：高层探索路径顺序、低层验证可行性，两级下界相互支持形成高效剪枝
+3. **三元组下界的创新**：比基于边的下界更紧，因为它利用了凸集的几何信息
+4. **理论保证完整**：最优性证明（Corollary 5）和有界次优性证明（Theorem 4）共同提供了严格的质量保证
+5. **应用多样性**：覆盖规划、巡检规划、7-DoF 机械臂任务与运动规划——展示了框架的通用性
+
+## 局限与展望
+
+1. **可扩展性**：虽然远优于 MICP，GHOST 在非常大规模的 GCS（数百个凸集）上的性能有待验证
+2. **单线程实现**：论文提到跨路径并行评估的收益不大，但在大规模问题上并行化可能更有价值
+3. **凸集分解质量**：GHOST 的性能依赖于输入 GCS 的质量，凸分解方法本身不在讨论范围内
+4. **三元组 LBG 的构建成本**：虽然可以预计算，但对于密集 GCS，三元组数量为 $\mathcal{O}(|E|^2/|V|)$，可能较大
+5. **仅限凸成本函数**：要求成本函数是正的、有界远离零的凸函数，某些应用场景可能不满足
+
+## 相关工作与启发
+
+- 建立在 GCS 框架和 GCS 最短路径求解器的基础上，将问题从点到点规划推广到多目标访问
+- Lawler-Murty 过程的推广为枚举次优 TSP 解提供了系统框架
+- 多标签 A* 搜索在路径展开中的应用是对现有图搜索技术的创新组合
+- ε-GHOST 的有界次优变体为时间关键的机器人应用提供了理论保证的近似方案
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ — GCS-TSP 问题建模新颖，层次搜索框架与三元组下界设计创新
+- 实验充分度: ⭐⭐⭐⭐ — 三种问题类型+多个基线+消融充分，但缺少大规模实验
+- 写作质量: ⭐⭐⭐⭐⭐ — 问题建模、算法描述和理论证明都非常清晰
+- 价值: ⭐⭐⭐⭐ — 解决了机器人运动规划中的重要组合优化问题，实用性强
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] AutoOpt: A Dataset and a Unified Framework for Automating Optimization Problem Solving](../../NeurIPS2025/optimization/autoopt_a_dataset_and_a_unified_framework_for_automating_optimization_problem_so.md)
+- [\[ICLR 2026\] CogFlow: Bridging Perception and Reasoning through Knowledge Internalization for Visual Mathematical Problem Solving](../../ICLR2026/optimization/cogflow_bridging_perception_and_reasoning_through_knowledge_internalization_for_.md)
+- [\[AAAI 2026\] Convex Clustering Redefined: Robust Learning with the Median of Means Estimator](convex_clustering_redefined_robust_learning_with_higher_order_norms_and_beyond.md)
+- [\[ICML 2026\] Asymmetric Perturbation in Solving Bilinear Saddle-Point Optimization](../../ICML2026/optimization/asymmetric_perturbation_in_solving_bilinear_saddle-point_optimization.md)
+- [\[ICLR 2026\] Learning to Solve Orienteering Problem with Time Windows and Variable Profits](../../ICLR2026/optimization/learning_to_solve_orienteering_problem_with_time_windows_and_variable_profits.md)
+
+</div>
+
+<!-- RELATED:END -->

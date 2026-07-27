@@ -1,0 +1,142 @@
+---
+title: >-
+  [论文解读] COSMIC: Generalized Refusal Direction Identification in LLM Activations
+description: >-
+  [ACL 2025][LLM 其他][拒绝方向] 提出 COSMIC 框架，利用余弦相似度在激活空间中自动选择拒绝引导方向，完全不依赖模型输出 token 或预定义拒绝模板，在标准设置下匹配已有方法性能，并首次在对抗性完全拒绝和弱对齐模型中成功提取有效的拒绝方向。 领域现状：LLM 的拒绝行为（refusal）是安全对齐的核…
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "拒绝方向"
+  - "余弦相似度"
+  - "激活空间干预"
+  - "方向选择"
+  - "对抗鲁棒性"
+---
+
+# COSMIC: Generalized Refusal Direction Identification in LLM Activations
+
+**会议**: ACL 2025  
+**arXiv**: [2506.00085](https://arxiv.org/abs/2506.00085)  
+**代码**: [https://github.com/wang-research-lab/COSMIC](https://github.com/wang-research-lab/COSMIC)  
+**领域**: LLM/NLP / 可解释性 / LLM安全  
+**关键词**: 拒绝方向, 余弦相似度, 激活空间干预, 方向选择, 对抗鲁棒性
+
+## 一句话总结
+
+提出 COSMIC 框架，利用余弦相似度在激活空间中自动选择拒绝引导方向，完全不依赖模型输出 token 或预定义拒绝模板，在标准设置下匹配已有方法性能，并首次在对抗性完全拒绝和弱对齐模型中成功提取有效的拒绝方向。
+
+## 研究背景与动机
+
+**领域现状**：LLM 的拒绝行为（refusal）是安全对齐的核心机制，现有的推理时干预方法（如 directional ablation 和 activation addition）通过修改激活空间中的方向向量来操控拒绝行为。Arditi et al. (2024) 发现拒绝行为由激活空间中的单一方向编码，可在不微调的情况下实现越狱或诱导拒绝。
+
+**现有痛点**：已有的方向选择方法存在严重的通用性缺陷。LCE（Linear Concept Editing）依赖子字符串匹配来检测拒绝——需要预先知道模型的拒绝模板 token（如 "I" 或 "As"），容易产生假阳性（"I can do that!"）和假阴性（"Here's why I cannot help…"）。ACE（Affine Concept Editing）则需要人工检查和 LLM-as-judge 来选择方向，劳动密集且难以复现。
+
+**核心矛盾**：现有方法假设拒绝行为可以从输出 token 中可靠检测，但这一假设在三种关键场景下崩溃：（1）模型使用非标准拒绝措辞；（2）对抗性场景中模型对所有输入统一拒绝，使有害/无害的输出无法区分；（3）弱对齐模型本身就不拒绝有害请求，无法提供对比信号。
+
+**本文目标** 设计一种完全不依赖模型输出的方向选择框架，能在任意对齐条件下自动识别拒绝方向。
+
+**切入角度**：既然拒绝行为编码在激活空间的方向中，那么一个好的方向应该能让干预后的激活在内部表示层面发生"概念反转"——把有害提示的激活变得像无害提示，反之亦然。这种反转可以用余弦相似度来度量，完全不需要看输出。
+
+**核心 idea**：用激活空间中干预前后的余弦相似度（概念反转程度）代替输出 token 匹配来选择最优拒绝方向。
+
+## 方法详解
+
+### 整体框架
+
+COSMIC 的输入是一组有害/无害提示数据集，输出是最优的拒绝方向向量 $\boldsymbol{r}^*$ 及其对应的层 $l^*$ 和 token 位置 $i^*$。整体流程分为三步：（1）从训练集中通过差分均值（difference-in-means）生成 $5L$ 个候选方向；（2）在验证集上对每个候选方向执行干预并收集激活；（3）通过余弦相似度评分选出最优方向。该方向随后可与任意推理时干预方法（LCE 或 ACE）无缝组合使用。
+
+### 关键设计
+
+1. **差分均值候选方向生成**:
+
+    - 功能：从模型的残差流中提取候选拒绝方向
+    - 核心思路：对训练集中的有害和无害提示分别做前向传播，在每层 $l$ 的最后 5 个 post-instruction token 位置 $i \in \{-5,-4,-3,-2,-1\}$ 收集激活，计算均值差 $\boldsymbol{r}_{i,l} = \boldsymbol{r}^+_{i,l} - \boldsymbol{r}^-_{i,l}$，其中 $\boldsymbol{r}^+$ 来自有害提示、$\boldsymbol{r}^-$ 来自无害提示。共生成 $5L$ 个候选方向
+    - 设计动机：Post-instruction token 是模型从"理解输入"转向"准备输出"的关键位置，此处的激活差异最能反映拒绝行为的编码方式，这一选择沿用了 Arditi et al. 的发现
+
+2. **低相似度层选择 + 余弦相似度评分**:
+
+    - 功能：选择评估层集合 $\mathcal{L}_{low}$ 并对每个候选方向打分
+    - 核心思路：先计算训练集上有害/无害激活在各层的基础余弦相似度，选取相似度最低的 10% 层作为评估层——这些层最能区分有害与无害行为。然后对每个候选方向 $\boldsymbol{r}_{i,l}$，分别在验证集上执行 ablation（去拒绝）和 addition（加拒绝），收集干预后的激活。计算两个核心指标：$\bar{S}^{\text{refuse}} = \cos(\bar{a}_+, \bar{b})$（诱导拒绝后无害激活是否像有害激活）和 $\bar{S}^{\text{comply}} = \cos(\bar{a}, \bar{b}_-)$（去除拒绝后有害激活是否像无害激活），最终选择使两者之和最大的方向
+    - 设计动机：这是 COSMIC 的核心创新——通过衡量"概念反转"的程度来评判方向质量，完全绕开了输出 token。低相似度层的选择基于直觉：这些层编码的拒绝信号最强，是干预效果最显著的位置
+
+3. **过滤与安全机制**:
+
+    - 功能：防止选到虚假方向，保证干预不破坏模型能力
+    - 核心思路：三重过滤——（1）中位峰值过滤：排除 $i=-1$ 位置中层数超过其他 token 位置相似度峰值中位数的方向，避免 last token 的近端效应导致的假阳性；（2）丢弃最后 20% 层的方向，防止过于浅层的干预；（3）排除在无害提示上 KL 散度 > 0.1 的方向，保护模型在正常输入上的表现
+    - 设计动机：实验发现 $i=-1$ 位置在后层会出现异常高的余弦相似度峰值（Figure 7），这是因为最后一个 token 对第一个输出 token 有直接影响，会产生虚假的高评分方向
+
+## 实验关键数据
+
+### 主实验：标准设置下 COSMIC vs 已有方法 (ASR / 诱导拒绝率)
+
+| 模型 | COSMIC-LCE ASR | LCE ASR | COSMIC-ACE ASR | Substring-ACE ASR |
+|------|---------------|---------|----------------|-------------------|
+| Llama-3.1-70B | 0.85 | 0.85 | 0.78 | 0.76 |
+| Llama-3.1-8B | 0.62 | 0.63 | 0.84 | 0.84 |
+| Qwen2.5-72B | 0.88 | 0.88 | 0.57 | 0.57 |
+| Qwen2.5-7B | 0.91 | 0.91 | 0.81 | 0.82 |
+| Gemma-2-27B | 0.00 | 不收敛 | 0.53 | 0.53 |
+| Gemma-2-9B | 0.47 | 0.47 | 0.78 | 0.78 |
+
+COSMIC 在标准设置下与子字符串匹配方法性能相当，但无需任何输出假设。Gemma-2-27B 上 LCE 无法收敛而 COSMIC 仍可工作。
+
+### 对抗性完全拒绝设置 (Table 1 核心结果)
+
+| 模型 | COSMIC-LCE ASR (全拒/仅val拒) | COSMIC-ACE ASR (全拒/仅val拒) | ACE 层变化 |
+|------|------|------|------|
+| Llama-3.1-70B | 0.78 / 0.83 | 0.76 / 0.78 | 无变化 |
+| Llama-3.1-8B | 0.84 / 0.63 | 0.43 / 0.84 | 无变化 |
+| Qwen2.5-72B | 0.17 / 0.89 | 0.19 / 0.57 | 无变化 |
+| Qwen2.5-7B | 0.55 / 0.90 | 0.48 / 0.81 | 无变化 |
+| Gemma-2-27B | 0.05 / 0.00 | 0.02 / 0.53 | 无变化 |
+| Gemma-2-9B | 0.38 / 0.46 | 0.11 / 0.78 | 无变化 |
+
+### 关键发现
+
+- **COSMIC-ACE 在对抗设置下极为鲁棒**：所有测试模型中选择的层与非对抗设置完全一致，性能无变化
+- **模型间可操控性差异显著**：大模型（70B/72B）在 LCE 下越狱成功率高但诱导拒绝率低，小模型反之，暗示拒绝表示与模型规模有关
+- **弱对齐实验中拒绝引导的非单调性**：增大 $\alpha$（activation addition 系数）并不总是增强拒绝——如 Gemma-2-9B 在 $\alpha=2,3$ 时反而比基线更容易越狱，挑战了线性和仿射表示假设
+- **模型一致性保持良好**：GPQA/ARC/TruthfulQA 评估显示干预后推理能力无显著下降
+
+## 亮点与洞察
+
+- **完全输出无关的方向选择**：COSMIC 是首个不依赖任何输出 token 信息的拒绝方向选择框架。这意味着即使模型故意伪装输出（如在评测中统一拒绝以掩盖真实能力），COSMIC 仍能从激活层面揭示其真实拒绝结构——这对 AI 安全审计意义重大
+- **概念反转（Concept Inversion）评分机制的巧妙设计**：将"好的方向"定义为"能让有害激活变得像无害、无害激活变得像有害"的方向，用余弦相似度量化这种反转程度。这个思路可迁移到其他行为引导任务（如诚实性、幻觉控制）
+- **低相似度层选择策略**：动态选择 10% 余弦相似度最低的层作为评估层，避免了手动选层的主观性。Figure 2 清晰展示了不同模型间层级相似度模式的巨大差异（如 Gemma-2-27B 几乎全层高相似度），说明自适应选择的必要性
+
+## 局限与展望
+
+- **差分均值本身不具对抗鲁棒性**：当训练集也被对抗系统提示污染时，方向生成（而非选择）会受影响——Qwen2.5-72B 的 ASR 从 0.89 骤降至 0.17，说明 COSMIC 解决了选择问题但未解决生成问题
+- **10% 层选择是经验阈值**：论文坦承这一比例可能不适用于所有模型（如 Gemma-2-27B 的异常高相似度模式），缺乏理论指导
+- **弱对齐模型的非单调响应**：增大 $\alpha$ 有时导致更差的安全性，说明拒绝行为可能不遵循简单的线性/仿射结构，当前的干预函数形式可能不够
+- **仅在拒绝行为上验证**：COSMIC 的概念反转思路理论上可推广到诚实性、幻觉等其他行为维度，但尚未验证
+
+## 相关工作与启发
+
+- **vs Arditi et al. (LCE, NeurIPS 2024)**: LCE 首次发现拒绝单方向并用子字符串匹配选方向，COSMIC 保留其差分均值方向生成但替换了选择流程，在标准设置下性能相当且不需要拒绝模板假设
+- **vs Marshall et al. (ACE)**: ACE 引入仿射结构和基线项保护无害信息，但依赖人工选择+LLM judge。COSMIC 替换其选择流程后实现全自动化，且在对抗设置下 ACE 方向极为稳定
+- **vs Yu et al. (ReFAT)**: ReFAT 利用拒绝方向做对抗训练提升鲁棒性，需要准确的方向作为输入。COSMIC 可为弱对齐模型提供 ReFAT 所需的方向，拓展了 ReFAT 的适用范围
+- **vs Zou et al. (RepE)**: RepE 用 PCA 而非差分均值提取方向，可能更适合捕捉非线性结构，是 COSMIC 方向生成环节的潜在替代方案
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 核心思路（用激活相似度代替输出匹配选方向）简洁优雅，但干预方法本身沿用已有工作
+- 实验充分度: ⭐⭐⭐⭐⭐ 8个模型×4种方法组合，标准/对抗/弱对齐三种场景，外加一致性评估，非常全面
+- 写作质量: ⭐⭐⭐⭐ 结构清晰，数学表述严谨，但符号较多，部分公式可简化
+- 价值: ⭐⭐⭐⭐ 对 AI 安全审计有实际价值——能检测模型是否在伪装拒绝，填补了重要空白
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] On Entity Identification in Language Models](on_entity_identification_in_language_models.md)
+- [\[ACL 2025\] Recurrent Knowledge Identification and Fusion for Language Model Continual Learning](recurrent_kif_continual_learning.md)
+- [\[ICML 2025\] Generalized Interpolating Discrete Diffusion](../../ICML2025/llm_nlp/generalized_interpolating_discrete_diffusion.md)
+- [\[ACL 2025\] Refuse Whenever You Feel Unsafe: Improving Safety in LLMs via Decoupled Refusal Training](derta_decoupled_refusal.md)
+- [\[ACL 2025\] Reconsidering LLM Uncertainty Estimation Methods in the Wild](reconsidering_llm_uncertainty_estimation_methods_in_the_wild.md)
+
+</div>
+
+<!-- RELATED:END -->

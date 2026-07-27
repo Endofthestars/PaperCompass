@@ -1,0 +1,145 @@
+---
+title: >-
+  [论文解读] Can Large Language Models Understand Internet Buzzwords Through User-Generated Content
+description: >-
+  [ACL 2025][LLM 其他][buzzword] 本文构建了首个中文网络流行语数据集 Cheer（1127 条），并提出 Ress 方法——通过模拟儿童语言习得的六维理解技能引导 LLM 从用户生成内容中产出更准确的流行语定义，在语义准确度上平均提升 2.51%。 领域现状：网络流行语（如"窝囊费""0帧起手"）在社…
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "buzzword"
+  - "definition generation"
+  - "user-generated content"
+  - "language acquisition"
+  - "LLM"
+---
+
+# Can Large Language Models Understand Internet Buzzwords Through User-Generated Content
+
+**会议**: ACL 2025  
+**arXiv**: [2505.15071](https://arxiv.org/abs/2505.15071)  
+**代码**: [https://github.com/SCUNLP/Buzzword](https://github.com/SCUNLP/Buzzword)  
+**领域**: LLM/NLP  
+**关键词**: buzzword, definition generation, user-generated content, language acquisition, LLM
+
+## 一句话总结
+
+本文构建了首个中文网络流行语数据集 Cheer（1127 条），并提出 Ress 方法——通过模拟儿童语言习得的六维理解技能引导 LLM 从用户生成内容中产出更准确的流行语定义，在语义准确度上平均提升 2.51%。
+
+## 研究背景与动机
+
+**领域现状**：网络流行语（如"窝囊费""0帧起手"）在社交媒体上大量涌现，其含义往往超越字面意思，具有高度抽象性和文化特定性。传统词典不收录这些词，用户只能通过大量上下文使用场景来理解它们。上下文感知的定义生成（context-aware definition generation）是 NLP 中对应的任务方向。
+
+**现有痛点**：现有定义生成方法（包括 LLM-based）对常规词汇效果尚可，但面对网络流行语表现很差。原因在于：1）流行语变化快，静态训练数据无法跟上；2）LLM 对长尾词和新造词的理解本身就有限；3）即使提供了使用示例（UGC），LLM 的推理能力不足以从有限上下文中推断出完整含义。
+
+**核心矛盾**：网络流行语的含义高度依赖语境和文化背景，但 LLM 倾向于依赖参数化知识中已见过的词义，对未见过的流行语缺乏有效推理能力。同时高质量 UGC 的获取和筛选也是瓶颈——不知道词义就难以判断哪些 UGC 最有参考价值。
+
+**本文目标** 1）缺乏专门的中文流行语数据集和评测基准；2）如何让 LLM 更好地从 UGC 中理解流行语并生成准确定义。
+
+**切入角度**：借鉴认知科学中儿童语言习得的理论——儿童通过意图理解、概念关联、语法结构、社交线索、词汇上下文和语音拼写六种核心技能来学习新词。作者将这六种技能编码为 LLM 的引导 aspect，分别生成候选定义再集成。
+
+**核心 idea**：将儿童语言习得的六维理解技能转化为 LLM 提示策略，引导模型从多角度理解流行语后集成出最终定义。
+
+## 方法详解
+
+### 整体框架
+
+输入是一个流行语词条和一组 UGC 示例句子，输出是该流行语的精确定义。Ress 方法分三步：先初始化六个理解维度（aspect），然后 LLM 在每个维度引导下分别生成一个候选定义，最后通过集成步骤将六个候选合并为统一的最终定义。
+
+### 关键设计
+
+1. **Cheer 数据集**:
+
+    - 功能：提供首个中文网络流行语定义生成基准
+    - 核心思路：从"梗百科"等平台收集 1127 个中文流行语，每个配有描述（平均 262.5 字）、精炼定义（平均 50 字，由 LLM 总结字面与引申义）和平均 30.7 条来自小红书/微博的 UGC 示例。经过词典网站→网民使用→人工审核三层质控，手动移除不当词条、精炼定义、清除 UGC 中已有的释义性信息
+    - 设计动机：此前无专门针对网络流行语定义生成的数据集，现有方法的局限性需要专门基准来揭示和量化
+
+2. **Ress 六维引导（Aspect Initialization）**:
+
+    - 功能：将儿童语言习得的关键技能编码为 LLM 的理解维度
+    - 核心思路：六个维度——IU（意图理解）：推断说话者使用流行语的交际目的，如表达情感；CA（概念关联）：将流行语与相关概念联系，如"窝囊费"→"工作"；LS（语言结构）：分析流行语的语法角色；SCI（社交线索解读）：从 UGC 推断社交语境如语气和情绪；WC（上下文）：利用周围文本消歧；PS（发音拼写）：建立字形/语音与语义的联系
+    - 设计动机：模拟人类学习新词的自然过程，让 LLM 从多角度"观察"流行语的使用，避免单一视角的片面理解
+
+3. **Definition Ensemble（定义集成）**:
+
+    - 功能：将多角度候选定义融合为最终输出
+    - 核心思路：提示 LLM "基于以下来自不同理解角度的候选定义，综合生成最终定义"。BERTScore 分析显示各 aspect 生成的定义之间语义多样性较高（弱相关），说明确实提供了互补视角。aspect 数量与定义质量正相关（1→3→5→6 个 aspect 效果递增）
+    - 设计动机：利用 ensemble 思想减少单一 prompt 的偏差，多角度覆盖流行语的语义全貌
+
+### 损失函数 / 训练策略
+
+Ress 是一个无需训练的 prompting 方法，不涉及参数更新。核心是精心设计的三阶段 prompt 工程：aspect initialization → aspect-guided generation → ensemble。可搭配任意 LLM backbone 使用。
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | Backbone | BLEU | R-L | BScore | SA (1-5) | SC (1-5) |
+|------|----------|------|-----|--------|----------|----------|
+| DP (w/o UGC) | GPT-4o | 9.56 | 39.42 | 66.56 | 2.05 | 1.62 |
+| DP | GPT-4o | 17.85 | 45.22 | 67.56 | 2.50 | 2.13 |
+| CoT | GPT-4o | 18.33 | 44.49 | 67.46 | 2.60 | 2.30 |
+| FOCUS (SOTA) | GPT-4o | 15.08 | 35.10 | 66.05 | 2.95 | 2.92 |
+| **Ress** | GPT-4o | **16.52** | **36.42** | **66.74** | **3.04** | **3.06** |
+| FOCUS | Qwen2-72B | 12.09 | 29.81 | 64.75 | 2.88 | 3.20 |
+| **Ress** | Qwen2-72B | **15.74** | **35.63** | **66.41** | **2.97** | 3.09 |
+
+### 消融实验
+
+| Aspect 数量 | 效果趋势 | 说明 |
+|-------------|---------|------|
+| 1 个 aspect | 最低 | 单一维度不够全面 |
+| 3 个 aspects | 中等 | 部分维度组合即有提升 |
+| 5 个 aspects | 较高 | 更多维度带来更全面理解 |
+| 6 个 (full Ress) | 最高 | aspect 数量与质量正相关 |
+
+### 关键发现
+
+- **UGC 的关键作用**：DP vs DP(w/o UGC) 对比表明提供 UGC 示例显著提升定义质量（SA 从 2.05 升至 2.50），但即使有 UGC 所有方法表现仍不理想（SA 最高 3.04/5）
+- **LLM 对已见/未见流行语的差距巨大**：模型在训练数据中见过的流行语上表现远好于未见过的，暴露了 LLM 过度依赖参数化记忆的问题
+- **各 aspect 确实互补**：BERTScore 语义多样性分析表明不同 aspect 生成的定义弱相关，说明各维度提供了不同的理解视角
+- 人工评估（win rate）与自动指标排序一致，验证了评估框架的可靠性
+- 传统 LM 方法（MASS-zh、SDefiner）SA < 1.1，完全无法处理流行语
+
+## 亮点与洞察
+
+- **认知科学启发的 NLP 方法**：将儿童语言习得理论转化为 LLM prompt 策略，思路新颖且有理论支撑。这种将认知过程形式化为 AI 操作的范式可推广到其他需要深层理解的 NLP 任务
+- **揭示了 LLM 理解新概念的根本困难**：即使是 GPT-4o 在未见流行语上 SA 也仅约 3 分（5 分满分），说明 LLM 从上下文推断新概念含义的能力仍有显著差距
+- **Cheer 数据集**本身有独立价值：1127 个流行语配 34607 条 UGC，可用于社会语言学、文化语言学、NLP 等多领域研究
+
+## 局限与展望
+
+- 整体性能仍然偏低（SA 最高 3.04/5），说明从 UGC 理解新词这个任务本质上很困难，需要更根本的方法创新而非仅靠 prompt 工程
+- 仅覆盖中文流行语，不同语言和文化背景的流行语特性可能差异显著
+- UGC 质量参差不齐是核心瓶颈——如何在不知道流行语含义的前提下筛选高质量 UGC 是个鸡与蛋的问题
+- 六个 aspect 源自儿童语言习得理论，但其对于 LLM 的最优性未经充分验证，可能存在更适合 LLM 的维度划分方式
+- Ress 需要 7 次 LLM 调用（6 aspect + 1 ensemble），推理成本较高
+
+## 相关工作与启发
+
+- **vs FOCUS（先前 SOTA）**: FOCUS 也关注上下文感知定义生成但未针对流行语特殊性设计；Ress 通过多维度引导产生更全面的理解，在 SA 和 SC 上均有提升
+- **vs CoT**: CoT 在流行语任务上表现中等（SA 2.60），说明简单的推理链不足以理解高度抽象的新造词，需要更结构化的认知引导
+- **vs 传统 LM 方法**（MASS-zh/SDefiner）：SA 低于 1.1，完全无法处理流行语这种超越分布的词汇，体现了 LLM 的必要性
+- 该工作与 few-shot concept learning 在本质上相关——从少量使用示例推断新概念的含义
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 认知科学视角切入 NLP 问题，Cheer 数据集填补空白
+- 实验充分度: ⭐⭐⭐⭐ 多 backbone 对比、人工评估、aspect 消融、语义多样性分析均到位
+- 写作质量: ⭐⭐⭐⭐ 问题定义清晰，从 benchmark 到方法到分析的逻辑链完整
+- 价值: ⭐⭐⭐⭐ 数据集和 benchmark 的长期价值高于方法本身
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Aligning Large Language Models with Implicit Preferences from User-Generated Content](pugc_align_implicit_pref_ugc.md)
+- [\[ACL 2025\] LLM Meets Scene Graph: Can Large Language Models Understand and Generate Scene Graphs?](llm_meets_scene_graph_can_large_language_models_understand_and_generate_scene_gr.md)
+- [\[ACL 2025\] Do Language Models Understand the Cognitive Tasks Given to Them? Investigations with the N-Back Paradigm](do_language_models_understand_the_cognitive_tasks_given_to_them_investigations_w.md)
+- [\[ACL 2025\] Do Language Models Understand Honorific Systems in Javanese?](do_language_models_understand_honorific_systems_in_javanese.md)
+- [\[ACL 2025\] Open-Set Living Need Prediction with Large Language Models](open-set_living_need_prediction_with_large_language_models.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,144 @@
+---
+title: >-
+  [论文解读] MExGen: Multi-Level Explanations for Generative Language Models
+description: >-
+  [ACL 2025][LLM 其他][可解释性] 提出MExGen框架，通过scalarizer将生成模型的文本输出映射为实数值、多粒度语言分割和线性复杂度归因算法（C-LIME/L-SHAP），为上下文驱动的文本生成（摘要、QA）提供比PartitionSHAP和LLM自解释更忠实的输入归因解释。
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "可解释性"
+  - "输入归因"
+  - "LIME"
+  - "SHAP"
+  - "scalarizer"
+  - "多层次解释"
+---
+
+# MExGen: Multi-Level Explanations for Generative Language Models
+
+**会议**: ACL 2025  
+**arXiv**: [2403.14459](https://arxiv.org/abs/2403.14459)  
+**代码**: [GitHub (ICX360)](https://github.com/IBM/ICX360)  
+**领域**: LLM / NLP  
+**关键词**: 可解释性, 输入归因, LIME, SHAP, scalarizer, 多层次解释
+
+## 一句话总结
+
+提出MExGen框架，通过scalarizer将生成模型的文本输出映射为实数值、多粒度语言分割和线性复杂度归因算法（C-LIME/L-SHAP），为上下文驱动的文本生成（摘要、QA）提供比PartitionSHAP和LLM自解释更忠实的输入归因解释。
+
+## 研究背景与动机
+
+**领域现状**：LLM越来越多地用于上下文驱动的任务（如会议纪要、法律文档摘要、医疗QA），用户需要知道输出的哪些部分基于输入的哪些部分——这对高风险决策至关重要。LIME和SHAP是广泛使用的扰动归因方法，已在文本分类中有大量应用。
+
+**现有痛点**：将扰动归因扩展到生成式LLM面临三个技术挑战：(1) 输出是文本而非实数（LIME/SHAP要求实值函数）；(2) LLM推理代价高，不能像分类任务那样做大量模型查询；(3) 输入文本很长（整篇论文/新闻），太细粒度的归因既不可解释也计算不起。现有工具如PartitionSHAP需要选择单个输出token来解释，CaptumLIME需要访问输出logits。
+
+**核心矛盾**：忠实解释需要足够多的扰动采样，但LLM推理成本限制了采样数量；细粒度归因更精确但计算更贵且更难解读。
+
+**本文目标** 如何在有限的LLM查询预算下，为长文本输入的上下文驱动生成任务提供忠实且可解读的多层次归因解释？
+
+**切入角度**：(1) 用scalarizer将文本输出映射为实数，使经典归因方法可用；(2) 利用自然语言的层次结构（段落→句子→短语→词）做由粗到细的多层次归因；(3) 设计线性复杂度的归因算法控制模型查询数。
+
+**核心 idea**：通过scalarizer+多层次语言分割+线性复杂度归因，将经典扰动归因方法高效扩展到生成式LLM的上下文驱动任务。
+
+## 方法详解
+
+### 整体框架
+
+给定生成模型 $f$、原始输入 $x^o$ 和生成的目标输出 $y^o = f(x^o)$，MExGen将输入分割为语言单元 $x_1, ..., x_d$，通过扰动这些单元并用scalarizer $S$ 将输出变化量化为实数，最终为每个单元分配一个归因分数 $\xi_s$。框架支持从粗粒度（句子）到细粒度（词）的多层次迭代细化。
+
+### 关键设计
+
+1. **Scalarizer：将文本输出映射为实数**:
+
+    - 功能：定义函数 $S$ 将生成文本映射为实数，使归因算法可用
+    - 核心思路：提出两类scalarizer。**有logits访问**：Log Prob scalarizer $S(x; y^o, f) = \frac{1}{\ell}\sum_{t=1}^{\ell} \log p(y_t^o | y_{<t}^o, x; f)$，计算目标输出在扰动输入下的平均log概率。**仅文本访问**：用生成文本 $y=f(x)$ 与目标 $y^o$ 的相似度，包括Sim（句子嵌入余弦相似度）、BERT（BERTScore）、BART（BARTScore）、Log NLI（自然语言推断对数几率）等
+    - 设计动机：大量LLM只提供API访问无法获取logits（如GPT-4），文本scalarizer使MExGen在纯黑盒场景下仍可工作。实验发现BERT scalarizer在用户感知忠实度上甚至优于Log Prob，说明纯文本访问可能并不损失多少解释质量
+
+2. **线性复杂度归因算法（C-LIME与L-SHAP）**:
+
+    - 功能：在有限模型查询预算下高效计算归因分数
+    - 核心思路：**C-LIME**对LIME做两个关键修改——(a) 将扰动数设为单元数的固定倍数 $n = c \cdot d$（c=5或10），避免默认的数千次查询；(b) 限制同时扰动的单元数 $K$（K=2-3），使扰动集中在原始输入附近。**L-SHAP**限制SHAP只计算半径 $M$ 邻域内的局部Shapley值。两者查询数都与单元数 $d$ 线性相关
+    - 设计动机：标准LIME默认生成数千个扰动样本（独立于d），对LLM推理成本不可接受。C-LIME限制同时扰动数使扰动输入更接近原始输入，已有理论工作表明这能提升归因忠实度
+
+3. **多层次语言分割与迭代细化**:
+
+    - 功能：从粗粒度开始计算归因，仅对最重要的单元进行细粒度细化
+    - 核心思路：用spaCy将输入分割为段落→句子→短语→词的层次结构。先在句子级别计算归因分数，用Algorithm 1选择归一化分数超过阈值 $\phi$ 且排名前 $k$ 的句子进行短语/词级别细化。自定义依赖解析树算法将句子分割为有意义的短语
+    - 设计动机：像二分搜索一样逐步聚焦，避免对大量不重要的细粒度单元浪费模型查询。例如一篇20段文章只需对top-3重要句子做短语级细化
+
+### 损失函数 / 训练策略
+
+MExGen是纯推理时方法，不涉及训练。C-LIME通过加权最小二乘回归拟合线性模型：$\xi = \arg\min_w \sum_{i=1}^n \pi(z^{(i)})(w^T z^{(i)} - S(x^{(i)}; y^o, f))^2$，不使用正则化以保持所有单元可排序。
+
+## 实验关键数据
+
+### 主实验
+
+AUPC（扰动曲线下面积，越高越好，截止到20% tokens）：
+
+| 数据集+模型 | C-LIME | L-SHAP | LOO | P-SHAP |
+|-------------|--------|--------|-----|--------|
+| XSUM / DistilBART | **13.6** | 13.8 | 13.1 | 9.4 |
+| CNN/DM / Llama-3-8B | **26.4** | 26.3 | 26.1 | 22.1 |
+| SQuAD / Flan-T5-Large | **62.7** | 61.1 | 60.2 | 58.8 |
+| SQuAD / Llama-3-8B | 56.4 | **57.0** | 54.9 | 38.5 |
+
+### 消融实验（与LLM自解释对比）
+
+| 数据集+模型 | C-LIME | L-SHAP | LOO | Self-Explanation |
+|------------|--------|--------|-----|------------------|
+| XSUM / Granite-3.3 (Prob) | **18.9** | 19.0 | 18.9 | 9.5 |
+| CNN/DM / Granite-3.3 (Prob) | 17.3 | **17.4** | 16.9 | 7.1 |
+| XSUM / DeepSeek-V3 (BART) | **12.7** | 12.3 | 12.3 | 10.5 |
+| CNN/DM / DeepSeek-V3 (BART) | **14.1** | 14.0 | 13.5 | 13.5 |
+
+### 关键发现
+
+- **MExGen全面优于PartitionSHAP**：在几乎所有数据集-模型组合上，MExGen的AUPC更高（唯一例外是Flan-UL2+CNN/DM在大比例token扰动时P-SHAP略好，但top-5%仍是MExGen更优）
+- **甚至mismatched scalarizer的MExGen也能超越P-SHAP**：用BERT scalarizer的MExGen（不需logits）超越了用Log Prob的P-SHAP，说明MExGen的归因算法本身更优
+- **LLM自解释不如系统化归因**：即使是DeepSeek-V3这样的强模型，其排名式自解释在忠实度上仍不如MExGen。Log Prob scalarizer下差距尤其大（AUPC差2倍）
+- **用户研究支持BERT scalarizer**：57%参与者认为BERT scalarizer比Log Prob更忠实（仅35%反之），64%更偏好BERT。纯文本访问不一定劣于logits访问
+- **C-LIME vs L-SHAP**：自动评估两者几乎齐平，但用户研究中C-LIME显著优于L-SHAP（p=0.011）
+
+## 亮点与洞察
+
+- **Scalarizer概念优雅实用**：将"如何度量文本输出变化"独立为一个可插拔模块，使得整个框架既能适配有logits的场景也能应对纯API访问。这个抽象可以迁移到任何需要对生成模型做归因的场景
+- **C-LIME的两个修改虽简单但有效**：限制扰动数为 $O(d)$ 且限制同时扰动数为常数，既控制了计算成本又提升了忠实度。这个trick可以应用于所有基于LIME的解释方法
+- **多层次归因类比二分搜索**：先在句子级定位重要区域，再在短语/词级深挖，兼顾效率和精度。这种策略本质上是自适应分辨率的
+
+## 局限与展望
+
+- **仅提供局部解释**：只能解释单次生成，无法揭示模型的全局行为模式
+- **scalarizer选择依赖任务**：不同任务+模型组合的最优scalarizer不同，缺乏自动选择机制
+- **扰动方式为简单删除**：论文承认更复杂的扰动策略（如用MLM替换）可能效果更好，但会引入额外复杂性
+- **可扩展性**：虽然多层次策略减少了查询数，但对很长的文档（如整本书）仍可能面临效率问题
+
+## 相关工作与启发
+
+- **vs PartitionSHAP**: P-SHAP为每个输出token产生独立归因，需要选择输出token解释；MExGen用scalarizer聚合整个输出，产生更直观的单一归因分数
+- **vs CaptumLIME**: CaptumLIME使用标准LIME的采样策略（数千次查询），且必须访问logits；C-LIME限制采样到 $O(d)$ 次且支持纯文本访问
+- **vs LLM自解释**: 自解释方便但不忠实——模型可能给出看起来合理但不反映真实行为的解释。MExGen通过系统化扰动提供更可靠的行为分析
+- **vs ContextCite**: 同时期工作，也扩展LIME到生成模型，但只在单一粒度操作，缺乏多层次能力
+
+## 评分
+
+- 新颖性: ⭐⭐⭐ 框架组合现有技术（LIME+多层次+scalarizer），但组合方式系统且有效
+- 实验充分度: ⭐⭐⭐⭐⭐ 3个数据集+5个LLM+自动评估+用户研究+scalarizer交叉评估+多baselines
+- 写作质量: ⭐⭐⭐⭐ 结构清晰，实验设计周密，开源工具包
+- 价值: ⭐⭐⭐⭐ 为生成LLM的实际可解释性提供了实用工具
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Generative Psycho-Lexical Approach for Constructing Value Systems in Large Language Models](generative_psycholexical_approach_for_constructing_value.md)
+- [\[ACL 2025\] Self-Foveate: Enhancing Diversity and Difficulty of Synthesized Instructions from Unsupervised Text via Multi-Level Foveation](self-foveate_enhancing_diversity_and_difficulty_of_synthesized_instructions_from.md)
+- [\[ACL 2025\] Multi-Attribute Steering of Language Models via Targeted Intervention](multi_attribute_steering.md)
+- [\[ACL 2025\] Segment-Level Diffusion: A Framework for Controllable Long-Form Generation with Diffusion Language Models](segment_level_diffusion.md)
+- [\[ACL 2025\] Exploring Explanations Improves the Robustness of In-Context Learning](exploring_explanations_improves_the_robustness_of_in-context_learning.md)
+
+</div>
+
+<!-- RELATED:END -->

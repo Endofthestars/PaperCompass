@@ -1,0 +1,154 @@
+---
+title: >-
+  [论文解读] On the Robustness Tradeoff in Fine-Tuning
+description: >-
+  [ICCV 2025][LLM评测][微调鲁棒性] 首次系统研究微调过程中对抗鲁棒性与准确率的权衡关系，在231个模型、7种微调策略和6个数据集上揭示：(1)微调初期鲁棒性先升后降；(2)不同PEFT策略和任务复杂度导致不同的Pareto前沿；(3)OOD鲁棒性不存在类似权衡而是紧跟准确率变化。 领域现状：预训练+微调已成为…
+tags:
+  - "ICCV 2025"
+  - "LLM评测"
+  - "微调鲁棒性"
+  - "对抗鲁棒性"
+  - "参数高效微调"
+  - "Pareto前沿"
+  - "OOD鲁棒性"
+---
+
+# On the Robustness Tradeoff in Fine-Tuning
+
+**会议**: ICCV 2025  
+**arXiv**: [2503.14836](https://arxiv.org/abs/2503.14836)  
+**代码**: [https://github.com/kyangl/robustness-finetuning](https://github.com/kyangl/robustness-finetuning)  
+**领域**: LLM评测  
+**关键词**: 微调鲁棒性, 对抗鲁棒性, 参数高效微调, Pareto前沿, OOD鲁棒性  
+
+## 一句话总结
+首次系统研究微调过程中对抗鲁棒性与准确率的权衡关系，在231个模型、7种微调策略和6个数据集上揭示：(1)微调初期鲁棒性先升后降；(2)不同PEFT策略和任务复杂度导致不同的Pareto前沿；(3)OOD鲁棒性不存在类似权衡而是紧跟准确率变化。
+
+## 研究背景与动机
+
+**领域现状**：预训练+微调已成为适配下游任务的标准范式。参数高效微调（PEFT）方法（LoRA、Adapter、BitFit等）通过更新极少量参数（0.07%-3.97%）即可达到与全量微调相当的精度。
+
+**现有痛点**：
+   - 微调对模型鲁棒性的影响**几乎未被研究**。已有工作主要关注从头训练的模型的鲁棒性-准确率权衡
+   - 从头训练的假设（训练数据和攻击数据同分布）在微调场景下不成立——微调涉及上游和下游两种不同的数据分布
+   - 现有PEFT鲁棒性研究仅关注最终模型状态，未追踪微调**过程中**鲁棒性的动态变化
+   - 对抗鲁棒性和OOD鲁棒性是否被相同因素驱动仍不清楚
+
+**核心矛盾**：微调使模型从通用状态过渡到特化状态，学习到的robust和non-robust特征在不断变化。关键问题是：不同的PEFT策略更新不同位置和数量的参数，这如何影响鲁棒性-准确率的权衡？
+
+**本文目标**：三个核心研究问题——(RQ1)微调中是否存在对抗鲁棒性-准确率权衡？(RQ2)不同微调策略和任务复杂度如何影响最优权衡？(RQ3)这些发现是否延伸到OOD鲁棒性？
+
+**切入角度**：构建连续评估框架，在微调的每个反向传播步骤级别自适应追踪鲁棒性和准确率的变化，而非仅评估最终模型。
+
+## 方法详解
+
+### 整体框架
+(1) 对预训练ViT-Base模型集成各种PEFT模块；(2) 在下游数据上微调时，按自适应调度在不同反向传播步骤持续评估模型的标准精度、对抗鲁棒性和OOD鲁棒性。
+
+### 关键设计
+
+1. **理论动机——鲁棒性建模**：
+
+    - 基于Ilyas et al.的特征模型：输入包含1个robust特征 $x_1$ 和 $d$ 个non-robust特征 $x_{2:d+1} \sim \mathcal{N}(\eta y, 1)$
+    - 微调分类器：$f_{FT}(x) = \text{sign}((w_0 + \Delta w)^{\top}x)$，其中 $k = \|\Delta w\|_0$ 为更新参数数量
+    - 关键推导：要达99%准确率，non-robust特征的相关性下界为：
+    $\eta \geq \frac{2.33}{\sqrt{k+d}}$
+    - 全量微调（$k=d$）时 $\eta_{\text{full}} \geq \frac{2.33}{\sqrt{2d}}$，下界放松，模型可利用更弱的non-robust特征→更易受攻击
+    - 任务越简单（$d$ 越小），下界越紧，non-robust特征相关性需更高→更不易受攻击
+
+2. **PEFT方法分解（两维度）**：
+
+    - **信息维度**：提取什么信息（模型权重 vs 中间表示）和在哪里（注意力层、FFN、偏置）
+    - **机制维度**：如何更新（神经层投影、矩阵/向量计算、直接反向传播）
+    - 7种策略：Full Fine-tuning, Linear Probing, LoRA（注意力矩阵低秩分解）, Adapter（插入小模块）, Compacter（Kronecker参数化Adapter）, BitFit（仅更新偏置）, (IA)³（缩放中间表示）
+
+3. **自适应追踪调度**：
+
+    - 早期（0-700步）：每50步评估一次（捕获关键转变）
+    - 中期（700-3000步）：每1000步评估
+    - 后期（3000+步）：每6000步评估
+    - 对抗攻击使用PGD（$\epsilon=1/255$, 步长$\alpha=0.25/255$, 15步）
+
+4. **Pareto前沿与AUC指标**：
+
+    - 提取鲁棒性-准确率空间中的Pareto最优点
+    - 计算Pareto前沿下方面积（AUC）作为权衡质量的标量度量
+
+## 实验
+
+### 主实验1：对抗鲁棒性-准确率权衡（RQ1）
+
+以Caltech-256为例，所有7种微调方法均在~1000步内达到≈90%准确率，但对抗鲁棒性在~400步达到峰值≈25%后稳定下降到收敛时≈10%。**权衡确实存在且在微调早期（前3个epoch）即显现**。
+
+### 主实验2：Pareto前沿AUC（不同策略×不同数据集）
+
+| 方法 | CIFAR-10 | CIFAR-100 | Caltech-256 | CUB-200 | Stanford Dogs |
+|:---|:---|:---|:---|:---|:---|
+| BitFit | **0.21** | **0.10** | 0.33 | 0.14 | 0.08 |
+| Compacter | 0.09 | 0.06 | **0.34** | **0.15** | **0.09** |
+| LoRA | 0.14 | 0.07 | 0.23 | 0.12 | 0.06 |
+| Adapter | 0.12 | 0.05 | 0.21 | 0.07 | 0.05 |
+| (IA)³ | 0.08 | 0.05 | 0.31 | 0.13 | 0.05 |
+| LP | 0.06 | 0.03 | 0.24 | 0.08 | 0.02 |
+| Full FT | 0.11 | 0.04 | 0.26 | 0.09 | 0.05 |
+
+**关键发现**：
+- **简单任务（CIFAR-10/100）**：BitFit最优（比平均高75%/81.5%），仅更新偏置即可有效适配
+- **复杂任务（Caltech-256/CUB-200）**：Compacter最优（比平均高57.5%/34.6%），注意力层的低秩参数化更好地平衡适配与鲁棒性继承
+- Linear Probing和Full Fine-tuning在所有数据集上均表现最差
+
+### 主实验3：OOD鲁棒性（RQ3）
+
+| 指标 | 行为模式 |
+|:---|:---|
+| OOD vs 对抗鲁棒性 | OOD鲁棒性**不存在**与准确率的权衡，改善后稳定在较低水平 |
+| 策略影响 | Full FT最高(73%±2%), LP最低(61%±5%), PEFT方法间差异不大 |
+| 训练域影响 | 与预训练分布接近的"real"域OOD鲁棒性反而较低(64%±5%) |
+
+### 关键发现总结
+1. 对抗鲁棒性-准确率权衡在微调中普遍存在，且在前3个epoch内即显现
+2. 更新注意力相关层（LoRA, Compacter）比仅更新外围参数（BitFit, LP）或全部参数（Full FT）在复杂任务上有更好的权衡
+3. OOD鲁棒性与对抗鲁棒性有不同的驱动机制——前者取决于可迁移特征，后者取决于non-robust特征
+4. 任务复杂度（类间分离度、与上游数据的相似性）显著影响Pareto前沿的形状
+
+## 亮点与洞察
+
+1. **首次系统研究微调鲁棒性**：不是最终模型的一次性评估，而是在反向传播步骤级别持续追踪鲁棒性动态
+2. **PEFT分解框架**：从信息提取维度和更新机制维度对PEFT方法进行了系统分解，建立了参数更新位置/方式与鲁棒性的联系
+3. **对抗 vs OOD鲁棒性的分离**：清晰证明了两种鲁棒性由不同机制驱动，需要独立设计策略
+4. **理论-实验一致性**：推导的下界 $\eta \geq 2.33/\sqrt{k+d}$ 与实验中"全量微调鲁棒性最差"、"简单任务权衡更平缓"的发现一致
+
+## 局限性
+
+1. 仅使用PGD攻击评估对抗鲁棒性，未考虑AutoAttack等更强攻击或自适应攻击
+2. 主要基于ViT-Base，未涵盖CNN-ViT混合模型或更大规模模型
+3. 未考虑对抗训练等防御机制下的鲁棒性变化
+4. 实验规模虽大但数据集仍以中等规模为主（10k-60k），大规模数据集（Places365, 1.8M）上模型性能不足以得出可靠结论
+
+## 相关工作
+
+- **鲁棒性-准确率权衡**：Tsipras et al. (2019)证明权衡源于数据分布，Ilyas et al. (2019)指出non-robust特征的作用，TRADES框架尝试缓解
+- **微调鲁棒性**：预训练阶段鲁棒性（adversarial pre-training）、AdapterMixup（Adapter+对抗训练+mixup）、CLAT（层级鲁棒性分析）
+- **PEFT方法**：LoRA、BitFit、Adapter、Compacter、(IA)³等
+
+## 评分
+- 创新性：★★★★☆（系统性实验研究而非方法创新，但PEFT分解和连续追踪框架新颖）
+- 实验充分度：★★★★★（231模型×7策略×6数据集，~2100对抗+~2000 OOD评估，消融充分）
+- 实用价值：★★★★☆（为选择微调策略提供了实用指导：简单任务用BitFit，复杂任务用Compacter）
+- 写作质量：★★★★★（研究问题清晰，理论-实验呼应，图表信息丰富）
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Hyperbolic Fine-Tuning for Large Language Models](../../NeurIPS2025/llm_evaluation/hyperbolic_fine-tuning_for_large_language_models.md)
+- [\[ACL 2025\] Towards Objective Fine-tuning: How LLMs' Prior Knowledge Causes Potential Poor Calibration?](../../ACL2025/llm_evaluation/towards_objective_fine-tuning_how_llms_prior_knowledge_causes_potential_poor_cal.md)
+- [\[AAAI 2026\] Low-Rank Curvature for Zeroth-Order Optimization in LLM Fine-Tuning](../../AAAI2026/llm_evaluation/low-rank_curvature_for_zeroth-order_optimization_in_llm_fine-tuning.md)
+- [\[ICML 2026\] AGZO: Activation-Guided Zeroth-Order Optimization for LLM Fine-Tuning](../../ICML2026/llm_evaluation/agzo_activation-guided_zeroth-order_optimization_for_llm_fine-tuning.md)
+- [\[ICCV 2025\] OmniDiff: A Comprehensive Benchmark for Fine-grained Image Difference Captioning](omnidiff_a_comprehensive_benchmark_for_fine-grained_image_difference_captioning.md)
+
+</div>
+
+<!-- RELATED:END -->

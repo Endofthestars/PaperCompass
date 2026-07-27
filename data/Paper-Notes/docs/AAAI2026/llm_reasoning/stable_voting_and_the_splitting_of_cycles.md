@@ -1,0 +1,136 @@
+---
+title: >-
+  [论文解读] Stable Voting and the Splitting of Cycles
+description: >-
+  [AAAI 2026][LLM推理][投票理论] 研究Simple Stable Voting (SSV)——已在数百次实际选举中使用的递归投票规则——是否总是精化(refine)Split Cycle (SC)方法的猜想，通过数学证明（≤5候选人）和SAT求解（6-7候选人）确定：猜想在≤6候选人时成立，≥7候选人时被反驳，并通过构造性证明推广到任意多候选人。
+tags:
+  - "AAAI 2026"
+  - "LLM推理"
+  - "投票理论"
+  - "Condorcet环"
+  - "Split Cycle"
+  - "SAT求解"
+  - "计算社会选择"
+---
+
+# Stable Voting and the Splitting of Cycles
+
+**会议**: AAAI 2026  
+**arXiv**: [2512.00616](https://arxiv.org/abs/2512.00616)  
+**代码**: [https://github.com/chasenorman/ssv-sc](https://github.com/chasenorman/ssv-sc)  
+**领域**: LLM推理 / 社会选择理论  
+**关键词**: 投票理论, Condorcet环, Split Cycle, SAT求解, 计算社会选择  
+
+## 一句话总结
+研究Simple Stable Voting (SSV)——已在数百次实际选举中使用的递归投票规则——是否总是精化(refine)Split Cycle (SC)方法的猜想，通过数学证明（≤5候选人）和SAT求解（6-7候选人）确定：猜想在≤6候选人时成立，≥7候选人时被反驳，并通过构造性证明推广到任意多候选人。
+
+## 研究背景与动机
+
+### 现有痛点
+
+**现有痛点**：**领域现状**：当候选人超过2个时，多数投票可能产生环（A>B>C>A），这是Condorcet(1785)以来社会选择理论的核心问题。Split Cycle通过在每个环中丢弃最弱的多数胜利来解环。Simple Stable Voting (SSV)是一个简洁的递归规则，已在stablevoting.org上用于数百次实际选举。
+
+**核心问题**：SSV获胜者是否总是SC获胜者的子集？这个猜想(Holliday & Pacuit 2023a)在大量计算搜索和纸笔证明中均未找到反例。
+
+**切入角度**：将猜想编码为SAT可满足性问题，用CaDiCal SAT求解器系统地搜索反例。
+
+**核心 idea**：用数学证明+SAT求解器确定了SSV与SC关系猜想的精确边界：≤6成立，≥7反例存在。
+
+## 方法详解
+
+### 整体框架
+Split Cycle(SC)：识别多数图中的环，去除每个环中最弱边（最小胜利差），未被击败的候选人获胜。SSV：递归定义——对n个候选人，SSV获胜者是某个特定配对中，在删除对手后的子选举中仍为SSV获胜者的候选人。
+
+### 关键设计
+
+1. **SAT编码**:
+
+    - 将序数差矩阵的变量、SSV和SC定义编码为布尔可满足性问题
+    - 对称性破缺约束减少冗余搜索：候选人棚号排序、削减等价矩阵
+    - 用CaDiCal求解器在MacBook Air (M4)上运行，输出 DRAT 证明可作为正确性证据
+
+2. **分层验证策略**:
+
+    - ≤5候选人：传统数学归纳证明，分三种情况（序列回环到b / 回环到a / 回环到a1）进行反证
+    - 6候选人：SAT求解验证（0.5秒），编码约 $\binom{6}{2}^2 \approx 225$ 个序数对比变量
+    - 7候选人：SAT发现反例（73秒），搜索空间约 $21.2 \times 10^{21}$ 个可能矩阵
+    - ≥7候选人：基于7候选人反例的构造性证明推广，通过添加“僀偶”候选人保持反例性质
+
+3. **反例结构分析**:
+
+    - 7候选人反例中，SSV 选出的获胜者不属于 SC 的未被击败集合
+    - 反例占同构类的 25.2%，说明这不是极端情况而是普遍现象
+
+## 实验关键数据
+
+### 主实验
+
+| 候选人数 | 结果 | 方法 | 时间 |
+|---------|------|------|------|
+| ≤5 | ✓ 猜想成立 | 数学证明 | - |
+| 6 | ✓ 猜想成立 | SAT求解 | 0.5秒 |
+| 7 | ✗ 猜想反驳 | SAT反例 | 73秒 |
+| ≥7 | ✗ 猜想反驳 | 构造性推广 | - |
+
+### 消融实验
+
+| 分析 | 结果 | 说明 |
+|------|------|------|
+| n=7同构类中反例比例 | 115/456 (25.2%) | 反例并不罕见 |
+| n=7单SC获胜者反例 | 不可满足 | 6h45m搜索，不存在 |
+| n=8单SC获胜者反例 | 存在 | 8候选人时存在唯一SC获胜者≠SSV的情况 |
+| 反例模型枚举 | >980万 | 19天持续发现新反例 |
+
+### 关键发现
+- **猜想边界精确确定**：≤6为分水岭，理论意义重大
+- **反例在n=7时就很常见**：25.2%的锦标赛同构类包含反例
+- **SAT求解高效**：在≈21.2×10^21个可能矩阵空间中，73秒找到反例
+
+## 亮点与洞察
+- **SAT求解器在社会选择理论中的创新应用**：将投票理论猜想编码为SAT问题，比穷举搜索高效数个数量级
+- **理论与实践的结合**：SSV已在实际选举中使用，理解其与SC的关系有直接的制度设计意义
+
+## 局限与展望
+- 反例的实际选举意义不明——7个候选人在实际选举中是否常见？
+- 未提供Lean等形式化验证（仅人工证明+DRAT证明）
+- 结果是纯理论贡献，对LLM/AI应用无直接影响
+
+## 相关工作与启发
+- **vs Condorcet方法族**: Split Cycle是Condorcet方法的一种，SSV是另一种，本文确定了两者的精确关系
+- **vs Ranked Pairs / Beat Path / River**: 这些方法均是 SC 的精化，SSV 在≤6时等价于更复杂的 Stable Voting (SV)方法，但≥7时不再等价
+- **vs SAT在组合学中的应用**: 类似用SAT证明/反驳数学猜想的方法论在图论等领域也有应用（Brandt & Geist 2016）
+- 启发：本文的 SAT 编码具有通用性，可用于测试任何基于胜利边降序排列的投票方法的性质，可视为计算社会选择的通用工具
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ 解决了一个2023年提出的开放猜想，精确确定了边界
+- 实验充分度: ⭐⭐⭐⭐⭐ 数学证明+SAT求解+模型枚举+多种tie-breaking变体
+- 写作质量: ⭐⭐⭐⭐ 数学推导严谨，但对非专业读者门槛较高
+- 价值: ⭐⭐⭐ 理论贡献重要但应用范围有限，与LLM推理方向的关联较弱
+
+## 补充说明
+- 该工作的方法论和实验设计对相关领域有参考价值
+- 后续工作可在更多场景和更大规模上验证方法的泛化性和可扩展性
+- 与近期相关工作的结合（如与 RL/MCTS/多模态方法的交叉）有潜在研究价值
+- 建议结合实际应用需求评估该方法的部署可行性和计算效率
+- 数据集和评估指标的选择可能影响结论的普适性，需在更多 benchmark 上交叉验证
+
+## 补充说明
+- 该工作的方法论和实验设计对相关领域有参考价值
+- 后续工作可在更多场景和更大规模上验证方法的泛化性和可扩展性
+- 与近期相关工作的结合（如与 RL/MCTS/多模态方法的交叉）有潜在研究价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICLR 2026\] C-Voting: Confidence-Based Test-Time Voting without Explicit Energy Functions](../../ICLR2026/llm_reasoning/c-voting_confidence-based_test-time_voting_without_explicit_energy_functions.md)
+- [\[ACL 2025\] Ranked Voting based Self-Consistency of Large Language Models](../../ACL2025/llm_reasoning/ranked_voting_based_self-consistency_of_large_language_models.md)
+- [\[ICLR 2026\] Co-rewarding: Stable Self-supervised RL for Eliciting Reasoning in Large Language Models](../../ICLR2026/llm_reasoning/co-rewarding_stable_self-supervised_rl_for_eliciting_reasoning_in_large_language.md)
+- [\[AAAI 2026\] The Curious Case of Analogies: Investigating Analogical Reasoning in Large Language Models](the_curious_case_of_analogies_investigating_analogical_reasoning_in_large_langua.md)
+- [\[AAAI 2026\] LLMs for Game Theory: Entropy-Guided In-Context Learning and Adaptive CoT Reasoning](llms_for_game_theory_entropy-guided_in-context_learning_and_adaptive_cot_reasoni.md)
+
+</div>
+
+<!-- RELATED:END -->

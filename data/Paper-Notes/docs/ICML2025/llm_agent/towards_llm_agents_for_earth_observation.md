@@ -1,0 +1,151 @@
+---
+title: >-
+  [论文解读] Towards LLM Agents for Earth Observation
+description: >-
+  [ICML 2025][LLM Agent][Earth Observation] 本文提出 UnivEARTH——一个包含 140 个 yes/no 问题的地球观测基准，涵盖 13 个主题和 17 种卫星传感器，评估发现最佳 LLM Agent（使用 Google Earth Engine 生成代码）的准确率仅 33%，主要受限于 58% 的代码无法运行。
+tags:
+  - "ICML 2025"
+  - "LLM Agent"
+  - "Earth Observation"
+  - "Google Earth Engine"
+  - "benchmark"
+  - "code generation"
+---
+
+# Towards LLM Agents for Earth Observation
+
+**会议**: ICML 2025  
+**arXiv**: [2504.12110](https://arxiv.org/abs/2504.12110)  
+**代码**: 无  
+**领域**: Agent  
+**关键词**: Earth Observation, LLM agent, Google Earth Engine, benchmark, code generation
+
+## 一句话总结
+
+本文提出 UnivEARTH——一个包含 140 个 yes/no 问题的地球观测基准，涵盖 13 个主题和 17 种卫星传感器，评估发现最佳 LLM Agent（使用 Google Earth Engine 生成代码）的准确率仅 33%，主要受限于 58% 的代码无法运行。
+
+## 研究背景与动机
+
+**领域现状**：地球观测（EO）为环境监测、灾害管理、气候科学等领域提供关键数据。科学家日常需要分析土地利用、地表反射率、叶绿素含量等行星数据，这涉及选择合适的传感器、数据产品、位置和时间。虽然特定领域的自动化系统已部署多年（如火灾检测），但缺乏灵活的通用查询能力。
+
+**现有痛点**：现有 LLM 在生成 Google Earth Engine (GEE) 代码时面临严重挑战：(1) GEE 有超过 400 个影像集合，模型难以正确选择和命名；(2) 地球科学领域的编程问题在预训练数据中代表性不足；(3) 不同传感器的数据格式、覆盖范围和时间分辨率各异，需要丰富的领域知识。
+
+**核心矛盾**：LLM 在通用编程任务上表现出色，但在地球观测这一专业领域中，需要同时具备领域知识（传感器选择、数据产品理解）和编程能力（GEE API 使用），而这两个方面在预训练数据中的覆盖严重不足。
+
+**本文目标** (1) 构建可靠的地球观测 QA 基准——需要知道该问哪些问题、答案是什么、且支撑数据可获取；(2) 系统评估现有 LLM Agent 在地球观测任务中的真实能力。
+
+**切入角度**：利用 NASA Earth Observatory 文章作为权威数据源，每篇文章记录了从卫星影像得出的科学结论，天然提供了"问题-答案-证据"三元组。同时通过 GEE JavaScript 编辑器验证每个问题的可答性。
+
+**核心 idea**：通过权威来源构建高质量 QA 基准，以"生成代码获取证据"的方式测试 LLM Agent 的地球观测能力，发现当前模型远未达到可靠水平。
+
+## 方法详解
+
+### 整体框架
+
+本文的贡献以基准构建和评估为主。基准构建流程：文章收集→LLM 辅助生成 QA 对→GEE 可答性验证→独立专家评审。评估流程：给 LLM 提供问题和 GEE API 访问权限→模型生成分析代码→本地执行代码→解析答案并对比真值。
+
+### 关键设计
+
+1. **基准构建的三阶段流水线**:
+
+    - 功能：确保基准质量——科学正确、可回答、无歧义
+    - 核心思路：**收集阶段**：下载 NASA Earth Observatory 文章（截止 2025年3月10日），用 Claude-3.5-Sonnet 分析文本生成 yes/no QA 候选对，手动添加基于文章图像的额外问题。过滤掉关于传感器规格、非卫星影像、瞬态观测（风速、潮汐）的不适用文章。**验证阶段**：对每个问题用 GEE JavaScript 编辑器编写测试实现，验证所需数据集在 GEE 中可用，必要时替换为等效数据源。**评审阶段**：4名评审员各评审一半数据集，评估四个维度（答案正确性、文本支撑、图像支撑、地理位置验证），迭代修订直至 Q1 完全一致
+    - 设计动机：EO 领域的 QA 基准此前不存在——问题、答案和支撑证据三者都不是现成可用的
+
+2. **LLM Agent 评估框架**:
+
+    - 功能：测试 LLM 在有数据访问权限时的 EO 任务表现
+    - 核心思路：三种评估范式：(1) **零样本**：直接让模型推理和生成代码；(2) **3-shot**：提供3个来自基准外的 QA 代码示例；(3) **Reflexion**：3轮反思循环，每轮将代码、执行结果和错误反馈给模型重新生成。代码在本地执行，结果由 GPT-4o-mini 解析为 yes/no/inconclusive 答案。指标包括准确率、失败率（代码无法运行或数据不可用）和选择性准确率（排除失败后的准确率）
+    - 设计动机：需要测试模型是否能"用证据回答问题"而非仅凭记忆回答——因此要求生成可执行代码
+
+3. **数据利用与错误分析**:
+
+    - 功能：揭示模型失败的根本原因
+    - 核心思路：分析模型使用的唯一影像集合数量与准确率的关系——发现相关性 $r=0.87$，即使用更多数据源的模型准确率更高。进一步分析发现模型失败的主要原因是"Wrong Asset Name"错误（影像集合名称不正确），与准确率呈强负相关。这说明模型的瓶颈不在推理能力而在领域知识记忆
+    - 设计动机：定位瓶颈对后续改进至关重要——改善方向是增强模型对 GEE 数据集名称的记忆
+
+### 损失函数
+
+本文为基准评估工作，不涉及新的训练损失函数。
+
+## 实验关键数据
+
+### 主实验表格
+
+各 LLM Agent 使用 GEE 的表现（平均8次试验）：
+
+| 模型 | 零样本准确率 | 3-shot准确率 | Reflexion准确率 | 零样本失败率 |
+|---|---|---|---|---|
+| Claude-3.7-Sonnet | 32.4% | 30.6% | **33.0%** | 61.3% |
+| DeepSeek-V3 | 28.4% | 32.8% | 24.3% | 64.3% |
+| o3-mini | 25.7% | 33.0% | 25.1% | 70.0% |
+| Claude-3.5-Sonnet | 27.0% | 23.9% | 27.8% | 67.5% |
+| GPT-4o-mini | 8.3% | 13.1% | 5.8% | 89.1% |
+| Llama-3.3-70B | 2.8% | 6.5% | 2.6% | 96.7% |
+
+### 消融表格
+
+数据利用多样性与性能关系：
+
+| 指标 | 相关性 |
+|---|---|
+| 唯一影像集合数量 vs 准确率 | $r = 0.87$ (强正相关) |
+| "Wrong Asset Name"错误率 vs 准确率 | 强负相关 |
+| 无互联网访问时最佳准确率 | 49.0% (仅凭模型知识) |
+
+### 关键发现
+
+- 最佳准确率仅 33.0%（Claude-3.7-Sonnet, Reflexion），主要因为 58% 以上的代码无法运行
+- 即使代码执行成功，仍有约 20% 的概率给出错误答案
+- 在有 GEE 数据访问时准确率（33%）反而低于无数据访问时（49%），说明代码生成能力是主要瓶颈
+- 影像集合名称的记忆能力高度相关——使用更多不同数据集的模型表现显著更好（$r=0.87$）
+- 3-shot 学习通常优于零样本，但 Reflexion 并不总能带来改进，部分模型甚至出现退化
+
+## 亮点与洞察
+
+- 填补了 EO 领域 LLM 评估基准的空白，构建流程严谨（NASA 权威来源 + GEE 可答性验证 + 专家评审）
+- 揭示了一个反直觉的发现：给模型更多工具（GEE API）反而降低准确率——能力不足时工具反成负担
+- $r=0.87$ 的结论为改进指出明确方向：提升模型对 GEE 影像集合名称的记忆
+- 基准与真实科学问题高度相关（如青藏高原湖泊变化、全球农田扩张等活跃研究课题）
+
+## 局限性
+
+- 基准规模较小（仅140个问题），统计可靠性受限
+- 仅考虑 yes/no 问题格式，未涵盖更复杂的开放式 EO 查询
+- 不包含"不可回答"的问题（ground truth 为 inconclusive 的情况）
+- 仅使用 GEE 一个平台，未测试其他遥感数据平台
+- 评估依赖 GPT-4o-mini 解析答案，引入额外不确定性
+- 未提供 fine-tuning 后的开源模型以供社区复现和改进
+- 问题来源限于 NASA Earth Observatory，对非英文文献和区域性 EO 研究的覆盖不足
+
+## 相关工作与启发
+
+- 与 HumanEval（Chen et al., 2021）类似定位但面向垂直领域，是 EO 自动化的首个系统评估
+- GeoBench-VLM（Danish et al., 2024）关注视觉模型对地理图像的理解，本文则关注代码生成和科学推理
+- 启发：LLM Agent 在专业科学领域的可靠应用仍需解决"领域知识嵌入"和"工具使用能力"两个瓶颈
+- 微调 Llama-3.1-8B 在合成数据上达到 25% 准确率（与大型商业模型相当），显示领域微调潜力
+- Qwen2.5-72B 表现反常——用更少的数据集但利用更有效，暗示模型对少量工具的深度掌握可能优于浅层广覆盖
+
+## 评分
+
+⭐⭐⭐ （6.5/10）
+
+基准构建质量高，发现有价值（特别是33%准确率和$r=0.87$），但作为研究贡献偏轻——主要是基准构建+现有模型评估，缺少针对性的解决方案。基准规模（140题）偏小，且仅限 yes/no 格式。不过该工作对 EO 社区和 AI+Science 方向有明确的指引意义。
+
+值得强调的是，本文揭示了一个更深层的问题：LLM Agent 在专业科学领域的瓶颈不在推理能力，而在领域知识的准确召回——"Wrong Asset Name"是最常见的错误模式。这提示未来的改进方向应聚焦于：(1) 通过 RAG 机制提供 GEE 数据目录的实时检索；(2) 在微调数据中增加 EO 编程范例；(3) 构建 GEE API 的结构化工具描述供 Agent 调用。140 个问题虽小但覆盖了 13 个主题和 17 种传感器，质量远胜数量。
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2026\] OPeRA: A Dataset of Observation, Persona, Rationale, and Action for Evaluating LLMs on Human Online Shopping Behavior Simulation](../../ACL2026/llm_agent/opera_a_dataset_of_observation_persona_rationale_and_action_for_evaluating_llms_.md)
+- [\[ACL 2025\] LegalAgentBench: Evaluating LLM Agents in Legal Domain](../../ACL2025/llm_agent/legalagentbench_evaluating_llm_agents_in_legal_domain.md)
+- [\[ACL 2025\] MultiAgentBench: Evaluating the Collaboration and Competition of LLM Agents](../../ACL2025/llm_agent/multiagentbench_evaluating_the_collaboration_and_competition_of_llm_agents.md)
+- [\[NeurIPS 2025\] AgentMisalignment: Measuring the Propensity for Misaligned Behaviour in LLM-Based Agents](../../NeurIPS2025/llm_agent/agentmisalignment_measuring_the_propensity_for_misaligned_behaviour_in_llm-based.md)
+- [\[ICML 2025\] GuardAgent: Safeguard LLM Agents via Knowledge-Enabled Reasoning](guardagent_safeguard_llm_agents_by_a_guard_agent_via_knowledge-enabled_reasoning.md)
+
+</div>
+
+<!-- RELATED:END -->

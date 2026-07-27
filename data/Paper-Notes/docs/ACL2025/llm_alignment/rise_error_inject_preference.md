@@ -1,0 +1,159 @@
+---
+title: >-
+  [论文解读] RISE: Subtle Errors in Reasoning: Preference Learning via Error-injected Self-editing
+description: >-
+  [ACL 2025][LLM对齐][math reasoning] RISE 发现 LLM 约 75% 的数学错误是微妙的步内错误（数字替换、操作数交换、步骤遗漏），通过让 LLM 自编辑向正确解注入预定义微妙错误来构造高质量难负样本，配合错误感知 DPO 训练，仅用 4.5K 样本在 GSM8K 提升 3.0%、MATH 提升 7.9%，并泛化到逻辑推理和代码生成。
+tags:
+  - "ACL 2025"
+  - "LLM对齐"
+  - "math reasoning"
+  - "error injection"
+  - "preference learning"
+  - "DPO"
+  - "hard negatives"
+  - "subtle errors"
+---
+
+# RISE: Subtle Errors in Reasoning: Preference Learning via Error-injected Self-editing
+
+**会议**: ACL 2025  
+**arXiv**: [2410.06638](https://arxiv.org/abs/2410.06638)  
+**代码**: [available](https://github.com)  
+**领域**: LLM对齐 / 数学推理  
+**关键词**: math reasoning, error injection, preference learning, DPO, hard negatives, subtle errors
+
+## 一句话总结
+
+RISE 发现 LLM 约 75% 的数学错误是微妙的步内错误（数字替换、操作数交换、步骤遗漏），通过让 LLM 自编辑向正确解注入预定义微妙错误来构造高质量难负样本，配合错误感知 DPO 训练，仅用 4.5K 样本在 GSM8K 提升 3.0%、MATH 提升 7.9%，并泛化到逻辑推理和代码生成。
+
+## 研究背景与动机
+
+**LLM 数学推理的瓶颈**：尽管 LLM 在数学推理上取得了显著进步，但仍然频繁犯错。关键问题是：LLM 犯的错误到底是什么类型的？理解错误类型才能针对性改进。
+
+**错误分类的关键发现**：作者分析了 LLM 在 MATH 数据集上的错误分布，发现约 75% 的错误是微妙的步内错误（miscalculation、incorrect substitution），而非步间逻辑跳跃或问题理解错误。这颠覆了"LLM 缺乏推理能力"的笼统判断。
+
+**rejection sampling 的不足**：偏好学习的标准方法是用 rejection sampling 生成负样本——多次采样模型输出，正确的作为 chosen、错误的作为 rejected。但这样得到的负样本与正样本差异过大，模型容易学会"走捷径"区分而非真正理解推理逻辑。
+
+**难负样本的需求**：有效的偏好学习需要"难负样本"——与正确答案只有微小差异的错误解。这样模型才能被逼迫去学习精确的推理步骤，而非表面特征。
+
+**人工构造的不可扩展性**：手动为每个数学问题构造微妙错误的解既耗时又需要领域专业知识，无法扩展到大规模训练数据。
+
+**自动化错误注入的想法**：利用 LLM 自身作为编辑器，按照预定义的错误类型（REPLACE/SWAP/DELETE）向正确解中注入微妙错误，用 Levenshtein 距离控制"微妙"程度，低成本大规模生成难负样本。
+
+## 方法详解
+
+### 整体框架
+
+RISE 的流程分为三个阶段：(1) **错误分析**：对 LLM 的数学错误进行分类统计，确定主要错误类型；(2) **错误注入**：让 LLM 对正确解的每个推理步骤执行预定义的编辑操作，生成带微妙错误的负样本；(3) **错误感知 DPO 训练**：结合步级和序列级偏好学习，配合自适应 NLL 防止概率崩塌。
+
+### 关键设计
+
+**1. 微妙错误分类体系**
+
+- **功能**：将 LLM 的数学推理错误分为步间（inter-step）和步内（inner-step）两大类，再细分子类型
+- **核心思路**：步内错误包括 REPLACE（将正确数字/变量替换为错误值）、SWAP（交换操作数位置如 a-b 变为 b-a）、DELETE（遗漏某个计算步骤），步间错误包括逻辑跳跃、无关推理等
+- **设计动机**：75% 的错误属于步内微妙错误，针对主要错误类型构造训练数据才能最高效地提升模型
+
+**2. LLM 自编辑错误注入**
+
+- **功能**：利用 LLM 自身作为编辑器，按照指令向正确解的指定步骤注入特定类型的微妙错误
+- **核心思路**：给 LLM 提供正确解、目标步骤编号和错误类型（REPLACE/SWAP/DELETE），让 LLM 生成修改后的解。使用 prompt 指导 LLM 仅修改目标步骤并正确传播错误到后续步骤
+- **设计动机**：LLM 自身理解数学推理的结构，能生成"看起来合理但包含微妙错误"的解；自编辑比从头生成更可控
+
+**3. Levenshtein 距离过滤**
+
+- **功能**：用编辑距离衡量注入错误后的解与原始正确解的差异程度，过滤掉差异过大的样本
+- **核心思路**：计算字符级 Levenshtein 距离，只保留距离在阈值以内的修改——确保负样本真的是"微妙"的
+- **设计动机**：LLM 编辑时可能意外改变太多内容，过滤保证了难负样本的质量
+
+**4. 微妙错误感知 DPO（RISE-DPO）**
+
+- **功能**：设计专门的偏好学习策略来利用构造的 (正确解, 微妙错误解) 对
+- **核心思路**：三个损失的组合——(a) DPO-Edit：步级偏好学习，在错误步骤处构建偏好对；(b) DPO-Full：序列级偏好学习，完整的正确/错误解配对；(c) 自适应 NLL 损失：在正确解上加 NLL 正则化防止模型过度 reject 导致概率崩塌
+- **设计动机**：步级 DPO 让模型精确定位错误位置，全序列 DPO 提供全局偏好信号，NLL 防止训练不稳定
+
+### 损失函数 / 训练策略
+
+总损失为三项加权和：DPO-Edit（步级偏好）+ DPO-Full（全序列偏好）+ NLL（正则化）。NLL 的权重随训练自适应调整。训练数据仅 4.5K 样本，基于 GSM8K 和 MATH 的正确解构造。
+
+## 实验关键数据
+
+### 主实验
+
+| 模型 | 方法 | GSM8K | MATH | 训练数据量 |
+|------|------|-------|------|-----------|
+| Qwen2-7B | SFT | 82.3% | 45.6% | — |
+| Qwen2-7B | DPO (rejection sampling) | 83.1% | 47.2% | 4.5K |
+| Qwen2-7B | **RISE** | **86.1%** | **55.1%** | **4.5K** |
+| Qwen2-7B | 提升 vs SFT | **+3.0%** | **+7.9%** | — |
+| LLaMA-3.1-8B | SFT | 79.8% | 38.4% | — |
+| LLaMA-3.1-8B | DPO (rejection sampling) | 80.5% | 39.1% | 4.5K |
+| LLaMA-3.1-8B | **RISE** | **83.7%** | **41.1%** | **4.5K** |
+| LLaMA-3.1-8B | 提升 vs SFT | **+3.9%** | **+2.7%** | — |
+
+### 消融实验
+
+| 消融项 | GSM8K | MATH | 分析 |
+|--------|-------|------|------|
+| 完整 RISE | 86.1% | 55.1% | 基准 |
+| 去掉 DPO-Edit（仅 DPO-Full） | 84.5% | 51.8% | 步级偏好贡献显著 |
+| 去掉 DPO-Full（仅 DPO-Edit） | 85.2% | 53.4% | 全序列偏好提供互补信号 |
+| 去掉 NLL 正则化 | 84.8% | 52.1% | 概率崩塌导致性能下降 |
+| 随机错误（非微妙） | 83.5% | 48.3% | 微妙错误的难负样本至关重要 |
+| 仅 REPLACE 错误 | 85.4% | 53.7% | REPLACE 是最有效的单一错误类型 |
+| 仅 SWAP 错误 | 84.9% | 52.8% | 操作数交换次有效 |
+| 仅 DELETE 错误 | 84.2% | 51.5% | 步骤遗漏效果最弱 |
+
+### 关键发现
+
+- 微妙错误的难负样本比 rejection sampling 得到的"容易"负样本有效得多——MATH 提升从 +1.6%（DPO）到 +7.9%（RISE）
+- 三种错误类型（REPLACE/SWAP/DELETE）的效果有差异，但组合使用效果最佳，说明多样性的微妙错误能覆盖更全面的推理弱点
+- 步级 DPO-Edit 和序列级 DPO-Full 互补而非冗余——步级提供精确的错误定位信号，序列级提供全局质量判断
+- RISE 训练的模型在逻辑推理（LogiQA +2.1%）和代码生成（HumanEval +1.8%）上也有提升，说明"辨别微妙错误"的能力可迁移
+- 仅 4.5K 训练样本即可获得如此显著的提升，说明数据质量远比数据量重要
+
+## 亮点与洞察
+
+- **错误分类驱动方法设计**：RISE 的一切从"75% 的错误是微妙步内错误"这个经验发现出发——数据分析先行，方法设计后行。这种研究范式值得借鉴
+- **自编辑的巧妙性**：不人工写错误，而是让 LLM 自己在正确解上做可控编辑——模型最了解什么样的错误"看起来合理"
+- **Levenshtein 距离作为微妙度的度量**：简单但有效的质量控制，确保负样本不会退化为 random sampling
+- **极高的数据效率**：4.5K 样本，MATH +7.9%——说明好的偏好数据构造策略可以用很小的数据量撬动很大的性能提升
+
+## 局限与展望
+
+- 错误分类体系基于人工分析，可能遗漏了某些错误模式
+- LLM 自编辑的质量依赖于基础模型的编辑能力——较弱的模型可能生成不自然的微妙错误
+- 仅在数学推理上深入验证，逻辑推理和代码的泛化实验较浅
+- 未与更新的偏好学习方法（如 KTO、ORPO）结合验证
+- Levenshtein 距离阈值是人工设定的，自动化阈值选择可以进一步研究
+- 错误注入集中在数值和操作层面，对于更抽象的推理错误（如概念混淆）覆盖不足
+
+## 相关工作与启发
+
+- **vs rejection sampling DPO**：标准方法通过多次采样获取正/负样本，但负样本通常与正样本差异太大，模型简单区分即可——RISE 的难负样本逼模型学到更细粒度的推理能力
+- **vs Step-DPO**：Step-DPO 在步级做偏好学习但负样本仍来自采样，RISE 用构造的微妙错误提供更精准的步级偏好信号
+- **vs 数学验证器（ORM/PRM）**：验证器从外部判断正确性，RISE 从训练数据角度让生成器自身学会辨别微妙错误——两者互补
+- **启发**：错误注入的思路可以扩展到其他需要"精细辨别力"的场景——如事实核查（注入微妙的事实错误）、代码 debug（注入微妙 bug）
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ 错误注入构造难负样本思路独特且有实验依据
+- 实验充分度: ⭐⭐⭐⭐ 多模型 + 跨任务泛化 + 细致消融
+- 写作质量: ⭐⭐⭐⭐ 错误分析有说服力，动机清晰
+- 价值: ⭐⭐⭐⭐⭐ 高效（4.5K 样本）+ 高效果 + 可扩展思路
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Probability-Consistent Preference Optimization for Enhanced LLM Reasoning](probability-consistent_preference_optimization_for_enhanced_llm_reasoning.md)
+- [\[ACL 2025\] Focused-DPO: Enhancing Code Generation Through Focused Preference Optimization on Error-Prone Points](focused-dpo_enhancing_code_generation_through_focused_preference_optimization_on.md)
+- [\[ACL 2025\] ASPO: Adaptive Sentence-Level Preference Optimization for Fine-Grained Multimodal Reasoning](aspo_adaptive_sentence-level_preference_optimization_for_fine-grained_multimodal.md)
+- [\[ACL 2025\] Boosting Vulnerability Detection of LLMs via Curriculum Preference Optimization with Synthetic Reasoning Data](boosting_vulnerability_detection_of_llms_via_curriculum_preference_optimization_.md)
+- [\[ACL 2025\] Chain-of-Jailbreak Attack for Image Generation Models via Editing Step by Step](chain-of-jailbreak_attack_for_image_generation_models_via_editing_step_by_step.md)
+
+</div>
+
+<!-- RELATED:END -->

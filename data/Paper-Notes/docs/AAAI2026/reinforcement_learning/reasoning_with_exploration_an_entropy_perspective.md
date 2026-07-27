@@ -1,0 +1,214 @@
+---
+title: >-
+  [论文解读] Reasoning with Exploration: An Entropy Perspective
+description: >-
+  [AAAI 2026][强化学习][熵] 本文从熵（entropy）的视角分析LLM中探索性推理行为（关键token、自我反思、稀有行为）与高熵区域的正相关性，提出一种极简的熵基优势函数塑形方法——仅需一行代码修改——即可显著增强LLM的Pass@K推理能力边界。 当前的RLVR方法（如GRPO、PPO）主要依靠准确性驱动的…
+tags:
+  - "AAAI 2026"
+  - "强化学习"
+  - "熵"
+  - "探索性推理"
+  - "优势函数塑形"
+  - "RLVR"
+  - "LLM推理"
+---
+
+# Reasoning with Exploration: An Entropy Perspective
+
+**会议**: AAAI 2026  
+**arXiv**: [2506.14758](https://arxiv.org/abs/2506.14758)  
+**代码**: 无  
+**领域**: 强化学习  
+**关键词**: 熵, 探索性推理, 优势函数塑形, RLVR, LLM推理
+
+## 一句话总结
+
+本文从熵（entropy）的视角分析LLM中探索性推理行为（关键token、自我反思、稀有行为）与高熵区域的正相关性，提出一种极简的熵基优势函数塑形方法——仅需一行代码修改——即可显著增强LLM的Pass@K推理能力边界。
+
+## 研究背景与动机
+
+当前的RLVR方法（如GRPO、PPO）主要依靠准确性驱动的奖励信号来训练LLM。虽然这些方法在初始阶段有效提升了推理能力，但随着训练推进，模型倾向于收敛到狭窄的、过度优化的行为模式，逐渐失去探索替代策略的动力。这导致：
+
+**性能平台期**：模型的推理能力在训练中后期停滞甚至退化
+
+**多步推理能力受限**：缺乏探索使模型在复杂或欠定义场景中表现不佳
+
+**Pass@K与Pass@1的矛盾**：RL训练后的模型在Pass@1上优于基础模型，但在K足够大时，基础模型的Pass@K反而更高——说明RL限制了模型的探索能力
+
+**核心观察**：在传统RL中，熵是衡量探索的核心信号。作者发现LLM推理中的"探索性行为"也与高熵区域高度相关：
+- **关键token**（如"first""because""however"）通常具有更高的熵
+- **自我反思行为**（如"Let's verify..."）倾向于在高熵条件下出现
+- **稀有行为**（RL训练后涌现的新推理模式）也与高熵相关
+
+这些发现激发了一个简单但深刻的想法：通过熵来鼓励探索性推理。
+
+## 方法详解
+
+### 整体框架
+
+在标准RL算法（PPO或GRPO）的优势函数中，添加一个基于熵的辅助项。这个修改极其简洁——仅需在现有RLVR训练管线中插入一行代码。
+
+### 关键设计
+
+#### 1. 熵与探索性推理的实证分析
+
+**关键token（Pivotal Tokens）**：
+
+通过可视化Qwen2.5-Base-7B在数学推理任务中的token级熵分布：
+- 因果词（because, therefore）：熵显著高于一般token
+- 对比标记（however, although）：同样高熵
+- 顺序词（first, then）：高熵
+- 推理动词（suggest, demonstrate）：高熵
+
+这些token作为逻辑连接器，标记了模型在推理流程中的"决策点"。
+
+**自我反思行为（Reflective Actions）**：
+
+将每个response按句子分割，计算每个句子的平均熵，用正则表达式识别包含"verify""check"等关键词的反思性句子。结果：反思性句子的平均熵显著高于其他句子。这是首次建立熵与LLM自我反思之间的联系。
+
+**RL训练中涌现的稀有行为（Rare Behaviors）**：
+
+使用SBERT嵌入所有response句子，对每个RL生成的句子计算与基础模型输出的k=5最近邻的平均距离。距离前10%的句子被标记为"稀有行为"（例如：将对数方程组转化为线性方程组——基础模型很少产生此类行为）。这些稀有行为同样展现出更高的熵。
+
+#### 2. 熵基优势函数塑形
+
+对每个token $o_t$，计算当前策略在词表 $\mathcal{V}$ 上的熵：
+
+$$\mathcal{H}_t = -\sum_{v \in \mathcal{V}} \pi_\theta(v|q, o_{<t}) \log \pi_\theta(v|q, o_{<t})$$
+
+定义熵基优势项 $\psi(\mathcal{H}_t)$：
+
+$$\psi(\mathcal{H}_t) = \min\left(\alpha \cdot \mathcal{H}_t^{\text{detach}}, \frac{|A_t|}{\kappa}\right)$$
+
+塑形后的优势：
+
+$$A_t^{\text{shaped}} = A_t + \psi(\mathcal{H}_t)$$
+
+**三个关键设计选择**：
+
+1. **Clipping（$\kappa > 1$）**：确保熵项 $\psi(\mathcal{H}_t) \leq \frac{|A_t|}{\kappa}$ 不会主导优势。当 $A_t < 0$ 时，此约束保证添加熵项不会翻转优势的符号——从而保护原始优化方向
+2. **Gradient Detachment**：熵项 $\mathcal{H}_t^{\text{detach}}$ 从计算图中分离，不参与反向传播。因此策略梯度保持与标准PPO相同的形式：
+
+$$\nabla_\theta \mathcal{J}^{\text{shaped}} = \mathbb{E}\left[\sum_t (A_t + \psi(\mathcal{H}_t)) \nabla_\theta \log \pi_\theta(o_t|q, o_{<t})\right]$$
+
+3. **自调节性**：由于熵和置信度之间的内在张力，随着模型在特定token上获得置信度（熵降低），熵基优势自然减小——避免了过度鼓励。
+
+#### 3. 与熵正则化的本质区别
+
+| 维度 | 熵正则化 | 熵基优势塑形（本文） |
+|------|---------|-------------------|
+| 训练目标 | $\mathcal{J} = \mathcal{J}_{\text{PPO}} + \beta\sum_t \mathcal{H}_t$ | $\mathcal{J} = \mathcal{J}_{\text{PPO}}(A_t^{\text{shaped}})$ |
+| 策略梯度 | $\sum_t A_t \nabla_\theta \log \pi_\theta + \beta\sum_t \nabla_\theta \mathcal{H}_t$ | $\sum_t A_t^{\text{shaped}} \nabla_\theta \log \pi_\theta$ |
+| 熵梯度流 | $\nabla_\theta \mathcal{H}_t \neq 0$ （显式鼓励高熵） | $\nabla_\theta \mathcal{H}_t^{\text{detach}} = 0$ （不改变梯度流） |
+
+熵正则化直接向更高熵的方向优化（可能不稳定），而本文方法仅通过调整优势值的大小来间接鼓励在不确定区域的探索，保留了原始RL算法的优化动态。两者是正交的。
+
+### 损失函数 / 训练策略
+
+- **RL算法**：GRPO和PPO
+- **训练数据**：DAPO
+- **奖励**：输出奖励（正确+1，错误-1）
+- **关键超参数**：$\kappa = 2$（所有实验固定），$\alpha = 0.4$（GRPO）/ $0.1$（PPO）
+- **基线增强技术**：Clip-Higher, Token-level Loss, Critic-Pretraining, Group-Sampling
+- **评估**：温度0.6，最大长度8K tokens，top-p=0.95
+- **框架**：veRL
+
+## 实验关键数据
+
+### 主实验
+
+Qwen2.5-Base-7B上的Pass@K和Pass@1性能：
+
+| 方法 | AIME25 Pass@256 | AIME25 Pass@1 | AIME24 Pass@256 | AIME24 Pass@1 | AMC23 Pass@128 | AMC23 Pass@1 | MATH500 Pass@16 | MATH500 Pass@1 |
+|------|----------------|---------------|----------------|---------------|---------------|-------------|----------------|---------------|
+| Base | 50.0 | 2.2 | 66.7 | 5.2 | 90.4 | 28.3 | 88.8 | 54.4 |
+| +GRPO | 50.0 | 10.7 | 46.7 | 11.9 | 91.6 | 55.6 | 65.4 | 55.3 |
+| +GRPO w/ Entropy Adv. | **53.3** | **11.8** | **56.7** | **12.6** | 91.6 | **57.8** | **74.0** | **58.5** |
+| $\Delta$ | +3.3 | +1.1 | +10.0 | +0.7 | +0.0 | +2.2 | +8.6 | +3.2 |
+| +PPO | 43.3 | 7.9 | 46.7 | 14.2 | 85.5 | 51.8 | 68.4 | 57.9 |
+| +PPO w/ Entropy Adv. | **56.7** | **11.7** | **50.0** | **16.8** | **88.0** | **56.1** | **75.2** | **60.9** |
+| $\Delta$ | +13.4 | +3.8 | +3.3 | +2.6 | +2.5 | +4.3 | +6.8 | +3.0 |
+
+Qwen2.5-Math-Base-7B + GRPO：
+
+| 方法 | AIME25 Pass@256 | AIME25 Pass@1 | AIME24 Pass@256 | AIME24 Pass@1 |
+|------|----------------|---------------|----------------|---------------|
+| Base | 50.7 | 4.4 | 70.0 | 10.7 |
+| +GRPO | 57.4 | 16.3 | 83.3 | 30.9 |
+| +GRPO w/ Entropy Adv. | **63.6** | **17.6** | 80.0 | **33.7** |
+| $\Delta$ | +6.2 | +1.3 | -3.3 | +2.8 |
+
+### 消融实验
+
+**熵正则化 vs 熵基优势塑形**（GRPO on Qwen2.5-Base）：
+
+| 方法 | AIME25 Pass@256 | AIME25 Pass@1 | AIME24 Pass@256 | AIME24 Pass@1 | MATH500 Pass@1 |
+|------|----------------|---------------|----------------|---------------|---------------|
+| RL w/ 熵正则化 | 50.0 | 9.3 | 50.0 | 16.0 | 57.4 |
+| RL w/ 熵基优势 | **53.3** | **11.8** | **56.7** | 12.6 | **58.5** |
+
+**训练动态分析**：
+
+| 指标 | RL基线 (GRPO) | RL + 熵正则化 | RL + 熵优势 | 说明 |
+|------|-------------|-------------|-----------|------|
+| 训练奖励 | 稳定上升 | 稳定上升 | 后期更高 | 持续改进更强 |
+| Response长度 | 先升后降 | 类似基线 | 持续上升 | 鼓励更深推理 |
+| 整体熵 (step 2000) | 0.34 | 数值突增不稳定 | 0.17 | 避免熵崩塌 |
+| 关键token熵 | 基线水平 | - | 显著降低 | 关键位置更自信 |
+| 反思行为频率 | 基线水平 | - | 显著增加 | 更多self-verification |
+| 重复率 | 基线水平 | - | 与基线相当 | 长度增加不增加冗余 |
+
+### 关键发现
+
+1. **突破基础模型的推理上界**：在AIME2025（最具挑战性、训练数据截止后发布）上，本方法不仅超越RL基线，还超越了基础模型的Pass@K上限——说明方法能真正拓展推理边界，而非仅靠检索
+2. **标准RL限制了探索能力**：在多个基准上，RL训练后的模型在大K时Pass@K反而低于基础模型——本方法有效缓解了这一问题
+3. **熵基优势的自调节**：随训练推进，熵基优势占比从高到低自然递减，无需手动调节
+4. **熵正则化不稳定**：在step 1500后出现突然的熵尖峰，而熵基优势始终稳定
+5. **推理行为的质性改善**：案例分析显示模型产生更系统的约束列举、案例分析和动态调整行为
+
+## 亮点与洞察
+
+- **极致简洁**：方法仅需在veRL框架的`update_policy`函数中插入一行代码，具有最大的可复现性和实用价值
+- **洞察深刻**：首次系统建立token级熵与探索性推理行为（关键token、反思、稀有行为）的量化关联
+- **自调节机制优雅**：利用熵与置信度的内在张力实现了自动的探索-利用平衡，无需额外超参数调度
+- **与熵正则化的正交性**：不是"更好的熵正则化"，而是从优势函数角度提供完全不同的探索机制
+- **Pass@K的新视角**：将Pass@K视为推理能力的上界估计器，提供了评估RL方法"探索能力"的新维度
+
+## 局限与展望
+
+1. **仅在Qwen系列上验证**：尝试了Llama但因其缺乏推理行为而放弃，限制了结论的通用性
+2. **$\alpha$ 对算法敏感**：GRPO和PPO需要不同的$\alpha$（0.4 vs 0.1），缺乏自适应选择机制
+3. **AIME24上GRPO+Entropy的Pass@256下降3.3**：说明方法并非在所有基准上都一致改善
+4. **仅在数学推理上验证**：代码推理、逻辑推理等其他领域未测试
+5. **缺乏与其他探索方法的比较**：如curiosity-driven exploration、intrinsic reward等
+6. **因果性不确定**：高熵→探索性推理的因果方向可能也是反向的（探索性推理自然产生高熵）
+
+## 相关工作与启发
+
+- 与传统RL中SAC（Soft Actor-Critic）的最大熵思想有精神联系，但技术上完全不同
+- 与concurrent work（Gao et al., 2025）的intrinsic motivation方法互补——后者设计自定义metric，本文用熵
+- 与He et al., Wang et al.的熵正则化方法正交，可以组合使用
+- 启发：**探索性推理**可能是LLM推理能力提升的下一个关键方向，而非仅追求单次准确率
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ — 从熵视角理解LLM探索性推理是全新角度，方法极简但有效
+- 实验充分度: ⭐⭐⭐⭐ — 分析深入、基准多样，但模型覆盖不足
+- 写作质量: ⭐⭐⭐⭐⭐ — 图表精美，分析层层递进，One-line-of-code的亮点突出
+- 价值: ⭐⭐⭐⭐⭐ — 方法极其易用且效果显著，对RLVR社区的实际指导价值很高
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2026\] HEALing Entropy Collapse: Enhancing Exploration in Few-Shot RLVR via Hybrid-Domain Entropy Dynamics Alignment](../../ACL2026/reinforcement_learning/healing_entropy_collapse_enhancing_exploration_in_few-shot_rlvr_via_hybrid-domai.md)
+- [\[ACL 2026\] Targeted Exploration via Unified Entropy Control for Reinforcement Learning](../../ACL2026/reinforcement_learning/targeted_exploration_via_unified_entropy_control_for_reinforcement_learning.md)
+- [\[ICLR 2026\] Exploration vs Exploitation: Rethinking RLVR through Clipping, Entropy, and Spurious Reward](../../ICLR2026/reinforcement_learning/exploration_vs_exploitation_rethinking_rlvr_through_clipping_entropy_and_spuriou.md)
+- [\[AAAI 2026\] Reasoning or Memorization? Unreliable Results of Reinforcement Learning Due to Data Contamination](reasoning_or_memorization_unreliable_results_of_reinforcement_learning_due_to_da.md)
+- [\[ACL 2026\] Semantic-Space Exploration and Exploitation in RLVR for LLM Reasoning](../../ACL2026/reinforcement_learning/semantic-space_exploration_and_exploitation_in_rlvr_for_llm_reasoning.md)
+
+</div>
+
+<!-- RELATED:END -->

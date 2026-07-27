@@ -1,0 +1,166 @@
+---
+title: >-
+  [论文解读] Unsupervised Joint Learning of Optical Flow and Intensity with Event Cameras
+description: >-
+  [ICCV 2025][视频理解][事件相机] 提出首个基于单一网络的无监督学习框架，从事件相机数据中联合估计光流和图像亮度，核心是新推导的事件光度误差（PhE）与对比度最大化（CMax）的互补损失函数。 事件相机是新型仿生视觉传感器，具有高时间分辨率、极高动态范围（HDR）、低功耗和低运动模糊等优势…
+tags:
+  - "ICCV 2025"
+  - "视频理解"
+  - "事件相机"
+  - "光流估计"
+  - "图像亮度重建"
+  - "无监督学习"
+  - "联合估计"
+---
+
+# Unsupervised Joint Learning of Optical Flow and Intensity with Event Cameras
+
+**会议**: ICCV 2025  
+**arXiv**: [2503.17262](https://arxiv.org/abs/2503.17262)  
+**代码**: [GitHub](https://github.com/tub-rip/E2FAI)  
+**领域**: 视频理解  
+**关键词**: 事件相机, 光流估计, 图像亮度重建, 无监督学习, 联合估计
+
+## 一句话总结
+
+提出首个基于单一网络的无监督学习框架，从事件相机数据中联合估计光流和图像亮度，核心是新推导的事件光度误差（PhE）与对比度最大化（CMax）的互补损失函数。
+
+## 研究背景与动机
+
+事件相机是新型仿生视觉传感器，具有高时间分辨率、极高动态范围（HDR）、低功耗和低运动模糊等优势。其输出是异步的像素级亮度变化流而非传统帧图像，需要全新算法来处理。
+
+**核心观察**：在恒定光照条件下，事件相机中**运动与外观天然耦合** —— 事件由移动的亮度模式触发。因此两个基本视觉量（光流 = 运动，亮度 = 外观）本质上是同源的：要么同时存在并被记录，要么都不存在。
+
+然而现有方法几乎将这两个任务**完全分开处理**：
+- 光流估计：EV-FlowNet、E-RAFT 等，单独训练
+- 亮度重建：E2VID 等，单独训练
+- 少数联合方法要么局限于纯旋转运动，要么需要两个独立网络级联
+
+这导致了两个问题：(1) 未能利用运动与外观之间的内在协同关系，(2) 两个独立模型级联推理速度慢、误差累积。
+
+**本文动机**：设计一个统一的无监督框架，用一个网络同时输出光流和亮度图像，并通过新导出的损失函数充分利用两者的协同关系。
+
+## 方法详解
+
+### 整体框架
+
+模型采用经典的 U-Net 架构，输入为 15 通道的事件体素网格（voxel grid），输出 3 通道（2 通道光流 + 1 通道亮度）。训练时每步输入**两个连续的事件数据样本**，分别预测各自的光流和亮度，同时通过时间一致性损失建立二者关联。推理时仅需输入一个事件体素网格即可同时输出光流和亮度。
+
+### 关键设计
+
+1. **事件光度误差 (Event-based Photometric Error, PhE)**
+
+   从事件生成模型 (EGM) 出发：$\Delta L = L(\mathbf{x}_k, t_k) - L(\mathbf{x}_k, t_k - \Delta t_k) = p_k C$
+
+   将事件 $e_k$ 及其前驱事件 warp 到参考时间 $t_{\text{ref}}$ 后，定义逐事件的光度误差：
+
+    $\epsilon_k = (L(\mathbf{x}'_k) - L(\mathbf{x}'_{k-1})) - p_k C$
+
+   关键性质：每个 PhE 项同时约束约 8 个亮度像素和 1 个光流像素，打开了联合估计的大门。总 PhE 损失为所有事件残差的平均绝对值：
+
+    $\mathcal{L}_{\text{PhE}}(L, F) = \frac{1}{N_e} \sum_{k=1}^{N_e} |\epsilon_k|$
+
+   PhE 没有事件塌缩问题，更关注外观（亮度）约束。
+
+2. **对比度最大化 (Contrast Maximization, CMax)**
+
+   基于 warp 后事件图像（IWE）的梯度锐度：
+
+    $\mathcal{L}_{\text{CMax}}(F) = 1 \Big/ \left(\frac{1}{|\Omega|}\int_\Omega \|\nabla \text{IWE}(\mathbf{x})\|_1 \, d\mathbf{x}\right)$
+
+   CMax 的唯一可优化变量是光流，更关注运动参数。PhE 与 CMax 形成互补：前者侧重外观，后者侧重运动。
+
+3. **时间一致性损失 (Temporal Consistency, TC)**
+
+   联合估计的关键优势：利用预测的光流 $F_{i \to i+1}$ 将亮度 $L_i$ warp 到 $t_{i+1}$，与另一样本直接预测的 $L_{i+1}$ 比较：
+
+    $\mathcal{L}_{\text{TC}} = \frac{1}{|\Omega|}\int_\Omega |L_{i+1}(\mathbf{x}) - \mathcal{W}(\mathbf{x}; L_i, F_{i \to i+1})| \, d\mathbf{x}$
+
+   TC 损失同时约束光流和亮度的时间连贯性，是联合估计相比独立估计的核心优势来源。
+
+### 损失函数 / 训练策略
+
+总损失为五项加权和：
+
+$$\mathcal{L}_{\text{total}} = \lambda_1 \mathcal{L}_{\text{PhE}} + \lambda_2 \mathcal{L}_{\text{CMax}} + \lambda_3 \mathcal{L}_{\text{FTV}} + \lambda_4 \mathcal{L}_{\text{ITV}} + \lambda_5 \mathcal{L}_{\text{TC}}$$
+
+其中 $\mathcal{L}_{\text{FTV}}$ 和 $\mathcal{L}_{\text{ITV}}$ 分别是光流和亮度的全变差（TV）正则化。权重设置为 $\lambda_1=30, \lambda_2=1, \lambda_3=10, \lambda_4=0.001, \lambda_5=1$。
+
+训练细节：仅在 DSEC 训练集上训练 130 epochs，AdamW 优化器，4 张 RTX A6000，batch size 24。CMax 参考时间随机设置以减少事件塌缩风险，PhE 参考时间固定为样本末尾。
+
+## 实验关键数据
+
+### 主实验
+
+**光流估计 — DSEC 测试集（整体）**
+
+| 方法 | 类型 | EPE↓ | AE↓ | %Out↓ | 推理时间(ms) |
+|------|------|------|-----|-------|-------------|
+| E-RAFT | 监督 | 0.788 | 10.56 | 2.684 | 46.3 |
+| IDNet | 监督 | 0.719 | 2.723 | 2.036 | - |
+| MotionPriorCM | 无监督 | 3.2 | 8.53 | 15.21 | 17.9 |
+| BTEB | 无监督 | 3.86 | - | 31.45 | - |
+| EV-FlowNet | 无监督 | 3.86 | - | 31.45 | - |
+| **Ours** | **无监督** | **1.781** | **6.439** | **11.241** | **15.1** |
+
+在无监督方法中，本方法将 EPE 降低约 **20%**，AE 降低约 **25%**，同时推理时间最短。
+
+### 消融实验
+
+| 配置 | EPE (光流) | SSIM (亮度) | 说明 |
+|------|-----------|------------|------|
+| 完整模型 | 1.781 | 最优 | PhE + CMax + TV + TC |
+| 无 PhE | 性能下降 | 亮度估计严重退化 | PhE 提供关键亮度约束 |
+| 无 CMax | 光流精度显著下降 | - | CMax 提供核心运动约束 |
+| 无 TC | 时序不一致 | SSIM 明显下降 | TC 是联合估计的核心优势 |
+| 无 TV 正则 | 光流噪声增大 | 边界模糊 | 平滑性正则对无事件区域至关重要 |
+
+### 关键发现
+
+- PhE 与 CMax 互补：PhE 侧重亮度约束，CMax 侧重运动约束，两者缺一不可。
+- TC 损失对亮度质量的提升尤为显著——这是联合估计相比独立估计的核心优势。
+- 模型仅在 DSEC 上训练，但在 BS-ERGB、HDR、ECD 等不同相机和场景上泛化良好，展现了跨域泛化能力。
+- 在 HDR 场景中，本方法的亮度重建优于某些监督方法（如 E2VID），因为无监督训练避免了合成数据的 sim-to-real 差距。
+
+## 亮点与洞察
+
+- **"运动与外观天然耦合"**这一观察是全文的出发点，PhE 的推导从事件生成模型出发，数学上自然地建立了光流与亮度的联合约束，非常优雅。
+- **单网络双输出**——推理只需一次前向传播即可同时得到光流和亮度，推理时间短于任何单个任务的 SOTA。
+- PhE 不存在事件塌缩问题，这是对 CMax 框架的重要补充。
+- TC 损失的设计精妙：用预测的光流 warp 前一时刻的亮度，与直接预测的后一时刻亮度比较，形成自监督信号。
+
+## 局限与展望
+
+- 亮度重建在全参考指标（MSE、SSIM）上仍落后于最先进的监督方法（如 E2VID、HyperE2VID）。
+- 对比度阈值 $C$ 固定为 0.2，实际事件相机的 $C$ 值因设备而异。
+- U-Net 架构相对简单，采用更先进的骨干（如 Transformer-based）可能进一步提升性能。
+- 目前仅评估了 2D 光流，未扩展到场景流或深度估计。
+
+## 相关工作与启发
+
+- Bardow et al. (2016) 的 SOFIE 是最早的联合方法但仅限旋转运动；BTEB (2021) 需两个独立网络级联。
+- CMax 框架（Gallego et al.）是事件视觉的核心范式，本文将其与 PhE 结合是重要突破。
+- 启发：事件相机数据中的"运动-外观耦合"原则可推广至其他传感器融合问题。
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐⭐ 首个单网络无监督联合光流+亮度估计方法，PhE 推导优雅
+- **实验充分度**: ⭐⭐⭐⭐ 在多个数据集上全面评估了光流和亮度，消融充分
+- **写作质量**: ⭐⭐⭐⭐ 数学推导清晰，实验组织良好
+- **价值**: ⭐⭐⭐⭐ 为事件视觉社区提供了新的联合估计范式
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Simultaneous Motion And Noise Estimation with Event Cameras](simultaneous_motion_and_noise_estimation_with_event_cameras.md)
+- [\[CVPR 2026\] U2Flow: Uncertainty-Aware Unsupervised Optical Flow Estimation](../../CVPR2026/video_understanding/u2flow_uncertainty_aware_unsupervised_optical_flow_estimation.md)
+- [\[CVPR 2025\] EDCFlow: Exploring Temporally Dense Difference Maps for Event-based Optical Flow Estimation](../../CVPR2025/video_understanding/edcflow_exploring_temporally_dense_difference_maps_for_event-based_optical_flow_.md)
+- [\[ICCV 2025\] FlowSeek: Optical Flow Made Easier with Depth Foundation Models and Motion Bases](flowseek_optical_flow_made_easier_with_depth_foundation_models_and_motion_bases.md)
+- [\[ICCV 2025\] PriOr-Flow: Enhancing Primitive Panoramic Optical Flow with Orthogonal View](prior-flow_enhancing_primitive_panoramic_optical_flow_with_orthogonal_view.md)
+
+</div>
+
+<!-- RELATED:END -->

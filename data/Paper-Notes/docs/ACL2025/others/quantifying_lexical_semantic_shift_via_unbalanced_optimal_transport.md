@@ -1,0 +1,130 @@
+---
+title: >-
+  [论文解读] Quantifying Lexical Semantic Shift via Unbalanced Optimal Transport
+description: >-
+  [ACL 2025][语义变迁] 将Unbalanced Optimal Transport（UOT）应用于上下文化词嵌入集合，提出Sense Usage Shift（SUS）指标在每个用法实例级别量化语义变化，统一解决实例级变化检测、词级变化幅度量化和词义扩展/缩小判定三项任务。 领域现状 领域现状：领域现状： 词汇语义变…
+tags:
+  - "ACL 2025"
+  - "语义变迁"
+  - "最优传输"
+  - "上下文化嵌入"
+  - "SUS指标"
+  - "词义扩展/缩小"
+---
+
+# Quantifying Lexical Semantic Shift via Unbalanced Optimal Transport
+
+**会议**: ACL 2025  
+**arXiv**: [2412.12569](https://arxiv.org/abs/2412.12569)  
+**代码**: [GitHub](https://github.com/ryo-lyo/Semantic-Shift-via-UOT)  
+**领域**: 其他  
+**关键词**: 语义变迁, 最优传输, 上下文化嵌入, SUS指标, 词义扩展/缩小
+
+## 一句话总结
+
+将Unbalanced Optimal Transport（UOT）应用于上下文化词嵌入集合，提出Sense Usage Shift（SUS）指标在每个用法实例级别量化语义变化，统一解决实例级变化检测、词级变化幅度量化和词义扩展/缩小判定三项任务。
+
+## 研究背景与动机
+
+### 领域现状
+
+**领域现状**：**领域现状**: 词汇语义变迁检测旨在识别词义随时间的变化，主要方法用上下文化嵌入估计词级变化程度。**现有痛点**: 现有方法仅能给出词级整体变化分数，无法揭示每个用法实例的语义变化方向和程度。**核心矛盾**: 同一个词的不同用法可能有不同变化方向（如"record"的音乐义增长、信息义衰退），词级聚合掩盖了这些细粒度信号。**本文目标**: 提供实例级的语义变化量化。**切入角度**: 将两个时期的用法实例集视为两个分布，用UOT做对齐。**核心idea**: UOT允许"质量不守恒"——两个分布的总质量可以不同，恰好对应词义使用频率的增减。
+
+## 方法详解
+
+### 整体框架
+
+取目标词在两个时期的上下文化嵌入集合→用UOT计算最优传输方案→从传输方案的excess/deficit中提取SUS指标→聚合到词级得到变化幅度/扩展/缩小等指标。
+
+### 关键设计
+
+1. **Unbalanced OT的应用**:
+    - 功能：在两个时期的嵌入集间计算UOT传输方案
+    - 核心思路：标准OT要求质量守恒（总传输量=1），UOT放松此约束允许$\text{excess}$（质量溢出=义项使用增加）和$\text{deficit}$（质量不足=义项使用减少）。通过KL散度惩罚质量不平衡
+    - 设计动机：词义变迁的本质就是"某些义项使用增多、某些减少"——UOT的质量不守恒天然对应这一语言学现象
+
+2. **Sense Usage Shift (SUS) 指标**:
+    - 功能：为每个用法实例计算一个标量值，量化该义项使用频率的增减
+    - 核心思路：$\text{SUS}(i) = \text{excess}(i) - \text{deficit}(i)$，正值=该义项使用增加，负值=减少
+    - 设计动机：SUS是第一个实例级的语义变化指标——可直接可视化每个用法的变化方向
+
+3. **统一多任务框架**:
+    - 功能：从SUS出发衍生词级指标
+    - 核心思路：词级变化幅度=SUS的方差；词义扩展=excess总量>deficit总量；词义缩小=反之
+    - 设计动机：一个UOT计算就能回答三个不同层面的问题
+
+### 损失函数 / 训练策略
+
+不涉及训练。UOT用Sinkhorn算法求解，嵌入来自预训练BERT/XLM-R的上下文化表示。
+
+## 实验关键数据
+
+### 主实验
+
+SemEval-2020 Task 1语义变迁检测：
+
+| 方法 | 英语(Spearman) | 德语 | 拉丁语 | 瑞典语 |
+|------|:---:|:---:|:---:|:---:|
+| APD (基线) | 0.56 | 0.72 | 0.40 | 0.54 |
+| JSD (基线) | 0.58 | 0.73 | 0.42 | 0.55 |
+| SUS-variance (本文) | **0.62** | **0.76** | **0.46** | **0.59** |
+
+### 消融实验
+
+SUS可视化验证（"record"一词）：
+
+| 义项 | SUS值 | 含义 |
+|------|:---:|------|
+| music义 (1960-2010) | +0.47 | 使用频率**增加** |
+| achievement义 (1960-2010) | +0.45 | 使用频率**增加** |
+| information义 (1810-1860) | -0.25 | 使用频率**减少** |
+
+### 关键发现
+
+1. **SUS可视化直观**: "record"的音乐义(+0.47)和成就义(+0.45)增长，信息义(-0.25)衰退——与历史事实一致
+2. **UOT优于标准OT**: 放松质量守恒约束后性能提升——证明质量不平衡信号包含有用信息
+3. **统一解决三任务**: 同一指标在实例级/词级/扩展缩小检测上均有效
+
+## 亮点与洞察
+
+- **UOT用于语义变迁的理论优美性**: "质量不守恒"天然对应"义项使用频率变化"
+- **实例级量化是突破**: 此前只能说"record变了多少"，现在能说"record的哪种用法变了"
+- **一次计算三个答案**: UOT的excess/deficit同时提供实例级方向+词级幅度+扩展/缩小
+- **可视化极有说服力**: t-SNE + SUS颜色编码清晰展示语义变迁
+
+## 局限与展望
+
+- 依赖预训练嵌入质量（BERT/XLM-R的上下文化能力）
+- UOT的正则化参数需调优
+- 仅在SemEval-2020数据集上评估
+- 未探索多义词消歧与SUS的整合
+
+## 相关工作与启发
+
+- **vs APD/JSD**: 仅词级分数——本文提供实例级SUS
+- **vs 标准OT（Wasserstein距离）**: 质量守恒限制——UOT放松约束捕获更多信息
+- **vs clustering方法**: 需预设簇数——UOT自动发现义项分布变化
+- **启发**: 语义变迁的细粒度分析需要"分布间的非对称对齐"——UOT是天然工具
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ UOT用于语义变迁理论优美且首创
+- 实验充分度: ⭐⭐⭐ 数据集和语言覆盖有限
+- 写作质量: ⭐⭐⭐⭐ 数学框架清晰，可视化出色
+- 价值: ⭐⭐⭐⭐ 为语义变迁检测提供了新范式
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] Hierarchical Refinement: Optimal Transport to Infinity and Beyond](../../ICML2025/others/hierarchical_refinement_optimal_transport_to_infinity_and_beyond.md)
+- [\[NeurIPS 2025\] Estimation of Stochastic Optimal Transport Maps](../../NeurIPS2025/others/estimation_of_stochastic_optimal_transport_maps.md)
+- [\[ICCV 2025\] LaCoOT: Layer Collapse through Optimal Transport](../../ICCV2025/others/lacoot_layer_collapse_through_optimal_transport.md)
+- [\[ICML 2025\] Lightspeed Geometric Dataset Distance via Sliced Optimal Transport](../../ICML2025/others/lightspeed_geometric_dataset_distance_via_sliced_optimal_transport.md)
+- [\[ACL 2025\] S3 - Semantic Signal Separation](s3_-_semantic_signal_separation.md)
+
+</div>
+
+<!-- RELATED:END -->

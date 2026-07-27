@@ -1,0 +1,148 @@
+---
+title: >-
+  [论文解读] SMoLoRA: Exploring and Defying Dual Catastrophic Forgetting in Continual Visual Instruction Tuning
+description: >-
+  [ICCV 2025][多模态VLM][持续学习] 发现多模态大模型持续视觉指令微调（CVIT）中存在"双重灾难性遗忘"——视觉理解能力和指令遵循能力同时退化，提出SMoLoRA通过可分离路由的LoRA专家混合方法有效缓解该问题。 多模态大语言模型（MLLM）通过视觉指令微调（VIT）获得处理各类视觉任务的能力…
+tags:
+  - "ICCV 2025"
+  - "多模态VLM"
+  - "持续学习"
+  - "视觉指令微调"
+  - "灾难性遗忘"
+  - "混合专家LoRA"
+  - "可分离路由"
+---
+
+# SMoLoRA: Exploring and Defying Dual Catastrophic Forgetting in Continual Visual Instruction Tuning
+
+**会议**: ICCV 2025  
+**arXiv**: [2411.13949](https://arxiv.org/abs/2411.13949)  
+**代码**: [https://github.com/Minato-Zackie/SMoLoRA](https://github.com/Minato-Zackie/SMoLoRA)  
+**领域**: 多模态VLM  
+**关键词**: 持续学习, 视觉指令微调, 灾难性遗忘, 混合专家LoRA, 可分离路由
+
+## 一句话总结
+
+发现多模态大模型持续视觉指令微调（CVIT）中存在"双重灾难性遗忘"——视觉理解能力和指令遵循能力同时退化，提出SMoLoRA通过可分离路由的LoRA专家混合方法有效缓解该问题。
+
+## 研究背景与动机
+
+多模态大语言模型（MLLM）通过视觉指令微调（VIT）获得处理各类视觉任务的能力。然而在实际应用中，模型需要不断学习新任务以适应演变的需求——这就是持续视觉指令微调（CVIT）的场景。
+
+现有CVIT研究（如EMT、Eproj、CoIN）主要沿用传统持续学习的范式来缓解灾难性遗忘，但忽视了CVIT特有的挑战。本文首次发现CVIT中存在**双重灾难性遗忘**：
+
+**视觉理解遗忘**：模型在学习新任务时忘记了之前习得的视觉理解能力。例如，学会了VQAv2后再学ImageNet分类，之前的VQA能力显著下降。
+
+**指令遵循遗忘**：模型的指令遵循能力随着任务增加逐渐退化。例如，原本能按要求生成完整句子，学了几轮后变成只输出碎片词汇或格式错乱。
+
+这两种遗忘的根源不同——视觉理解遗忘与视觉特征的任务间干扰有关，指令遵循遗忘与不同任务指令格式冲突有关。**传统方法（如EWC、Replay、单一LoRA）无法同时处理这两种遗忘**，因为它们未区分这两个维度。
+
+SMoLoRA的核心idea是：设计两个独立的路由模块分别处理视觉理解和指令遵循，使模型能在两个维度上独立地做任务特异性适配，从而防止干扰并缓解双重遗忘。
+
+## 方法详解
+
+### 整体框架
+
+SMoLoRA基于混合LoRA专家（MoLoRA）框架，但引入了可分离路由机制。模型中包含N个LoRA块，被分为两组：前M个服务于视觉理解模块，后N-M个服务于指令遵循模块。两组LoRA块由各自独立的路由器决定激活方式，最终通过自适应融合模块合并输出。SMoLoRA替代原始LoRA应用于LLM的FFN层和适配器中。
+
+### 关键设计
+
+#### 1. 视觉理解模块——基于实例的路由
+
+- **功能**：根据当前输入实例的整体视觉+文本特征，选择最适合的LoRA块处理视觉理解任务。
+- **核心思路**：对当前层输入 $x_{l-1} \in \mathbb{R}^{d \times s}$ 沿序列维度取平均 $\text{Avg}(x_{l-1})$，然后通过路由矩阵 $R^{vu} \in \mathbb{R}^{M \times d}$ 计算每个LoRA块的激活权重：
+  $G^{vu}(z^{vu}) = \text{softmax}(\text{top}_k(R^{vu} \cdot \text{Avg}(x_{l-1})))$
+- **设计动机**：视觉理解需要综合考虑图像内容和文本引导的关键信息，因此使用整个实例的平均特征作为路由依据。这使得相似的视觉理解任务（如不同VQA数据集）可以共享LoRA块，而差异大的任务（如分类vs.描述）使用不同块。
+
+#### 2. 指令遵循模块——基于指令嵌入的路由
+
+- **功能**：根据当前任务指令的语义特征，选择对应的LoRA块处理指令理解和格式控制。
+- **核心思路**：用Sentence-BERT对指令文本 $X^{ins}$ 编码得到嵌入 $f_\sigma(X^{ins}) \in \mathbb{R}^{e \times 1}$，通过路由矩阵 $R^{if} \in \mathbb{R}^{(N-M) \times e}$ 计算激活权重：
+  $G^{if}(z^{if}) = \text{softmax}(\text{top}_k(R^{if} \cdot f_\sigma(X^{ins})))$
+- **设计动机**：不同任务的指令格式差异（"Describe the image"vs."Answer with a single word"）是导致指令遵循遗忘的直接原因。用指令嵌入而非实例特征来路由，可以精确区分不同指令需求，让相同指令格式的任务复用LoRA块，不同格式的任务用不同块。
+
+#### 3. 自适应融合模块
+
+- **功能**：动态加权融合视觉理解模块和指令遵循模块的输出。
+- **核心思路**：分别计算两个模块的输出 $x_l^{vu}$ 和 $x_l^{if}$，通过可训练的重要性矩阵 $I^{vu}, I^{if} \in \mathbb{R}^{1 \times k}$ 计算融合权重 $[\alpha, \beta]^T = \text{softmax}(\text{concat}(I^{vu} x_l^{vu}, I^{if} x_l^{if}))$，最终输出 $\mathcal{F} = \alpha \circ x_l^{vu} + \beta \circ x_l^{if}$
+- **设计动机**：两个模块的贡献并不均等——某些任务更依赖视觉理解，某些更依赖指令遵循。自适应融合让模型根据具体输入动态调整两者权重，而非简单平均。
+
+### 损失函数 / 训练策略
+
+- 使用标准的语言建模损失（next-token prediction）。
+- 基于LLaVA-v1.5-7B预训练模型，学习率 $1 \times 10^{-4}$，余弦衰减，batch size 64，每个任务训练1个epoch。
+- 每个模块各4个LoRA块，rank=16，top-1路由。
+- SMoLoRA仅应用于FFN层和适配器，不修改注意力层。
+
+## 实验关键数据
+
+### 主实验——上游持续学习（单类型指令）
+
+| 方法 | ScienceQA | TextVQA | Flickr30k | ImageNet | GQA | VQAv2 | AP↑ | MAP↑ | BWT↑ | MIF↑ |
+|------|-----------|---------|-----------|----------|-----|-------|-----|------|------|------|
+| Multitask (上界) | 83.49 | 61.93 | 169.21 | 96.53 | 60.07 | 65.80 | 89.51 | — | — | 98.38 |
+| SeqLoRA | 55.31 | 50.22 | 33.89 | 22.73 | 50.52 | 64.61 | 46.21 | 57.41 | -48.10 | 78.35 |
+| EWC | 57.04 | 50.02 | 32.96 | 22.85 | 50.16 | 64.54 | 46.26 | 56.19 | -49.71 | 78.90 |
+| Eproj | 65.29 | 52.87 | 148.19 | 39.45 | 28.06 | 57.86 | 65.29 | 73.53 | -14.02 | 89.81 |
+| **SMoLoRA** | **77.36** | **58.29** | **151.99** | **95.35** | **51.96** | **65.71** | **83.44** | **84.85** | **-3.23** | **97.79** |
+
+SMoLoRA在AP上超过次优方法Eproj 18.15%，BWT从-14.02提升到-3.23，几乎消除了灾难性遗忘。
+
+### 消融实验——模块贡献
+
+| VU | IF | AF | AP | MAP | BWT | MIF |
+|----|----|----|-----|------|------|------|
+| ✗ | ✗ | ✗ | 46.21 | 57.41 | -48.10 | 78.35 |
+| ✓ | ✗ | ✗ | 53.49 | 67.84 | -33.06 | 80.12 |
+| ✗ | ✓ | ✗ | 71.97 | 79.56 | -17.42 | **98.38** |
+| ✓ | ✓ | ✗ | 75.16 | 78.72 | -10.99 | 97.43 |
+| ✓ | ✓ | ✓ | **83.44** | **84.85** | **-3.23** | 97.79 |
+
+指令遵循模块(IF)贡献最大（AP从46.21跃升到71.97），说明指令遵循遗忘在CVIT中是更严重的问题。
+
+### 关键发现
+
+- **下游零样本迁移**：SMoLoRA在VizWiz/TextCaps/OCRVQA上零样本AP达34.35%，远超第二名DoRA(25.21%)，且MIF达90.94%(vs. DoRA 61.98%)，表明可分离路由显著增强了泛化能力。
+- **路由可视化**：不同任务在VU模块中展现出不同的LoRA块偏好，但相似任务（如Flickr30k和TextCaps都是描述类）的路由模式趋同。IF模块中，指令格式不同的任务路由差异更加明显。
+- **案例分析**：仅VU模块时，模型能理解图像但输出格式碎片化；仅IF模块时，模型格式正确但视觉理解出错。二者结合才能同时保证视觉正确性和格式合规。
+
+## 亮点与洞察
+
+- **双重遗忘的发现**是本文最重要的贡献。将CVIT中的遗忘问题细化为视觉理解和指令遵循两个独立维度，为后续研究开辟了新方向。
+- **可分离路由思想**具有通用性——不仅适用于LoRA专家，还可推广到其他参数高效方法。
+- **MIF指标的设计**填补了现有CVIT评估中缺乏指令遵循能力度量的空白。
+
+## 局限与展望
+
+- 仅在LLaVA-v1.5-7B上实验，模型规模较小，更大模型（如13B/70B）上双重遗忘是否同样严重有待验证。
+- 路由策略使用固定的top-1选择，动态top-k或软路由可能带来进一步提升。
+- 当前benchmark仅包含6个上游任务和4个下游任务，任务多样性有限。
+- Sentence-BERT嵌入在IF模块中是冻结使用的，联合微调是否更好未被探索。
+
+## 相关工作与启发
+
+- 与MoE-LLaVA、MoCLE等将MoE用于LMM的工作相关，但SMoLoRA特别针对持续学习场景设计了可分离路由。
+- 与CoIN（也使用MoE做CVIT）的区别在于：CoIN使用单一路由器，未区分视觉理解和指令遵循两个维度的遗忘。
+- 启发：MLLM的持续对齐（continual alignment）可能也存在类似的双重遗忘问题——安全对齐和任务能力的同时退化。
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐
+- 实验充分度: ⭐⭐⭐⭐
+- 写作质量: ⭐⭐⭐⭐
+- 价值: ⭐⭐⭐⭐
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Instruction-Grounded Visual Projectors for Continual Learning of Generative Vision-Language Models](instruction-grounded_visual_projectors_for_continual_learning_of_generative_visi.md)
+- [\[ACL 2025\] Enhancing Multimodal Continual Instruction Tuning with BranchLoRA](../../ACL2025/multimodal_vlm/branchlora_continual_instruction.md)
+- [\[ACL 2025\] HiDe-LLaVA: Hierarchical Decoupling for Continual Instruction Tuning of Multimodal Large Language Model](../../ACL2025/multimodal_vlm/hidellava_hierarchical_decoupling_for_continual_instruction.md)
+- [\[ICML 2025\] Parrot: Multilingual Visual Instruction Tuning](../../ICML2025/multimodal_vlm/parrot_multilingual_visual_instruction_tuning.md)
+- [\[ICML 2025\] Dynamic Mixture of Curriculum LoRA Experts for Continual Multimodal Instruction Tuning](../../ICML2025/multimodal_vlm/dynamic_mixture_of_curriculum_lora_experts_for_continual_multimodal_instruction_.md)
+
+</div>
+
+<!-- RELATED:END -->

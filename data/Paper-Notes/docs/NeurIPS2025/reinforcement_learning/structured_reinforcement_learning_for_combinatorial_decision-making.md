@@ -1,0 +1,148 @@
+---
+title: >-
+  [论文解读] Structured Reinforcement Learning for Combinatorial Decision-Making
+description: >-
+  [NeurIPS 2025][强化学习][combinatorial MDP] 提出 Structured Reinforcement Learning (SRL)，将组合优化求解器作为可微层嵌入 actor-critic 的 actor 中，通过 Fenchel-Young 损失 + 高斯扰动实现端到端梯度传播，纯在线学习、无需专家数据，在6个工业级组合决策问题上匹配模仿学习、超越无结构 RL 最高 92%。
+tags:
+  - "NeurIPS 2025"
+  - "强化学习"
+  - "combinatorial MDP"
+  - "structured actor"
+  - "Fenchel-Young loss"
+  - "COAML pipeline"
+  - "primal-dual algorithm"
+---
+
+# Structured Reinforcement Learning for Combinatorial Decision-Making
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2505.19053](https://arxiv.org/abs/2505.19053)  
+**代码**: [GitHub](https://github.com/tumBAIS/Structured-RL)  
+**领域**: 强化学习 / 组合优化 / 运筹学  
+**关键词**: combinatorial MDP, structured actor, Fenchel-Young loss, COAML pipeline, primal-dual algorithm
+
+## 一句话总结
+提出 Structured Reinforcement Learning (SRL)，将组合优化求解器作为可微层嵌入 actor-critic 的 actor 中，通过 Fenchel-Young 损失 + 高斯扰动实现端到端梯度传播，纯在线学习、无需专家数据，在6个工业级组合决策问题上匹配模仿学习、超越无结构 RL 最高 92%。
+
+## 研究背景与动机
+**问题定义——组合MDP (C-MDP)**：状态 s∈S，动作 a∈A(s)⊂R^{d(s)}，A(s) 为组合问题的可行解集合（路由、调度、品类选择等），凸包 C(s)=conv(A(s)) 称为矩多面体。目标是在未知转移概率 P(s',r|s,a) 下找到累积折扣奖励最大化的策略
+
+**现有方法三大痛点**：
+   - **无结构 RL**（PPO/SAC）：将 CO 层视为环境的一部分，诱导分段常数且高度非光滑的奖励函数，梯度方差极大，收敛困难
+   - **结构化模仿学习 (SIL)**：需要预先收集专家演示数据，性能上限受专家策略约束；只观察专家轨迹，偏离专家路径后无法恢复
+   - **预测+优化 (predict-then-optimize)**：将预测与优化分离，无法端到端学习长期收益
+
+**核心洞察**：将 CO 求解器直接嵌入 actor 架构（而非作为环境后处理），使 actor 天然输出组合可行解，同时通过扰动正则化使 CO 层可微
+
+## 方法详解
+
+### 整体架构：COAML Actor-Critic
+SRL 将标准 actor-critic 中的神经网络 actor 替换为 COAML (Combinatorial Optimization-Augmented ML) pipeline：
+- **神经网络 φ_w**：将状态 s 映射为评分向量 θ = φ_w(s) ∈ R^d（编码上下文信息、变量依赖、环境动态）
+- **CO 层 f**：以 θ 为线性目标系数求解 f(θ,s) = argmax_{a∈A(s)} ⟨θ|a⟩，保证可行性与可扩展性
+- **策略表示**：π_w(·|s) := δ_{f(φ_w(s),s)}，推理时为确定性 Dirac 策略，无需采样或投影
+- **Critic ψ_β**：估计 Q(s,a)，使用标准 TD 学习更新，复杂环境中采用 double Q-learning 缓解过估计
+
+### 核心技术1：Fenchel-Young 损失解决不可微问题
+CO 层 f 关于 θ 是分段常数的——在矩多面体 C(s) 的正常锥(normal cone)内部，f 映射到同一顶点，梯度为零。SRL 通过高斯扰动正则化解决：
+- 引入扰动 Z~N(0,ε)，将损失变为 L_Ω(θ;â) = E[max_{a∈A(s)} (θ+Z)ᵀa] - θᵀâ
+- 该损失对 θ 既可微又凸，梯度通过 pathwise estimator 计算（方差远低于 score-function estimator）
+- Fenchel-Young 框架的优势：零损失当且仅当 â 是正则化预测问题的解，天然度量非最优性
+
+### 核心技术2：基于 Critic 的在线目标动作估计
+SRL 在线构造目标动作 â，完全不依赖专家（这是与 SIL 的核心区别）：
+1. 对评分 θ 施加高斯扰动 Z~N(θ,σ_b)，采样 m 个扰动向量 η
+2. 每个 η 通过 CO 层生成候选动作 a' = f(η,s)
+3. Critic 评估各候选动作的 Q 值
+4. Softmax 加权聚合：â = Σ a'·exp(Q/τ) / Σ exp(Q/τ)
+- 温度 τ→0 趋近贪心 argmax，τ→∞ 趋近均匀平均
+- â 不必是可行解（不用于执行），仅作为 Fenchel-Young 损失的训练信号
+- Softmax 估计器三个好处：跨动作分配信用促进探索、值平均缓解 critic 过估计偏差、避免极端动作防止过早收敛
+
+### 核心技术3：三重高斯扰动机制
+SRL 使用三个独立的高斯扰动分别服务不同目的：
+- **σ_f**（前向传播）：探索状态空间 S，使智能体访问更多样的状态
+- **σ_b**（目标动作选择）：探索组合动作空间 A(s)，为 Critic 评估提供候选
+- **ε**（Fenchel-Young 损失）：正则化 CO 层使其可微，构造凸代理目标
+
+### 几何解释：对偶空间中的采样原始-对偶算法
+论文提供了深刻的几何分析（聚焦静态情形 T=1，但通过 Critic 学习可推广到多阶段）：
+- 动作空间的凸包 C(s) 构成矩多面体，评分向量 θ 定义正常锥分割（normal fan）
+- 策略可表示为分布单纯形 Δ^{A(s)} 上的正则化优化：π_w(·|s) = argmax_{q∈Δ} {⟨Aᵀφ_w(s)|q⟩ - Ω(q)}
+- SRL 的 actor 更新可严格写为5步原始-对偶迭代（Proposition 2）：采样→经验分布→子梯度→softmax 聚合→Fenchel-Young 更新
+- 与 Bouvier et al. (2025) 的关键区别：后者要求解 max_{a∈A(s)} r(s,a,ξ)+⟨θ|a⟩ 这一非线性组合优化（通常不可行），SRL 用 m 次采样 + Critic 评估替代，保持可计算性
+
+### 为什么不用 SAC？
+论文详细解释了选择 PPO 而非 SAC 作为无结构 RL 基线的原因：
+- SAC 要求 actor 同时输出均值和标准差，需要特殊网络架构
+- SAC 要求 Critic 对 actor 可微，但 Q(s,a) 直接作用于组合动作 a，无法反传
+- SAC 的熵正则化作用于 θ 的分布，而实际需要正则化组合动作 a 的分布
+
+## 实验设置与结果
+
+### 6个测试环境
+**静态（T=1）**：Warcraft 最短路径（Dijkstra CO 层）、单机调度（ranking CO 层，50-100 个作业）、随机车辆调度（LP 流求解器 CO 层，25 个任务）
+**动态（T>1）**：
+- **动态车辆调度 DVSP**（外生不确定性）：8 个时间步，请求随时间揭示，需实时路径规划
+- **动态品类优化 DAP**（内生不确定性）：顾客选择遵循 MNL 模型，物品特征随决策演化
+- **网格世界最短路径 GSPP**（内生不确定性）：目标到达后移动，路径成本受历史影响
+
+### 实验设计
+- 三种算法使用相同 COAML pipeline；SRL 和 PPO 使用相同 Critic 架构
+- PPO 调参后确定训练 episode 数，SRL/SIL 保持一致的更新步数
+- 每个算法 10 个随机种子，报告均值和标准差
+- 全部实验在 MacBook Air M3 上运行（Julia 语言），单环境 3-90 分钟
+
+### 动态环境关键结果
+
+| 对比 | DVSP | DAP | GSPP |
+|------|------|-----|------|
+| SRL vs SIL | 相当 | **+8%** | **+78%** |
+| SRL vs PPO | **+16%** | **+77%** | **+92%** |
+
+### 稳定性（训练验证奖励标准差 / 测试奖励标准差 / 训练时间）
+
+| 算法 | DVSP | DAP | GSPP |
+|------|------|-----|------|
+| SIL | 0.3 / 0.4 / 12m | 0.8 / 11.9 / 3m | 39.3 / 1.1 / 11m |
+| PPO | 5.8 / 5.6 / 3m | 5.4 / 13.5 / 5m | 105.8 / 47.0 / 10m |
+| SRL | 0.3 / 0.3 / 31m | 1.8 / 1.9 / 31m | 72.1 / 0.6 / 34m |
+
+- PPO 训练方差比 SRL 高达 **80 倍**，测试方差在 GSPP 上高 78 倍（47.0 vs 0.6）
+- SRL 在 GSPP 上超越在线最优专家策略 79%——SIL 受限于专家上限，无法逃离次优状态
+- 收敛速度：PPO 需 160-200 episode 才趋于平稳；SRL 和 SIL 相近，SIL 在 DAP/GSPP 上快 10-150 episode（因有专家引导）
+- 静态任务中 SRL 匹配 SIL 且无需专家，最高超越 PPO 54%
+
+### 计算成本分析
+- SRL 每次更新最多调用 CO 层 61 次（m=40 采样 + 20 FY 损失 + 1 前向），SIL 20 次，PPO 仅 2 次
+- 计算成本随 CO 层复杂度线性增长：GSPP（简单 CO 层）三种方法耗时相近，DVSP（复杂 CO 层）SRL 约为 SIL 的 2.5 倍
+
+## 亮点与深度洞察
+1. **纯在线学习无需专家数据**却保持极低方差——CO 层的结构约束将指数级动作空间的探索压缩到评分向量 θ 的连续空间
+2. **组合可行性天然保证**：CO 层直接输出满足所有约束的可行解，无需 PPO 式的连续松弛+后投影
+3. **动态环境优势最大**：SIL 只观察专家轨迹、偏离后无法恢复；SRL 通过持续在线探索可发现超越专家的策略
+4. **理论-实践统一**：原始-对偶几何解释不仅优雅，还直接指导了算法设计——用采样替代不可行的非线性组合优化
+5. **轻量实验设备**：全部实验在 MacBook Air M3 上完成，COAML pipeline 的神经网络通常很小，凸显方法的实用性
+
+## 局限性
+- **计算开销**：需频繁调用 CO 求解器（最多 61 次/更新），复杂 CO 层（如 VRP）时成本显著增加
+- **收敛速度**：纯在线探索无专家引导，比 SIL 慢 10-150 个 episode
+- **Critic 限制**：Q 函数不要求可分解（灵活性高），但也因此无法直接在动作上优化 Critic，必须依赖采样
+- **环境规模**：目前在中等规模问题验证（调度 50-100 作业、VSP 25 个任务），超大规模的可扩展性未知
+- **静态 Critic 假设**：几何分析基于固定 Critic 的静态情形，多阶段动态设定下的理论保证尚未建立
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Prompt Tuning Decision Transformers with Structured and Scalable Bandits](prompt_tuning_decision_transformers_with_structured_and_scalable_bandits.md)
+- [\[NeurIPS 2025\] Modulation of Temporal Decision-Making in a Deep Reinforcement Learning Agent under the Dual-Task Paradigm](modulation_of_temporal_decision-making_in_a_deep_reinforcement_learning_agent_un.md)
+- [\[ICML 2025\] Divide and Conquer: Grounding LLMs as Efficient Decision-Making Agents via Offline Hierarchical Reinforcement Learning](../../ICML2025/reinforcement_learning/divide_and_conquer_grounding_llms_as_efficient_decision-making_agents_via_offlin.md)
+- [\[ICML 2025\] Counterfactual Effect Decomposition in Multi-Agent Sequential Decision Making](../../ICML2025/reinforcement_learning/counterfactual_effect_decomposition_in_multi-agent_sequential_decision_making.md)
+- [\[ICML 2025\] Enhancing Decision-Making of Large Language Models via Actor-Critic](../../ICML2025/reinforcement_learning/enhancing_decision-making_of_large_language_models_via_actor-critic.md)
+
+</div>
+
+<!-- RELATED:END -->

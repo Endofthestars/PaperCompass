@@ -1,0 +1,203 @@
+---
+title: >-
+  [论文解读] Inductive Transfer Learning for Graph-Based Recommenders
+description: >-
+  [NeurIPS 2025][音频/语音][图神经网络] 提出 NBF-Rec，一个基于神经 Bellman-Ford 网络的图推荐模型，支持在用户和物品完全不相交的数据集之间进行归纳式迁移学习，实现零样本跨域推荐和轻量微调适配。 领域现状：图神经网络推荐系统（如 LightGCN）在单域内表现优异，但以转导式（transd…
+tags:
+  - "NeurIPS 2025"
+  - "音频/语音"
+  - "图神经网络"
+  - "迁移学习"
+  - "推荐系统"
+  - "归纳推理"
+  - "零样本推荐"
+---
+
+# Inductive Transfer Learning for Graph-Based Recommenders
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.22799](https://arxiv.org/abs/2510.22799)  
+**代码**: 无  
+**领域**: 音频语音  
+**关键词**: 图神经网络, 迁移学习, 推荐系统, 归纳推理, 零样本推荐
+
+## 一句话总结
+
+提出 NBF-Rec，一个基于神经 Bellman-Ford 网络的图推荐模型，支持在用户和物品完全不相交的数据集之间进行归纳式迁移学习，实现零样本跨域推荐和轻量微调适配。
+
+## 研究背景与动机
+
+**领域现状**：图神经网络推荐系统（如 LightGCN）在单域内表现优异，但以转导式（transductive）训练为主，无法泛化到新用户、新物品或新数据集。
+
+**现有痛点**：
+   - 现有跨域推荐方法假设源域和目标域有重叠的用户或物品集合，限制了适用性。
+   - 对抗训练、对比解耦、元学习等方法仍依赖对齐的实体空间或领域特定监督。
+   - 大规模预训练模型（P5、GPTRec）需要大量预训练和推理资源，且依赖文本/视觉辅助信息。
+
+**核心矛盾**：NLP/CV 领域迁移学习已成标配 vs. 图推荐领域迁移学习几乎空白（尤其是完全不相交用户/物品场景）。
+
+**本文目标**：在完全不相交的用户-物品图之间实现归纳式迁移学习，支持零样本推荐和微调适配。
+
+**切入角度**：基于 NBFNet 的路径聚合消息传递机制，通过动态计算节点表征（而非预学习嵌入）实现归纳泛化；集成边特征编码增强交互级信息捕获。
+
+**核心idea**：不学习节点特定参数，而是学习消息传递过程本身，使模型能泛化到完全未见过的用户-物品图。
+
+## 方法详解
+
+### 整体框架
+
+NBF-Rec 以 NBFNet（神经 Bellman-Ford 网络）为基础，将推荐视为二部图上的链接预测任务。给定用户 $u$，模型通过多层消息传递动态计算所有节点的表征，最终为每个候选物品打分。
+
+### 关键设计
+
+1. **查询感知的初始化**
+
+    - **功能**：根据查询用户初始化所有节点的表征。
+    - **怎么做**：$h_v^{(0)} = \mathbf{1}(u = v)$，即仅查询用户对应的节点初始化为 1，其余为 0。所有信息从查询用户出发传播。
+    - **为什么**：确保模型对每个查询动态计算表征，不依赖预计算的节点嵌入。
+
+2. **边特征嵌入**
+
+    - **功能**：将原始边特征（评分、时间戳、类别、播放次数等）编码为可用于消息传递的嵌入。
+    - **怎么做**：两级 MLP 结构：
+    $g(r) = \text{MLP}_{\text{emb}}(\text{MLP}_{\text{proj}}(r))$
+        - $\text{MLP}_{\text{proj}}$：数据集特定的投影 MLP（处理不同数据集的异构边特征）
+        - $\text{MLP}_{\text{emb}}$：共享的骨干嵌入 MLP
+    - **区别**：原始 NBFNet 仅依赖图结构信息，NBF-Rec 引入边特征使模型能学习更丰富的交互模式。
+
+3. **消息传递机制**
+
+    - **功能**：在每一层 $t$，聚合邻居消息更新节点表征。
+    - **怎么做**：
+    $M_v^{(t)} = \{\text{MESSAGE}(h_x^{(t-1)}, \mathbf{w}_q(x,r,v)) \mid (x,r,v) \in \mathcal{E}(v)\}$
+        - 边权重：$\mathbf{w}_q(x,r,v) = \text{MLP}_t(g(r))$，每层有独立的 MLP
+        - 消息函数：非参数化的 DistMult 操作
+        - 节点更新：聚合（求和）+ 线性变换 + 层归一化 + 激活函数
+        - 包含初始嵌入的残差连接：$\text{AGGREGATE}(M_v^{(t)} \cup \{h_v^{(0)}\})$
+
+4. **评分生成**
+
+    - **功能**：经过 $T$ 层消息传递后，计算每个节点的推荐分数。
+    - **怎么做**：
+    $\text{score}(u,q,v) = \text{MLP}_{\text{score}}(\text{concat}(h_v^{(T)}, h_v^{(0)}))$
+    - 将最终层嵌入和初始嵌入拼接后通过 MLP 映射为标量分数。
+
+5. **归纳泛化的关键**
+
+    - 模型不学习节点特定参数，所有参数在消息传递的 MLP 和聚合操作中。
+    - 边特征通过 dataset-specific projection MLP 处理异构特征格式。
+    - 推理时动态计算，无需预计算嵌入。
+
+### 损失函数 / 训练策略
+
+- **交叉熵损失**：
+  $$\mathcal{L} = -\log p(u,q,v) - \sum_{i=1}^{n} \frac{1}{n} \log(1-p(u'_i, q, v'_i))$$
+  其中 $(u,q,v)$ 为正样本，$\{(u'_i, q, v'_i)\}$ 为均匀随机采样的严格负样本（不在训练集中出现）。
+- **训练时移除 batch 边**：将 batch 中的边从消息传递图中移除，迫使模型依赖非平凡路径而非直接连接来学习关系模式。
+- **三种设置**：端到端训练 / 零样本迁移 / 微调
+
+### 计算复杂度
+
+前向传播总复杂度为 $\mathcal{O}(T|E| + |V|)$，线性于节点和边数量。虽然推理开销高于 LightGCN（后者预计算嵌入），但支持归纳泛化。
+
+## 实验关键数据
+
+### 数据集
+
+7 个真实世界推荐数据集：
+
+| 数据集 | 用户数 | 物品数 | 交互数 | 领域 |
+|-------|--------|--------|--------|------|
+| ML-1M | 5,950 | 2,811 | 364,654 | 电影 |
+| LastFM | 1,867 | 1,867 | 39,717 | 音乐 |
+| Amazon B. | 52,204 | 57,289 | 293,912 | 电商 |
+| Gowalla | 29,858 | 70,839 | 712,504 | 位置签到 |
+| Epinions | 21,008 | 13,887 | 266,791 | 商品评论 |
+| BookX | 12,720 | 18,318 | 276,334 | 图书 |
+| Yelp18 | 31,668 | 38,048 | 1,097,007 | 本地商户 |
+
+### 主实验
+
+#### 零样本 / 微调 / 端到端对比
+
+预训练源：Amazon Beauty + Epinions
+
+| 设置 | ML-1M | LastFM | Amazon B. | Gowalla | Epinions | BookX | Yelp18 |
+|------|-------|--------|-----------|---------|----------|-------|--------|
+| 零样本 | 竞争力 | 偏低 | - | 偏低 | - | 接近 | 接近 |
+| 微调 | 改善 | 显著改善 | 改善 | 显著改善 | 改善 | 改善 | 改善 |
+| 端到端 | 基准 | 基准 | 基准 | 基准 | 基准 | 基准 | 基准 |
+
+关键观察：
+- 在 ML-1M、BookX、Yelp18 上，零样本性能在端到端基线的 **5% 以内**。
+- 微调在所有数据集上一致提升，在 LastFM 和 Gowalla 上改善最显著。
+
+### 消融实验
+
+#### 跨数据集迁移热力图
+
+| 关键发现 | 描述 |
+|---------|------|
+| 非对称迁移 | LastFM→ML-1M 迁移有效，反之则不然 |
+| 自迁移非最优 | BookX 和 Amazon Fashion 从其他数据集迁移反而优于自身 |
+| 边特征影响 | 信息量低的边特征（BookX、LastFM）通常降低迁移性 |
+| 图规模 vs 特征 | Gowalla（大图、少特征）迁移效果好于 Yelp（丰富特征但迁移弱） |
+
+#### NBF-Rec vs NBFNet 对比
+
+- 零样本和微调设置下，NBF-Rec 一致优于 NBFNet（仅图结构信息）。
+- 端到端训练下，NBF-Rec 与 NBFNet 表现持平或略优。
+- 证实边特征嵌入对迁移学习的贡献。
+
+### 关键发现
+
+- **归纳迁移学习在图推荐中可行**：即使用户和物品完全不重叠，NBF-Rec 也能通过学习到的消息传递过程实现有意义的零样本推荐。
+- **预训练在不同域上可能优于在目标域上**：跨域归纳偏置有时比域内信号更有效。
+- **边特征是双刃剑**：丰富的边特征提升域内性能，但不一定提升跨域迁移性。
+- **轻量微调即可弥合差距**：少量域内监督即可将零样本模型提升至接近全监督水平。
+
+## 亮点与洞察
+
+- **首次在完全不相交用户-物品图之间展示可扩展的归纳迁移**，这是图推荐领域的重要里程碑。
+- **设计简洁**：基于 NBFNet 的扩展，核心修改是引入边特征嵌入和 dataset-specific projection MLP，工程实现相对轻量。
+- **迁移非对称性的发现**非常有趣，提示源域选择是一个值得深入研究的问题。
+- **不依赖文本/视觉辅助信息**，纯粹基于交互图结构和边特征，适用性广。
+
+## 局限与展望
+
+- **推理成本**：每个查询需要完整的消息传递前向计算，推理成本高于预计算嵌入的方法。
+- **中等规模数据集**：最大的 Yelp18 仅约 100 万交互，在工业级数据上的可扩展性未验证。
+- **边特征工程**：不同数据集需要不同的特征预处理，dataset-specific projection MLP 增加了复杂性。
+- **未与大规模预训练推荐模型（P5、GPTRec）在相同条件下对比**。
+- **负采样策略**较简单（均匀随机），更高级的策略可能进一步提升性能。
+- 未来可探索多图联合预训练、更大规模数据集、以及更高效的推理策略。
+
+## 相关工作与启发
+
+- **NBFNet**：神经 Bellman-Ford 网络原用于知识图谱链接预测，本文将其成功迁移到推荐系统。
+- **ULTRA**：在知识图谱补全上的零样本迁移，是方法论上的近亲。
+- **LightGCN**：转导式方法的代表，是对比基线。
+- **启发**：消息传递机制本身可以成为跨域可迁移的"知识"，而非节点嵌入。这一观察可能推广到其他图学习任务。
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 首次展示纯交互图的跨域归纳推荐迁移，问题定义新颖
+- 实验充分度: ⭐⭐⭐⭐ 7个数据集、三种设置、跨域热力图分析全面
+- 写作质量: ⭐⭐⭐⭐ 方法清晰，公式规范，实验设计合理
+- 价值: ⭐⭐⭐⭐ 为图推荐的迁移学习打开了新方向，轻量设计有实用潜力
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Can LLMs Outshine Conventional Recommenders? A Comparative Evaluation](can_llms_outshine_conventional_recommenders_a_comparative_evaluation.md)
+- [\[ACL 2025\] Improving Language and Modality Transfer in Translation by Character-level Modeling](../../ACL2025/audio_speech/improving_language_and_modality_transfer_in.md)
+- [\[NeurIPS 2025\] Enabling Differentially Private Federated Learning for Speech Recognition: Benchmarks, Adaptive Optimizers and Gradient Clipping](enabling_differentially_private_federated_learning_for_speech_recognition_benchm.md)
+- [\[CVPR 2025\] Learning to Highlight Audio by Watching Movies](../../CVPR2025/audio_speech/learning_to_highlight_audio_by_watching_movies.md)
+- [\[ICLR 2026\] AC-Foley: Reference-Audio-Guided Video-to-Audio Synthesis with Acoustic Transfer](../../ICLR2026/audio_speech/ac-foley_reference-audio-guided_video-to-audio_synthesis_with_acoustic_transfer.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,159 @@
+---
+title: >-
+  [论文解读] Saliency-Aware Quantized Imitation Learning for Efficient Robotic Control
+description: >-
+  [ICCV 2025][自动驾驶][模型量化] 提出 SQIL（Saliency-Aware Quantized Imitation Learning），通过显著性评分识别任务关键状态并在量化感知训练中加权蒸馏，使 4-bit 量化的 VLA 策略模型在机器人操控和自动驾驶中恢复全精度性能，同时实现 2.5-3.7 倍加速。
+tags:
+  - "ICCV 2025"
+  - "自动驾驶"
+  - "模型量化"
+  - "模仿学习"
+  - "显著性感知"
+  - "视觉语言动作模型"
+  - "边缘部署"
+---
+
+# Saliency-Aware Quantized Imitation Learning for Efficient Robotic Control
+
+**会议**: ICCV 2025  
+**arXiv**: [2505.15304](https://arxiv.org/abs/2505.15304)  
+**代码**: 无  
+**领域**: 自动驾驶  
+**关键词**: 模型量化, 模仿学习, 显著性感知, 视觉语言动作模型, 边缘部署
+
+## 一句话总结
+
+提出 SQIL（Saliency-Aware Quantized Imitation Learning），通过显著性评分识别任务关键状态并在量化感知训练中加权蒸馏，使 4-bit 量化的 VLA 策略模型在机器人操控和自动驾驶中恢复全精度性能，同时实现 2.5-3.7 倍加速。
+
+## 研究背景与动机
+
+基于深度神经网络的策略模型（如 VLA 模型 OpenVLA）在机器人操控和自动驾驶中表现出色，但模型规模急剧膨胀（从 D4RL 的 0.07M 到 OpenVLA 的 7.6B 参数），给资源受限设备的实时部署带来巨大挑战。
+
+模型量化是降低推理成本的有效手段，但作者发现量化对模仿学习（IL）策略的影响与传统分类/NLP 任务有本质不同：
+
+**大部分时间步影响较小**：量化误差在多数时间步仅导致轻微的动作偏差
+
+**关键状态严重受损**：在任务关键状态（如抓取物体、释放物体等精细操控时刻），量化误差会导致巨大的动作偏离，最终引发任务失败
+
+这一现象不同于分布偏移问题——偏差源于模型量化而非数据不匹配，且仅少数关键状态失败而非整个轨迹崩溃。传统的 PTQ 和 QAT 方法无法针对性地解决这些关键状态的问题，OpenVLA 原文尝试 QAT+LoRA 进行 4-bit 量化也效果参差不齐。
+
+## 方法详解
+
+### 整体框架
+
+SQIL 由两个核心组件构成：**SIS（Saliency-based State-Importance Score）**用于识别任务关键状态，**QRD（Quantization-Robust Action Distillation）**用于在这些关键状态上加权蒸馏全精度策略的动作分布。总损失为：
+
+$$\mathcal{L}^{\text{SQIL}}(\theta) = \mathcal{L}^{\text{QAT}}(\theta) + \mathcal{L}^{\text{QRD}}(\theta)$$
+
+### 关键设计
+
+1. **SIS（基于显著性的状态重要性评分）**：通过对视觉输入施加局部扰动（高斯模糊），衡量策略输出的敏感度。对状态 $s_t$ 的每个位置 $k$ 计算扰动后的动作偏差：
+
+$$S_\pi(s_t, k) = \frac{1}{2}\|\pi(s_t) - \pi(\phi(s_t, k))\|^2$$
+
+SIS 为所有位置的平均显著性 $SIS^{s_t}_\pi = \mathbb{E}_k[S_{\pi^{FP}}(s_t, k)]$。高 SIS 值意味着该状态对视觉扰动敏感，通常对应精细操控的关键时刻（如抓取、释放）。相比基于视觉语言的关键帧（KF）检测只能在粗粒度子任务边界激活，SIS 能捕捉细粒度的机器人-环境交互。实验证明 SIS 比 KF 高 1.1% 成功率。
+
+2. **QRD（量化鲁棒动作蒸馏）**：利用全精度策略的动作分布指导量化模型，通过 SIS 加权使关键状态获得更大的训练权重：
+
+$$\mathcal{L}^{\text{QRD}}(\theta) = \alpha_t \cdot \mathbb{E}_{\tau_i \sim \mathcal{D}_E}\left[\frac{1}{|\tau_i|}\sum_{s_t \in \tau_i} D(\pi^Q(s_t), \pi^{FP}(s_t))\right]$$
+
+其中 $\alpha_t = \beta$（当 $SIS > T$，即 top 20%）或 $\alpha_t = 1$（其他）。$D$ 为 L2 距离，$\beta > 1$ 为额外加权系数。这与传统 KD 的关键区别在于选择性加权——只对关键状态施加强蒸馏。
+
+3. **QAT+QRD 协同机制**：QAT 确保量化模型最大化专家动作的对数似然，QRD 则对齐量化模型与全精度模型的整体动作分布。二者结合使量化策略既保持专家行为又恢复全精度策略的决策模式。通过动作分布可视化验证：PTQ 严重偏离，QAT 产生过尖的峰值，QRD 恢复分布形状但可能忽略专家动作，SQIL 兼顾两者优势。
+
+### 损失函数 / 训练策略
+
+- 总损失 $\mathcal{L}^{\text{SQIL}} = \mathcal{L}^{\text{QAT}} + \mathcal{L}^{\text{QRD}}$ 
+- SIS 可一次性预计算，无需反复评估
+- 复用已有专家数据集和训练超参数，无需额外数据收集
+- 对 OpenVLA 使用 QLoRA (r=32) 微调 110M 可训练参数
+- 超参数 $D(), \beta, T$ 对收敛不敏感，在所有任务中使用相同值
+
+## 实验关键数据
+
+### 主实验
+
+**机器人操控（OpenVLA + LIBERO benchmark, INT4 Weight-Only）**
+
+| 方法 | 量化器 | Spatial | Object | Goal | Long |
+|------|--------|---------|--------|------|------|
+| FP | - | 84.0% | 83.9% | 76.6% | 50.7% |
+| PTQ | AWQ | 80.1% | 81.3% | 74.3% | 47.2% |
+| QAT | AWQ | 80.9% | 82.4% | 75.7% | 47.3% |
+| **SQIL** | AWQ | **83.9%** | **83.5%** | **76.3%** | **49.2%** |
+| SQIL | QuaRot | 83.8% | 83.7% | 76.3% | 49.4% |
+
+**自动驾驶（CILRS, W4A4, NoCrash-dense）**
+
+| 方法 | 位宽 | tt成功率 | tn成功率 | nt成功率 | nn成功率 |
+|------|------|---------|---------|---------|---------|
+| FP | FP | 82% | 74% | 80% | 68% |
+| PTQ | W4A4 | 34% | 43% | 36% | 29% |
+| QAT | W4A4 | 62% | 58% | 58% | 48% |
+| **SQIL** | W4A4 | **80%** | **72%** | **72%** | **68%** |
+
+### 消融实验
+
+| 方法 | SIS vs KF | LIBERO 平均成功率 |
+|------|-----------|-----------------|
+| QAT | - | 71.6% |
+| SQIL (KF) | 关键帧 | 72.6% |
+| SQIL (SIS) | 显著性 | **73.2%** |
+
+**部署效率（边缘设备）**
+
+| 平台 | 模型 | 加速比 | 能耗节省 |
+|------|------|--------|---------|
+| Jetson AGX Orin | OpenVLA INT4 | 2.5× | 2.5× |
+| RTX 2080Ti | CILRS W4A4 | 3.7× | 3.1× |
+
+### 关键发现
+
+- SQIL 在 AWQ 和 QuaRot 两种量化器上均能恢复到接近全精度的成功率
+- 显著性地图可视化证实 SQIL 能恢复量化模型失真的注意力分布
+- SQIL 在真实 UR5 机器人上同样有效（77% vs FP 79%）
+- 应用于 π₀ 等不同架构也能持续改善
+- 量化模型在不同光照和语言指令下保持泛化能力
+
+## 亮点与洞察
+
+- **精准定位量化失败根因**：不是所有时间步都受害，只有少数关键状态（精细操控时刻）才是瓶颈，这是一个重要发现
+- **通用性极强**：SQIL 作为即插即用方案，跨越机器人操控、自动驾驶、物理仿真三大领域均有效
+- **显著性评分的巧妙设计**：利用视觉扰动的动作敏感性来自动发现关键状态，无需人工标注或环境交互
+- **实际部署价值高**：在 Jetson AGX Orin 等真实边缘设备上实现 2.5× 加速和能耗降低
+
+## 局限与展望
+
+- SIS 预计算需要全精度模型的前向推理，增加离线准备成本
+- 目前 top-20% 的阈值选择较为简单，是否存在更优的自适应阈值策略值得探索
+- 仅验证了 4-bit 量化，更低精度（如 2-bit）的表现未知
+- 对于非视觉输入的策略模型（如纯状态向量输入），显著性评分的计算方式需要调整
+
+## 相关工作与启发
+
+- 与 LPPD 等 RL 量化方法不同，SQIL 针对 IL 场景无需环境交互反馈
+- 将量化问题重新定义为"关键状态保护"问题，为后续 IL 模型压缩提供了新视角
+- 显著性评分的思路可推广到剪枝、蒸馏等其他模型压缩方向
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ — 首次系统研究量化对模仿学习的影响并提出关键状态感知的量化方案
+- **实验充分度**: ⭐⭐⭐⭐⭐ — 覆盖三大领域（机器人/驾驶/仿真）、多种量化器、真实硬件部署
+- **写作质量**: ⭐⭐⭐⭐ — 逻辑清晰，问题定义精确，可视化质量高
+- **价值**: ⭐⭐⭐⭐ — 对 VLA 大模型的边缘部署有直接实用价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ECCV 2024\] Risk-Aware Self-Consistent Imitation Learning for Trajectory Planning in Autonomous Driving](../../ECCV2024/autonomous_driving/risk-aware_self-consistent_imitation_learning_for_trajectory_planning_in_autonom.md)
+- [\[ICCV 2025\] CoopTrack: Exploring End-to-End Learning for Efficient Cooperative Sequential Perception](cooptrack_exploring_end-to-end_learning_for_efficient_cooperative_sequential_per.md)
+- [\[ICCV 2025\] Resonance: Learning to Predict Social-Aware Pedestrian Trajectories as Co-Vibrations](resonance_learning_to_predict_social-aware_pedestrian_trajectories_as_co-vibrati.md)
+- [\[ICCV 2025\] Wavelet Policy: Lifting Scheme for Policy Learning in Long-Horizon Tasks](wavelet_policy_lifting_scheme_for_policy_learning_in_long-horizon_tasks.md)
+- [\[ICCV 2025\] Future-Aware Interaction Network For Motion Forecasting](future-aware_interaction_network_for_motion_forecasting.md)
+
+</div>
+
+<!-- RELATED:END -->

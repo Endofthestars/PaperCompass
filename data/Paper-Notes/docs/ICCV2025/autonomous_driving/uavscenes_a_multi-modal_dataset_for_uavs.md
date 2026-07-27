@@ -1,0 +1,178 @@
+---
+title: >-
+  [论文解读] UAVScenes: A Multi-Modal Dataset for UAVs
+description: >-
+  [ICCV 2025][自动驾驶][无人机感知] UAVScenes 是首个同时提供逐帧图像和 LiDAR 点云语义标注及精确 6-DoF 位姿的大规模多模态无人机数据集，包含超 12 万帧标注数据，支持语义分割、深度估计、定位、场景识别和新视角合成等六类感知任务。 无人机感知的需求 随着低空经济的蓬勃发展…
+tags:
+  - "ICCV 2025"
+  - "自动驾驶"
+  - "无人机感知"
+  - "多模态数据集"
+  - "语义分割"
+  - "深度估计"
+  - "LiDAR 点云"
+---
+
+# UAVScenes: A Multi-Modal Dataset for UAVs
+
+**会议**: ICCV 2025  
+**arXiv**: [2507.22412](https://arxiv.org/abs/2507.22412)  
+**代码**: [https://github.com/sijieaaa/UAVScenes](https://github.com/sijieaaa/UAVScenes)  
+**领域**: 自动驾驶  
+**关键词**: 无人机感知, 多模态数据集, 语义分割, 深度估计, LiDAR 点云
+
+## 一句话总结
+
+UAVScenes 是首个同时提供逐帧图像和 LiDAR 点云语义标注及精确 6-DoF 位姿的大规模多模态无人机数据集，包含超 12 万帧标注数据，支持语义分割、深度估计、定位、场景识别和新视角合成等六类感知任务。
+
+## 研究背景与动机
+
+### 无人机感知的需求
+
+随着低空经济的蓬勃发展，无人机已在空中出租、低空物流、农业、巡检、应急响应等领域广泛应用。与地面车辆不同，无人机在地面约束之上操作，需要训练高质量数据集来实现可靠的感知能力。
+
+### 现有无人机数据集的系统性缺陷
+
+作者对现有无人机数据集进行了系统性梳理，发现存在三个层次的问题：
+
+**第一层：仅单模态**
+- 大量数据集（UAVDT、VisDrone、UAVid、FloodNet 等）仅包含相机图像，缺少 3D LiDAR 数据
+- 无法进行 3D 场景理解和高精度多模态融合
+
+**第二层：多模态但无逐帧标注**
+- NTU VIRAL、GrAco、FIReStereo、MUN-FRL 等提供了相机+LiDAR 数据，但主要面向 SLAM 或 3D 重建
+- UrbanScene3D 和 Hessigheim 3D 仅在重建的 3D 地图上标注，缺乏逐帧标注
+- GauU-Scene 使用 DJI-L1 加密点云，无法访问逐帧 LiDAR 数据
+
+**第三层：核心空白**
+- **没有任何现有多模态无人机数据集同时提供逐帧图像标注和逐帧 LiDAR 点云标注**
+- 这直接阻碍了逐帧语义分割、深度估计、精确定位等高级感知任务的研究
+
+### 本文的定位与贡献
+
+UAVScenes 基于 MARS-LVIG 数据集（原本仅面向 SLAM 的多模态无人机数据），通过三大扩展填补空白：
+1. 为逐帧图像添加 19 类语义标注（16 个静态类 + 2 个动态类 + 1 个背景类）
+2. 为逐帧 LiDAR 点云添加语义标注
+3. 重建精确的 6-DoF 位姿（原始仅有 4-DoF RTK 位姿）
+
+## 方法详解
+
+### 整体框架
+
+UAVScenes 的构建流程分为三个阶段：3D 重建获取 6-DoF 位姿 → 图像语义标注 → LiDAR 点云语义标注。每个阶段都包含严格的质量控制和人工审核。
+
+### 关键设计
+
+#### 1. 6-DoF 位姿重建
+
+- **功能**：从 MARS-LVIG 的 4-DoF RTK 位姿升级为完整的 6-DoF 位姿
+- **核心思路**：
+    - 首先尝试 LVI-SLAM 方法（FAST-LIVO、R3LIVE），但因无人机朝地面飞行导致 LiDAR 退化，重建质量差
+    - 转用 Structure-from-Motion（SfM）方案，测试了 COLMAP、RealityCapture、Metashape、DJI Terra
+    - 最终选择 DJI Terra：它能接受 GNSS 坐标作为初始化，且专为无人机场景设计，重建效果最好
+    - 将整个 MARS-LVIG 按环境和光照条件分为 8 个 split，每个 split 独立进行 SfM 重建（每个 split 耗时 3-10 小时）
+- **设计动机**：精确的 6-DoF 位姿是所有下游任务（特别是 NVS 和精确定位）的基础。4-DoF 只包含 3D 位置和偏航角，无法支持更精细的评估
+
+#### 2. 图像语义标注流程
+
+- **功能**：为 12 万+ 帧图像提供 19 类像素级语义标注
+- **核心思路**分两步：
+    - **静态类标注**（16 类）：在 3D 重建的点云地图上进行人工语义标注，然后渲染回对应的相机视角得到 2D 语义掩码。利用 3D 一致性保证跨帧标注的一致性
+    - **动态类标注**（2 类：轿车和卡车）：在每帧图像上进行实例级人工标注。利用 X-AnyLabeling 的跟踪功能部分加速，但跟踪不稳定，仍需大量人工验证和修正。共标注了 28 万+ 个动态实例
+    - 最终将静态和动态标注合并为完整的逐帧标注
+- **设计动机**：基于 3D 地图标注静态类可以保证跨帧一致性（同一建筑物在不同帧中标注一致），这是传统逐帧标注难以保证的
+
+#### 3. LiDAR 点云语义标注
+
+- **功能**：为逐帧 Livox-Avia LiDAR 点云提供语义标注
+- **核心思路**：
+    - 利用相机-LiDAR 硬件同步和标定，将图像语义标注投影到对应的 LiDAR 点云
+    - 自动投影后进行人工一致性检查和修正
+    - 仅使用 Livox-Avia 的开源点云（DJI-L1 输出加密无法使用）
+- **设计动机**：通过图像→点云的投影可以高效获得初始标注，再通过人工修正保证质量
+
+### 损失函数 / 训练策略
+
+作为数据集论文，不涉及特定模型训练。基准实验中各任务使用标准的训练设定。
+
+## 实验关键数据
+
+### 主实验（图像语义分割）
+
+| 参数量 | 架构 | 模型 | mIoU ↑ |
+|-------|------|------|--------|
+| 22M | Transformer | DeiT3-s | 67.6 |
+| 38M | Transformer | DeiT3-m | **68.3** |
+| 22M | Transformer | ViT-s | 63.9 |
+| 5M | Transformer | ViT-t | 62.8 |
+| 25M | CNN | ResNet-50 | 61.3 |
+| 44M | CNN | ResNet-101 | 60.7 |
+| 21M | CNN | ResNet-34 | 59.9 |
+| 28M | CNN | ConvNext-t | 55.3 |
+| 48M | CNN | MambaOut-s | 51.8 |
+
+所有模型使用 UperNet 作为分割头。Transformer 系列全面优于 CNN，DeiT3-m 取得最佳 mIoU 68.3%。
+
+### 消融实验（LiDAR 语义分割）
+
+| 参数量 | 模型 | mIoU ↑ | 说明 |
+|-------|------|--------|------|
+| 38M | MinkUNet | 32.7 | 体素化点云方法 |
+| 39M | SPUNet | 34.4 | 稀疏卷积方法 |
+| 11M | PTv2 | 33.2 | Point Transformer 方法 |
+
+LiDAR 分割整体 mIoU 远低于图像分割（~33% vs ~68%），说明航拍 LiDAR 点云的语义分割极具挑战性。
+
+### 关键发现
+
+- **Transformer 优于 CNN**：即使参数量更少（如 ViT-t 仅 5M），Transformer 架构在无人机语义分割上也优于大参数量 CNN
+- **LiDAR 分割远比图像分割难**：mIoU 差异约 35 个百分点，可能因为航拍 LiDAR 点云密度低、模式与地面不同
+- **动态目标标注的挑战**：轿车和卡车的 IoU 明显低于静态类别，反映了动态目标检测在无人机场景下的难度
+- **Solar Panel、Umbrella 等小目标**：IoU 极低（<10%），是未来改进的重点方向
+- **多遍历覆盖**：数据集包含同一场景的多次穿越，可支持场景变化检测等时序任务
+
+## 亮点与洞察
+
+- **唯一性**：全球首个同时提供 6-DoF 位姿 + 逐帧图像标注 + 逐帧 LiDAR 标注的真实场景无人机数据集
+- **标注流程创新**：通过在 3D 地图上标注静态类再渲染回 2D 的方法，既保证了跨帧一致性又降低了标注成本
+- **任务覆盖全面**：单一数据集支持 6 种不同任务，为无人机感知提供了统一的评估平台
+- **规模优势**：12 万+ 帧标注数据远超大多数现有无人机数据集
+- **开源与可复现**：数据和代码均公开可用
+
+## 局限与展望
+
+- **环境多样性有限**：基于 MARS-LVIG，仅覆盖城镇、山谷、机场、岛屿等场景，缺少极端天气、夜间等条件
+- **DJI-L1 加密限制**：无法使用 DJI-L1 的高质量 LiDAR 数据，仅用了 Livox-Avia
+- **动态目标类别有限**：仅标注了轿车和卡车两种动态目标，缺少行人、自行车等
+- **SfM 重建精度**：依赖 DJI Terra 的商业工具，重建精度可能不如 SLAM 在理想条件下的结果
+- **标注效率**：虽有半自动流程，但 28 万动态实例的标注仍需大量人工，扩展到更大规模面临成本挑战
+
+## 相关工作与启发
+
+- **SemanticKITTI**：地面自动驾驶中 LiDAR 语义分割的标杆数据集，标注方法论对本文有直接影响
+- **nuScenes / Waymo**：自动驾驶多模态数据集的代表，但均为地面视角
+- **MARS-LVIG**：本数据集的基础，原始版本仅面向 SLAM
+- 启示：将地面自动驾驶的数据集构建方法论迁移到无人机领域，通过 3D 标注渲染到 2D 来保证一致性
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ — 填补了明确的数据集空白
+- 实验充分度: ⭐⭐⭐⭐ — 多任务基准全面，但各任务实验规模偏小
+- 写作质量: ⭐⭐⭐⭐ — 对比表格清晰，相关工作梳理全面
+- 价值: ⭐⭐⭐⭐⭐ — 作为基础设施型贡献，对无人机感知研究价值很高
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] V2X-Radar: A Multi-Modal Dataset with 4D Radar for Cooperative Perception](../../NeurIPS2025/autonomous_driving/v2x-radar_a_multi-modal_dataset_with_4d_radar_for_cooperative_perception.md)
+- [\[CVPR 2025\] ClimbingCap: Multi-Modal Dataset and Method for Rock Climbing in World Coordinate](../../CVPR2025/autonomous_driving/climbingcap_multi-modal_dataset_and_method_for_rock_climbing_in_world_.md)
+- [\[ICCV 2025\] EVT: Efficient View Transformation for Multi-Modal 3D Object Detection](evt_efficient_view_transformation_for_multi-modal_3d_object_detection.md)
+- [\[CVPR 2026\] CARD: A Multi-Modal Automotive Dataset for Dense 3D Reconstruction in Challenging Road Topography](../../CVPR2026/autonomous_driving/card_a_multi-modal_automotive_dataset_for_dense_3d_reconstruction_in_challenging.md)
+- [\[ICCV 2025\] LangTraj: Diffusion Model and Dataset for Language-Conditioned Trajectory Simulation](langtraj_diffusion_model_and_dataset_for_language-conditioned_trajectory_simulat.md)
+
+</div>
+
+<!-- RELATED:END -->

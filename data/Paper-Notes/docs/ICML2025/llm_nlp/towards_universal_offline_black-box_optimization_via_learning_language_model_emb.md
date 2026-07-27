@@ -1,0 +1,155 @@
+---
+title: >-
+  [论文解读] Towards Universal Offline Black-Box Optimization via Learning Language Model Embeddings
+description: >-
+  [ICML 2025][LLM 其他][通用离线优化] 提出UniSO框架，将不同类型和维度的优化变量统一编码为JSON字符串后输入语言模型，通过token预测（UniSO-T）和数值回归（UniSO-N）两种建模范式训练通用回归器，并通过元数据引导的对比学习和Lipschitz平滑正则化改善嵌入空间质量，实现了跨域跨维度的通用离线黑盒优化。
+tags:
+  - "ICML 2025"
+  - "LLM 其他"
+  - "通用离线优化"
+  - "语言模型嵌入"
+  - "跨域泛化"
+  - "元数据对齐"
+  - "嵌入空间正则化"
+---
+
+# Towards Universal Offline Black-Box Optimization via Learning Language Model Embeddings
+
+**会议**: ICML 2025  
+**arXiv**: [2506.07109](https://arxiv.org/abs/2506.07109)  
+**代码**: [https://github.com/lamda-bbo/universal-offline-bbo](https://github.com/lamda-bbo/universal-offline-bbo)  
+**领域**: LLM / 黑盒优化  
+**关键词**: 通用离线优化, 语言模型嵌入, 跨域泛化, 元数据对齐, 嵌入空间正则化
+
+## 一句话总结
+
+提出UniSO框架，将不同类型和维度的优化变量统一编码为JSON字符串后输入语言模型，通过token预测（UniSO-T）和数值回归（UniSO-N）两种建模范式训练通用回归器，并通过元数据引导的对比学习和Lipschitz平滑正则化改善嵌入空间质量，实现了跨域跨维度的通用离线黑盒优化。
+
+## 研究背景与动机
+
+**领域现状**：离线黑盒优化（Offline BBO）旨在仅利用预收集的静态数据集，找到未知目标函数的最优设计方案，已在蛋白质设计、分子优化、工程设计等场景展示了价值。然而现有方法被局限在单任务、固定维度的设定中，无法利用跨任务的关联知识。
+
+**现有痛点**：(1) 异构搜索空间是核心障碍——不同任务的变量类型（连续/离散/排列组合）和维度各不相同，无法统一表示；(2) 现有方法对每个新问题都需要独立收集大量数据，在数据稀缺的实际场景中不可持续；(3) NFL定理表明，没有任务先验的通用优化器不可能在所有问题上表现良好。
+
+**核心矛盾**：如何在保持优化性能的同时，突破搜索空间异构性对跨域泛化的限制？近期LM在字符串空间的成功提供了一条可行路径，但直接应用到离线BBO还面临嵌入空间不可区分、不光滑等问题。
+
+**本文目标**：建立一个能同时处理多种类型、多种维度离线BBO任务的通用框架，实现跨任务知识迁移，解决数据稀缺问题。
+
+**切入角度**：将所有设计变量序列化为JSON字符串（如 {"x0":0.5, "x1":1.2}），利用语言模型天然的序列处理能力统一表示异构空间，再通过元数据引导和嵌入正则化来保证多任务区分性和优化友好性。
+
+**核心 idea**：字符串统一表示+语言模型嵌入+元数据引导的嵌入空间正则化 = 通用离线黑盒优化。
+
+## 方法详解
+
+### 整体框架
+
+UniSO的pipeline包含四个组件：(1) 将设计-分数数据对转为JSON字符串表示；(2) 构建包含任务名称、描述和优化目标的文本元数据；(3) 训练两种通用多任务回归器（UniSO-T或UniSO-N）；(4) 在训练好的模型内部用贝叶斯优化搜索最终设计。整体遵循前向方法的范式：先学打分器，再最大化打分器的输出。
+
+### 关键设计
+
+1. **两种建模范式（UniSO-T与UniSO-N）**：
+
+    - 功能：UniSO-T将目标值也编码为token序列（P10编码），用next-token prediction训练端到端序列模型；UniSO-N用预训练T5编码器将字符串嵌入统一潜空间，再训练MLP回归器映射到数值分数。
+    - 核心思路：两者分别对应"把优化问题完全看作语言建模"和"把LM当特征提取器+数值回归"两种设计哲学。UniSO-T在跨任务泛化上更强（Avg Rank 2.0），因为端到端训练能更好地协调编码器和解码器；UniSO-N则面临LM嵌入到数值空间的映射难题。
+    - 设计动机：OmniPred已证明token-targeted回归在多任务在线BBO中有效，但其数据不可获取；Nguyen等已证明numeric-targeted回归用于贝叶斯优化有效，但未探索离线BBO场景。两者互补，系统对比有助于理解各自优劣。
+
+2. **元数据引导的嵌入分布对齐**：
+
+    - 功能：通过对比学习将输入嵌入的相似度分布与元数据嵌入的相似度分布对齐——元数据相似的任务嵌入应彼此靠近，不相似的应分离。
+    - 核心思路：用预训练T5-Small编码元数据获取参考嵌入，对输入嵌入和元数据嵌入分别计算cosine相似度矩阵，用KL散度形式的对比损失拉齐两个分布。这解决了朴素UniSO嵌入空间中不同任务重叠、缺乏清晰边界的问题。
+    - 设计动机：可视化发现朴素UniSO-T的嵌入呈现混乱的环形重叠结构，无法区分任务。对齐后形成了清晰的聚类结构，且相似任务（如Ant和D'Kitty）保持接近以支持知识共享。
+
+3. **局部Lipschitz平滑正则化**：
+
+    - 功能：约束同一任务内嵌入空间的局部平滑性，使嵌入距离与目标值差异的比值不超过某个Lipschitz常数。
+    - 核心思路：对每个任务计算嵌入对之间的Lipschitz比率 $|y_i - y_j| / \|\mathbf{z}_i - \mathbf{z}_j\|_2$，以中值为阈值L，惩罚超过L的比率。跨任务用逆数据集大小加权以平衡不同任务的贡献。
+    - 设计动机：对比学习虽解决了任务间区分性，但同一任务内的嵌入可以在局部区域内任意分布，只要与其他任务保持对比度即可。Lipschitz约束确保"目标值相近的设计在嵌入空间中也相近"，这是下游贝叶斯优化有效搜索的前提。
+
+### 损失函数 / 训练策略
+
+- 主损失：UniSO-T用交叉熵，UniSO-N用MSE
+- 正则化：对比损失 $\mathcal{L}_{con}$ + Lipschitz损失 $\mathcal{L}_{lip}$
+- 梯度平衡：以主损失值为基准自动缩放辅助损失的梯度贡献（类似MetaBalance），避免辅助损失主导优化
+- 训练配置：T5架构，AdamW优化器，lr=1e-4，200 epochs，batch size 128
+
+## 实验关键数据
+
+### 主实验（多任务训练 vs 单任务专家）
+
+| 方法 | Ant | D'Kitty | Superconductor | TF Bind 8 | TF Bind 10 | Avg Rank |
+|------|-----|---------|----------------|-----------|------------|----------|
+| BN+BO (单任务专家) | 241.4 | 103.0 | 83.9 | 0.898 | 0.454 | 3.11 |
+| BN+Grad (单任务专家) | 229.5 | 183.3 | 97.1 | 0.959 | 0.888 | 4.11 |
+| Improved UniSO-T (多任务) | **455.7** | **222.0** | 82.6 | 0.857 | **0.944** | **2.22** |
+| Improved UniSO-N (多任务) | 381.8 | 42.2 | 82.0 | 0.856 | 0.528 | 4.11 |
+
+### 零样本/少样本泛化（未见过的任务）
+
+| 任务 | 数据集最佳 | UniSO-T零样本 | UniSO-T少样本 |
+|------|----------|-------------|-------------|
+| RobotPush | 0.102 | >>0.102 | **7.067** |
+| Rover | -16.148 | >>-16.148 | **-8.239** |
+| LunarLander | 7.038 | >>7.038 | **248.6** |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|---------|------|
+| 去掉元数据 | Avg Rank 3.53→ | 泛化能力下降 |
+| 去掉Lipschitz损失 | Avg Rank 2.89→ | 嵌入局部平滑性降低 |
+| 去掉对比损失 | Avg Rank 2.33→ | 任务区分性变差 |
+| 去掉梯度平衡 | Avg Rank 1.89→ | 辅助损失可能压制主损失 |
+| 预训练T5初始化(UniSO-N) | 差于从头训练 | LM先验对数值优化有害 |
+
+### 关键发现
+
+- UniSO-T在多任务训练下超过单任务数值专家（Avg Rank 2.22 vs 3.11），证明跨域知识迁移的可行性
+- 预训练LM对数值优化有害——注意力集中在语法token（如EOS）而非数值token，从头训练的UniSO-N更好
+- 元数据质量对跨域泛化至关重要——去除任何组分（名称/描述/目标）都导致性能下降
+- BO优于EA作为模型内搜索器，在离散字符串空间中优势明显
+- DeepSeek-R1比基础Qwen在数值token上分配更多注意力，数学能力更强的LM可能更适合数值优化
+
+## 亮点与洞察
+
+- "字符串统一异构搜索空间"是一个简洁而强大的insights——JSON格式天然处理变长和混合类型输入，避免了对齐/padding等传统难题
+- 元数据引导的对比学习巧妙利用了任务描述文本的语义结构——相似任务的元数据嵌入自然相近，以此为锚点引导输入嵌入组织
+- "预训练LM对数值优化有害"是反直觉但重要的发现——LM的语法先验在数值优化场景中成为阻碍，注意力分配偏差是根因
+- 零样本泛化能力令人印象深刻——从未见过的任务上零样本结果已超过数据集最优，说明确实学到了跨域优化模式
+
+## 局限与展望
+
+- UniSO-T与SOTA单任务方法仍有差距（Design-Bench上Avg Rank 9.8/22），通用性和极致性能之间存在权衡
+- UniSO-N的性能明显弱于UniSO-T——从LM嵌入到数值空间的映射是瓶颈，需更好的架构设计
+- 数值token的精度受tokenizer粒度限制——P10编码的精度上限可能影响高精度优化场景
+- 极高维问题（如>1000维）的可扩展性未验证——JSON字符串会变得很长，序列建模可能遇到挑战
+- 仅用9个任务训练——更多样化的训练任务是否能进一步提升泛化能力有待验证
+
+## 相关工作与启发
+
+- **OmniPred**：UniSO-T的直接灵感来源，但OmniPred的数据不可获取，本文是独立实现
+- **Nguyen等 (2024)**：UniSO-N的灵感来源，用LM嵌入做贝叶斯优化，但仅限在线场景
+- **与BO的关系**：BO在固定维度上高效但无法跨域，LM嵌入统一空间后贝叶斯搜索变得跨域可用
+- **COLA/LIRE等潜空间优化**：强调嵌入空间平滑性对优化的重要性，Lipschitz正则化思路来源于此
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 字符串统一+LM通用离线BBO是新范式
+- 实验充分度: ⭐⭐⭐⭐ 9任务训练+3任务泛化+详尽消融+多基线对比
+- 写作质量: ⭐⭐⭐⭐ 问题定义清晰，两种范式系统对比
+- 价值: ⭐⭐⭐⭐ 对BBO领域有方向性贡献,但与SOTA仍有差距
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] PRESTO: Preimage-Informed Instruction Optimization for Prompting Black-Box LLMs](../../NeurIPS2025/llm_nlp/presto_preimage-informed_instruction_optimization_for_prompting_black-box_llms.md)
+- [\[ACL 2025\] Length Controlled Generation for Black-box LLMs](../../ACL2025/llm_nlp/length_controlled_generation_for_black-box_llms.md)
+- [\[ACL 2025\] Self-Instructed Derived Prompt Generation Meets In-Context Learning: Unlocking New Potential of Black-Box LLMs](../../ACL2025/llm_nlp/self-instructed_derived_prompt_generation_meets_in-context_learning_unlocking_ne.md)
+- [\[ICML 2025\] Interchangeable Token Embeddings for Extendable Vocabulary and Alpha-Equivalence](interchangeable_token_embeddings_for_extendable_vocabulary_and_alpha-equivalence.md)
+- [\[ACL 2025\] MergePrint: Merge-Resistant Fingerprints for Robust Black-box Ownership Verification of Large Language Models](../../ACL2025/llm_nlp/mergeprint_fingerprint_ownership.md)
+
+</div>
+
+<!-- RELATED:END -->

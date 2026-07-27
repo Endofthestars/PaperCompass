@@ -1,0 +1,141 @@
+---
+title: >-
+  [论文解读] When Can Model-Free Reinforcement Learning be Enough for Thinking?
+description: >-
+  [NeurIPS 2025][强化学习][思考MDP] 提出 Thought MDP 形式化框架来理解模型无关 RL 中"思考"行为的涌现条件：策略初始化是决定性因素，思考动作等价于智能体在行动前执行一步策略改进，且开源 LLM 满足思考涌现的必要条件。 领域现状：DeepSeek-R1 等工作展示了通过模型无关 RL 训练…
+tags:
+  - "NeurIPS 2025"
+  - "强化学习"
+  - "思考MDP"
+  - "模型无关RL"
+  - "思考行为涌现"
+  - "策略初始化"
+  - "双过程理论"
+---
+
+# When Can Model-Free Reinforcement Learning be Enough for Thinking?
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2506.17124](https://arxiv.org/abs/2506.17124)  
+**代码**: [https://github.com/prediction-action-lab/thinking-as-control](https://github.com/prediction-action-lab/thinking-as-control)  
+**领域**: 强化学习  
+**关键词**: 思考MDP, 模型无关RL, 思考行为涌现, 策略初始化, 双过程理论
+
+## 一句话总结
+提出 Thought MDP 形式化框架来理解模型无关 RL 中"思考"行为的涌现条件：策略初始化是决定性因素，思考动作等价于智能体在行动前执行一步策略改进，且开源 LLM 满足思考涌现的必要条件。
+
+## 研究背景与动机
+
+**领域现状**：DeepSeek-R1 等工作展示了通过模型无关 RL 训练 LLM 涌现出"思考"能力（在 `<think>` 标签内输出推理过程再给出答案）。这一现象令人惊讶，因为思考 Token 不直接产生奖励也不改变外部状态
+
+**现有痛点**：对"什么条件下模型无关 RL 会产生思考行为"缺乏理论理解。现有工作（MCTS、学习规划等）要么需要环境模型，要么研究的是网络内部的隐式规划，而非作为显式动作的思考
+
+**核心problem**：在什么条件下，模型无关 RL 会将"思考"作为**奖励最大化策略**选择出来？
+
+**切入角度**：将问题形式化——扩展标准 MDP 增加思考状态空间和思考动作集合，然后分析策略迭代的行为
+
+**核心 idea**：思考是学习过程中的"过渡策略"——最优策略永远不思考（Proposition 4），但在策略收敛之前，思考通过**切换到更好的子策略**来加速学习
+
+## 方法详解
+
+### 整体框架
+定义 Thought MDP 为 $\langle \mathcal{S}, \mathcal{A}, p, r, \gamma, \mathcal{T}, \mathcal{C}, p_{\mathcal{T}} \rangle$——在标准 MDP 基础上增加思考状态空间 $\mathcal{T}$、思考动作集 $\mathcal{C}$、思考转移函数 $p_{\mathcal{T}}$。策略映射 $\pi: \mathcal{S} \times \mathcal{T} \rightarrow \Delta(\mathcal{A} \cup \mathcal{C})$——智能体可选择环境动作或思考动作。思考动作不产生奖励、不改变环境状态，只改变思考状态。
+
+### 关键设计
+
+1. **最优策略不思考（Proposition 4）**：
+
+    - 核心思路：假设最优策略 $\pi^\star$ 在某 $(s,\tau)$ 选择思考动作 $c$，经 $k$ 步思考后必到某 $\tilde{\tau}$ 执行环境动作。则 $v_{\pi^\star}(s,\tau) = \gamma^k v_{\pi^\star}(s,\tilde{\tau})$。直接在 $(s,\tau)$ 执行 $\pi^\star(s,\tilde{\tau})$ 的策略严格更优（少折扣 $k$ 步）——矛盾
+    - 设计动机：说明思考不是终态，而是**学习路径上的跳板**
+
+2. **思考涌现的必要条件（Theorem 5）**：
+
+    - 核心思路：如果策略改进步把 $(s,\tau)$ 的环境动作换成思考动作 $c$（转移到 $\tau'$），则必然 $v_\pi(s,\tau') > v_\pi(s,\tau)$——即存在一个思考状态 $\tau'$ 使策略表现更好
+    - 设计动机：形式化了"策略初始化决定思考是否涌现"——需要策略已包含好的子策略，思考动作只是在它们之间切换
+
+3. **思考 = 局部策略改进算子**：
+
+    - 核心思路：当 $|\mathcal{T}|=2$ 时，思考等价于在两个子策略 $\pi(\tau_0)$ 和 $\pi(\tau_1)$ 之间选择更好的那个。Corollary 8 进一步证明连续多步思考每步都在改进
+    - 设计动机：类比决策时规划（decision-time planning），但不需要前向搜索——是一种更抽象的局部改进
+
+4. **LLM 作为 Thought MDP 的实例化**：
+
+    - 核心思路：LLM 的思考 Token = 思考动作 $c \in \mathcal{C}$，KV cache 的变化 = 思考状态转移 $p_\mathcal{T}$。预训练在多任务语言数据上学习了丰富的子策略（不同上下文触发不同生成模式），RL 学会在正确时刻通过输出 `<think>` 等 Token 切换到更好的子策略
+    - 验证：11 个开源 LLM 在多位数加法任务上，强制提供中间步骤（"思考"）后准确率从 0-7% 提升到 28-96%——验证了思考动作确实提高 $v_\pi(s,\tau)$
+
+### 损失函数 / 训练策略
+- 理论分析基于精确策略迭代
+- 非语言实验用 5×5 网格世界 + causal transformer + REINFORCE 验证
+
+## 实验关键数据
+
+### LLM 实验 — 多位数加法（验证思考提升回报）
+
+| 模型 | 无思考准确率 | 有思考准确率 | 提升 |
+|------|-----------|-----------|------|
+| Qwen2.5-1.5B-Instruct | 7.2% | 71.2% | +64.0% |
+| Qwen2.5-7B-Instruct | 5.1% | 96.1% | +91.0% |
+| Llama-2-7b | 0.0% | 48.8% | +48.8% |
+| Gemma-3-4b-it | 4.9% | 91.5% | +86.6% |
+| Mistral-7B-v0.3 | 1.5% | 85.2% | +83.7% |
+
+### 网格世界实验（验证思考加速学习）
+
+| 智能体 | 收敛速度 | 最终成功率 |
+|--------|---------|----------|
+| Scratch-Think | 不收敛 | 0% |
+| Scratch-NoThink | 不收敛 | 0% |
+| Pretrained-NoThink | 慢 | ~50% |
+| **Pretrained-Think** | **快** | **~90%** |
+
+### 简单 Thought MDP 策略迭代演变
+
+| 迭代 | 策略特征 | 说明 |
+|------|---------|------|
+| 1轮 | 远离目标→先思考（切换子策略），再行动 | 思考涌现 |
+| 4轮 | 靠近目标→直接行动；远处→仍先思考 | 混合策略 |
+| 10轮 | 全部直接行动，不再思考 | 收敛到最优 |
+
+### 关键发现
+- **预训练 + 思考动作**是两个关键成分：缺任何一个都不行。Pretrained-Think 显著快于 Pretrained-NoThink
+- 网格世界中，收敛后思考动作稳定在 ~15%（14 步 episode 中思考约 2 步），接近理论最优
+- 有趣的是，环境动作序列也能起到类似思考的作用（如连续向下移动会"触发"预训练学到的导航到右下角的子策略），但这种隐式切换比显式思考动作更难被发现
+
+## 亮点与洞察
+- **"最优策略不思考"（Proposition 4）**是反直觉但数学上确证的结论——思考是次优但在学习路径上有益的过渡策略。这优雅地解释了：训练收敛后思考应该越来越少（虽然实践中因采样误差不完全消失）
+- **思考 = policy improvement before acting**的等价关系深刻地连接了两个看似不相关的领域——LLM 推理和经典 RL 的决策时规划
+- 策略初始化的核心作用：没有多任务预训练提供的丰富子策略库，模型无关 RL 不可能发现思考行为——这解释了为什么 DeepSeek-R1 需要从一个强大的预训练模型出发
+- **非语言验证**（网格世界）证明了理论的普适性——思考不是语言专属的能力，任何有内部状态的智能体在满足条件时都能学会思考
+
+## 局限与展望
+- 假设非负奖励和可达正奖励（Assumptions 2-3），负奖励环境中思考可能退化为"拖延"策略
+- 动态环境中思考期间世界状态变化的问题未处理（当前假设静态环境）
+- toy domain 验证有限——更复杂的非语言思考场景（如机器人规划、游戏博弈）待探索
+- 与 options framework 的关系值得深入——思考可能是 options 的一种特殊形式，但带有"内部状态切换成本"
+
+## 相关工作与启发
+- **vs MCTS/AlphaZero**：这些是决策时规划（需要模型），思考是模型无关的策略改进——更轻量但需要好的初始化
+- **vs DeepSeek-R1**：R1 展示了现象（思考涌现），本文给出了理论解释（为什么涌现+什么条件下涌现）
+- **vs Chain-of-Thought**：CoT 是通过提示强制思考，本文研究的是 RL 自主发现思考——后者更根本
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ Thought MDP 形式化是全新且深刻的理论贡献
+- 实验充分度: ⭐⭐⭐⭐ 11个 LLM 验证 + 网格世界 + 理论分析，但缺少更复杂的非语言场景
+- 写作质量: ⭐⭐⭐⭐⭐ 概念定义精确，定理推导严密，与 LLM 实践的连接清晰
+- 价值: ⭐⭐⭐⭐⭐ 对理解 LLM 推理涌现有深远意义，为"何时/为何 RL 产生思考"给出了首个形式化答案
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Parameter-Free Algorithms for the Stochastically Extended Adversarial Model](parameter-free_algorithms_for_the_stochastically_extended_adversarial_model.md)
+- [\[NeurIPS 2025\] Deep RL Needs Deep Behavior Analysis: Exploring Implicit Planning by Model-Free Agents](deep_rl_needs_deep_behavior_analysis_exploring_implicit_planning_by_model-free_a.md)
+- [\[ICML 2025\] BRITE: Bootstrapping Reinforced Thinking Process to Enhance Language Model Reasoning](../../ICML2025/reinforcement_learning/brite_bootstrapping_reinforced_thinking_process_to_enhance_language_model_reason.md)
+- [\[NeurIPS 2025\] Optimizing the Unknown: Black Box Bayesian Optimization with Energy-Based Model and Reinforcement Learning](optimizing_the_unknown_black_box_bayesian_optimization_with_energy-based_model_a.md)
+- [\[NeurIPS 2025\] When Less Language is More: Language-Reasoning Disentanglement Makes LLMs Better Multilingual Reasoners](when_less_language_is_more_language-reasoning_disentanglement_makes_llms_better_.md)
+
+</div>
+
+<!-- RELATED:END -->

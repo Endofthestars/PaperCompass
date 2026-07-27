@@ -1,0 +1,167 @@
+---
+title: >-
+  [论文解读] LIFT: Latent Implicit Functions for Task- and Data-Agnostic Encoding
+description: >-
+  [ICCV 2025][图像生成][隐式神经表示] LIFT 提出了一个基于元学习的多尺度隐式神经表示框架，通过并行局部隐式函数和层次化潜变量生成器，实现跨任务（生成、分类）和跨数据模态（2D 图像、3D 体素）的统一编码，在重建和生成任务上均达到 SOTA 且计算成本大幅降低。 隐式神经表示（INR）通过神经网络将坐标映射…
+tags:
+  - "ICCV 2025"
+  - "图像生成"
+  - "隐式神经表示"
+  - "元学习"
+  - "多尺度潜变量"
+  - "分类"
+  - "生成建模"
+---
+
+# LIFT: Latent Implicit Functions for Task- and Data-Agnostic Encoding
+
+**会议**: ICCV 2025  
+**arXiv**: [2503.15420](https://arxiv.org/abs/2503.15420)  
+**代码**: [GitHub](https://amirhossein-kz.github.io/lift/)  
+**领域**: 隐式神经表示/生成模型  
+**关键词**: 隐式神经表示, 元学习, 多尺度潜变量, 分类, 生成建模
+
+## 一句话总结
+LIFT 提出了一个基于元学习的多尺度隐式神经表示框架，通过并行局部隐式函数和层次化潜变量生成器，实现跨任务（生成、分类）和跨数据模态（2D 图像、3D 体素）的统一编码，在重建和生成任务上均达到 SOTA 且计算成本大幅降低。
+
+## 研究背景与动机
+
+隐式神经表示（INR）通过神经网络将坐标映射到信号值，为各种数据模态提供了连续、分辨率无关的表示方式。现有 INR 框架面临几个核心问题：
+
+**全局潜向量的局限性**：Functa 等方法使用单一全局潜向量表示整个数据点，无法捕获细粒度局部细节，在生成和分类等下游任务上表现受限。
+
+**计算效率低下**：SpatialFuncta 虽采用空间化潜表示，但需要深度为 6、宽度为 256 的大型 MLP，仅处理 CIFAR-10 就需要 0.271 GFLOPs。
+
+**模态依赖性强**：传统深度学习模型通常是模态依赖的，需要针对不同信号类型定制架构和目标函数。
+
+核心矛盾在于：如何在保持计算效率的同时，既能捕获局部细节又能保留全局上下文，且能跨任务、跨模态通用？
+
+本文的切入角度是：将域空间划分为多个局部区域，每个区域由独立的小型 MLP 处理，再通过层次化潜变量生成器融合全局、中间和局部三个尺度的特征。核心 idea：**多尺度层次化潜变量调制 + 并行局部隐式函数 = 高效统一表示**。
+
+## 方法详解
+
+### 整体框架
+
+LIFT 是一个两阶段框架：
+- **阶段一（Context Adaptation）**：通过元学习生成多尺度潜变量调制数据集
+- **阶段二（Task-Driven Generalization）**：利用潜变量进行下游任务（生成用 DDPM/DDIM，分类用 VMamba）
+
+核心架构包含并行局部隐式函数（P-MLP）和层次化潜变量生成器（HLG），两者协同产生统一的多尺度潜表示。
+
+### 关键设计
+
+1. **并行局部隐式函数（P-MLP）**:
+
+    - 功能：将输入域 $[0,1]^D$ 分割为 $M^D$ 个区域，每个区域分配独立的小型 MLP
+    - 核心思路：总函数表示为子函数的加权和
+    $\mathcal{F}_\theta(\mathbf{x}) = \sum_{m=1}^{M^D} f_m(\mathbf{x}) \cdot \mathbb{1}_m(\mathbf{x})$
+      其中 $\mathbb{1}_m$ 是指示函数，$f_m$ 是对应区域的局部 MLP
+    - 设计动机：局部化学习使每个子网络专注于小区域的信号建模，提升表达能力的同时降低单个 MLP 的复杂度
+
+2. **层次化潜变量生成器（HLG）**:
+
+    - 功能：生成融合全局、中间、局部三个尺度信息的组合潜变量 $Z^\alpha$
+    - 核心思路：定义三级潜变量层次：
+        - 全局潜变量 $\mathbf{Z}^\dagger \in \mathbb{R}^{1 \times 1 \times d_g}$
+        - 中间潜变量 $\mathbf{Z}^\star \in \mathbb{R}^{P_i \times P_i \times d_i}$
+        - 局部潜变量 $\mathbf{Z} \in \mathbb{R}^{P \times P \times d_l}$
+
+      融合公式为：
+    $\mathbf{Z}' = \text{Linear}_1(\text{Concat}(\text{Upsample}(\mathbf{Z}^\dagger, P_i, P_i), \mathbf{Z}^\star))$
+    $\mathbf{Z}^\alpha = \text{Linear}_2(\text{Concat}(\text{Upsample}(\mathbf{Z}', P, P), \mathbf{Z}))$
+    - 设计动机：相邻区域通过共享的中间和全局潜变量获得一致的高层表示，从而实现平滑的区域间过渡，消除 patch 边界不连续性
+
+3. **ReLIFT 变体**:
+
+    - 功能：在 SIREN 激活函数基础上引入残差连接和频率缩放因子
+    - 核心思路：
+    $\mathbf{z}^{(0)} = \sin(\gamma \Omega \mathbf{r})$
+    $\mathbf{z}^{(1)} = \sin(\mathbf{W}^{(1)} \sin(\gamma \Omega \mathbf{r})) + \sin(\gamma \Omega \mathbf{r})$
+      当 $\gamma > 1$ 时，频率 $\gamma \sum s_t \boldsymbol{\omega}_t$ 按比例增大，扩展了网络对高频分量的建模能力。残差连接保留了基频分量不被丢失。
+    - 设计动机：标准 SIREN 由于 Bessel 函数性质存在对低频信号的隐式偏好（convergence-capacity gap），ReLIFT 通过频率缩放增强高频能力，残差连接平衡高低频
+
+### 损失函数 / 训练策略
+
+采用 CAVIA 风格的元学习：
+- **内循环**：用 SGD 更新多尺度潜变量 $Z^\dagger, Z^\star, Z$（$T_\text{inner}$ 步）
+- **外循环**：用 Adam 更新网络权重
+
+总损失函数：
+$$\mathcal{L}_\text{Total} = \mathcal{L}_\text{Rec} + \lambda \mathcal{L}_\text{Smoothness}$$
+
+其中重建损失为 MSE，平滑损失鼓励相邻潜变量间的一致性：
+$$\mathcal{L}_\text{Smoothness}(Z_m^\alpha) = \frac{1}{K} \sum_{k=1}^{K} \|Z_m^\alpha - Z_k^\alpha\|_2^2$$
+
+## 实验关键数据
+
+### 主实验
+
+| 数据集 | 指标 | LIFT | 之前SOTA (mNIF-L) | 提升 |
+|--------|------|------|----------|------|
+| CelebA-HQ 64² | PSNR↑ | **39.4** | 34.5 | +4.9 dB |
+| CelebA-HQ 64² | rFID↓ | **2.6** | 5.8 | -3.2 |
+| CelebA-HQ 64² | FID↓ | **10.0** | 13.2 | -3.2 |
+| CelebA-HQ 64² | F1↑ | **0.742** | 0.679 | +0.063 |
+| ShapeNet 64³ | MSE↓ | **0.00053** | 0.0153 | **28x** 改进 |
+| ShapeNet 64³ | PSNR↑ | **35.2** | 21.3 | +13.9 dB |
+| CIFAR-10 | Top-1 Acc | **95.47%** | 90.30% | +5.17% |
+| CelebA-HQ 64² | FLOPs↓ | **54.52M** | 340M | **6.2x** 更高效 |
+
+### 消融实验
+
+| 配置 (Z†×Z⋆×Z) | Test PSNR | rFID | 说明 |
+|------|---------|------|------|
+| 1×1×64, 4×4×32, 8×8×16 | 29.00 | 23.51 | 最小配置，性能受限 |
+| 1×1×128, 4×4×64, 8×8×32 | 34.38 | 7.87 | 通道数翻倍，显著提升 |
+| 1×1×256, 4×4×128, 8×8×64 | 40.91 | 2.22 | 默认配置 |
+| 1×1×512, 4×4×256, 8×8×128 | **49.86** | **0.40** | 最大配置，性能最优 |
+| 1×1×256, 2×2×128, 4×4×64 | 30.27 | 21.93 | 减小局部空间尺寸 → 大幅下降 |
+
+### 关键发现
+
+- 局部潜变量的空间维度（4×4→8×8）对重建质量影响最大；PSNR 从 30.27 提升到 40.42
+- 通道容量翻倍可带来 PSNR +8.95 的显著提升
+- 在 CIFAR-10 上仅需 5 个数据增强即可达到 95.30% 的准确率，超越使用 MixUp+CutMix 的 ResNet-50
+- 3D 体素实验中 LIFT 比 GEM 少用 **47×** FLOPs，但重建质量高出一个数量级
+
+## 亮点与洞察
+
+1. **多尺度设计的必要性被消融清晰验证**：纯局部（SpatialFuncta）→ 生成可以但分类差；纯全局（Functa）→ 分类 68.30%；LIFT 多尺度 → 95.47%
+2. **ReLIFT 的频率分析很优雅**：基于 Fourier-Bessel 展开推导出频率缩放和残差连接对高频学习的理论保证
+3. **极致的效率**：0.915M 参数、54.52M FLOPs 就超越了拥有百万级参数的竞争方法
+4. **潜空间插值质量高**：2D 和 3D 的插值实验展示了流形的平滑性和结构合理性
+
+## 局限与展望
+
+- 依赖于规则的网格划分，对于不规则或稀疏信号可能不够灵活
+- 元学习的两阶段训练可能增加整体训练复杂度
+- 仅在相对较低分辨率（64²、256²）上验证，更高分辨率的可扩展性有待探索
+- 生成质量虽然领先，但与专用生成模型（如 StyleGAN 系列）仍有差距
+
+## 相关工作与启发
+
+- 对 Functa 系列（全局调制）和 SpatialFuncta（空间调制）的多尺度统一是自然且有效的演进方向
+- ReLIFT 中对 SIREN 频率特性的分析可以推广到其他基于隐式表示的方法
+- 并行局部 MLP 的将域分区策略可以借鉴到 NeRF 等领域
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 多尺度层次化调制和 ReLIFT 的频率分析有创新，但整体框架是现有组件的组合
+- 实验充分度: ⭐⭐⭐⭐⭐ 覆盖 2D/3D 重建、生成、分类、插值、消融，非常全面
+- 写作质量: ⭐⭐⭐⭐ 公式推导详细，但数学符号较多，阅读门槛较高
+- 价值: ⭐⭐⭐⭐ 为任务无关编码提供了高效且强大的框架，具有实际应用价值
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] Task-Agnostic Pre-training and Task-Guided Fine-tuning for Versatile Diffusion Planner](../../ICML2025/image_generation/task-agnostic_pre-training_and_task-guided_fine-tuning_for_versatile_diffusion_p.md)
+- [\[ICML 2026\] Semantic-Aware Motion Encoding for Topology-Agnostic Character Animation](../../ICML2026/image_generation/semantic-aware_motion_encoding_for_topology-agnostic_character_animation.md)
+- [\[ICCV 2025\] InfGen: A Resolution-Agnostic Paradigm for Scalable Image Synthesis](infgen_a_resolution-agnostic_paradigm_for_scalable_image_synthesis.md)
+- [\[ICCV 2025\] DiffuMatch: Category-Agnostic Spectral Diffusion Priors for Robust Non-rigid Shape Matching](diffumatch_category-agnostic_spectral_diffusion_priors_for_robust_non-rigid_shap.md)
+- [\[NeurIPS 2025\] UtilGen: Utility-Centric Generative Data Augmentation with Dual-Level Task Adaptation](../../NeurIPS2025/image_generation/utilgen_utility-centric_generative_data_augmentation_with_dual-level_task_adapta.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,166 @@
+---
+title: >-
+  [论文解读] FedGRPO: Privately Optimizing Foundation Models with Group-Relative Rewards from Domain Clients
+description: >-
+  [AAAI 2026 Oral][自监督学习][联邦学习] 提出 FedGRPO，将大模型优化重新定义为基于奖励的评估过程，通过能力感知的专家选择和联邦组相对策略优化（仅传输标量奖励信号），实现了隐私保护且通信效率极高的联邦基础模型优化，在数学推理和问答任务上性能接近甚至超越集中式 GRPO。 联邦基础模型（FedFMs）旨…
+tags:
+  - "AAAI 2026 Oral"
+  - "自监督学习"
+  - "联邦学习"
+  - "基础模型"
+  - "GRPO"
+  - "隐私保护"
+  - "强化学习"
+---
+
+# FedGRPO: Privately Optimizing Foundation Models with Group-Relative Rewards from Domain Clients
+
+**会议**: AAAI 2026 Oral  
+**arXiv**: [2602.12014](https://arxiv.org/abs/2602.12014)  
+**代码**: [https://github.com/Liar-Mask/FedGRPO](https://github.com/Liar-Mask/FedGRPO)  
+**领域**: 自监督  
+**关键词**: 联邦学习, 基础模型, GRPO, 隐私保护, 强化学习
+
+## 一句话总结
+提出 FedGRPO，将大模型优化重新定义为基于奖励的评估过程，通过能力感知的专家选择和联邦组相对策略优化（仅传输标量奖励信号），实现了隐私保护且通信效率极高的联邦基础模型优化，在数学推理和问答任务上性能接近甚至超越集中式 GRPO。
+
+## 研究背景与动机
+
+联邦基础模型（FedFMs）旨在将服务器端大型基础模型的强大泛化能力与客户端设备的领域专业知识相结合。核心问题是：**如何有效利用客户端的领域知识来增强基础模型，同时保护本地数据隐私？**
+
+现有的客户端到服务器知识迁移方法分两大类：
+
+**模型级迁移**（如 FedPETuning）：客户端本地微调 LoRA 等参数后上传聚合。问题是通信开销大（随模型规模增长），且梯度/参数可能泄露隐私。
+
+**合成数据级迁移**（如 DPSDA-FL）：客户端生成合成数据上传。问题同样是通信开销大，且合成数据也可能被半诚实攻击者用于推断原始数据。
+
+核心矛盾：现有方法在隐私保护和通信效率之间难以兼顾。作者的洞察是：**只需传递标量评估分数（而非模型参数或合成数据），既能大幅降低隐私泄露风险，又能将通信开销降低数个数量级。**
+
+由此引出两个技术挑战：（1）如何根据专业能力选择最合适的客户端来评估特定问题？（2）如何聚合多个专家客户端的评估来有效优化基础模型？
+
+## 方法详解
+
+### 整体框架
+FedGRPO 包含三步循环：
+1. **专家选择**：基于能力图选择最合适的客户端子集
+2. **双路评估**：选中的客户端对服务器生成的策略进行评估，返回标量奖励
+3. **组相对奖励聚合**：服务器聚合奖励信号，用 GRPO 损失优化基础模型
+
+### 关键设计
+
+1. **基于能力的专家选择（Competence-based Expert Selection）**:
+
+    - 功能：为每个待评估的问题 $x_s$ 找到最合适的 $M$ 个客户端
+    - 核心思路：
+        - 服务器通过冻结编码器 $\phi$ 计算问题嵌入 $\mathbf{z}_s = \phi(x_s)$
+        - 基于余弦相似度从辅助数据中检索 $L$ 个最相似的标注样本 $\mathcal{G}(x_s)$
+        - 将这些样本分发给所有客户端评估，每个客户端返回其在这些样本上的准确率 $r_k^p$
+        - 选择准确率最高的 $M$ 个客户端作为专家
+    - 设计动机：不同客户端擅长不同领域，自适应地匹配问题与专家可以提高评估质量
+
+2. **双路评估机制（Dual Evaluation）**:
+
+    - 功能：专家客户端对服务器生成的候选答案 $\hat{y}$ 进行评估
+    - 核心思路：两种评估路径通过门控指标 $\lambda_k$ 动态选择
+        - **基于答案的评估（AE）**：当问题存在于客户端数据中时，直接与 GT 比较，返回 0/1
+        - **基于模型的评估（ME）**：当无 GT 时，用客户端本地训练的奖励模型给出连续分数
+    - 设计动机：让客户端灵活利用最强的知识源，避免依赖单一评估方式
+
+3. **联邦组相对策略优化（Federated GRPO）**:
+
+    - 功能：将多个客户端的奖励信号聚合为尺度不变的强化学习信号
+    - 核心思路：
+        - 对选中专家的分数 $\{r_k^s\}_{k \in \mathcal{C}}$ 进行标准化：$R_k = (r_k^s - \mu_r) / (\sigma_r + \epsilon)$
+        - 用标准化后的组相对奖励 $R_k$ 进行策略梯度更新：$\theta_g \leftarrow \theta_g + \eta R_k \nabla_{\theta_g} \log \pi_{\theta_g}(\hat{y}|x_s)$
+    - 设计动机：标准化消除了不同评估模式（AE vs ME）间的尺度差异，抑制异常值影响
+
+### 损失函数 / 训练策略
+- 组相对策略梯度更新，强化表现优于组平均的回答
+- 每个问题采样 8 个候选策略进行评估
+- 最大生成长度 2048 tokens，温度 0.7
+- 辅助数据 100 样本，$L=20$，$M=2$
+
+## 实验关键数据
+
+### 主实验
+
+**Math-benchmark 数据集（Qwen2.5-Math-7B）**:
+
+| 方法 | Math500 | Minerva | AMC | Olympiad | AIME24 | Avg |
+|------|---------|---------|-----|----------|--------|-----|
+| Zero-shot | 0.426 | 0.121 | 0.326 | 0.163 | 0.111 | 0.199 |
+| Fedpetuning+GRPO | 0.460 | 0.107 | 0.329 | 0.132 | 0.049 | 0.186 |
+| DPSDA-FL+GRPO | 0.714 | 0.323 | 0.432 | 0.308 | 0.087 | 0.321 |
+| Central-GRPO | 0.742 | 0.320 | 0.515 | 0.364 | 0.175 | **0.370** |
+| **FedGRPO** | 0.738 | 0.321 | 0.504 | 0.371 | 0.167 | **0.369** |
+
+**OpenR1-Math 数据集（Qwen2.5-Math-7B）**:
+
+| 方法 | Math500 | Minerva | AMC | Olympiad | AIME24 | Avg |
+|------|---------|---------|-----|----------|--------|-----|
+| Central-GRPO | 0.755 | 0.325 | 0.529 | 0.370 | 0.180 | 0.379 |
+| **FedGRPO** | **0.768** | **0.337** | **0.533** | **0.382** | **0.184** | **0.388** |
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|---------|------|
+| **通信效率** | | |
+| FedGRPO | **2.4 MB** | 仅传输标量奖励，与模型大小无关 |
+| DPSDA-FL | 102.5 MB | 40× 于 FedGRPO |
+| FedPETuning (7B) | **6.1 GB** | 2500× 于 FedGRPO |
+| **客户端数量** | | |
+| 4 clients | Avg ≈ 0.29 | 基础性能 |
+| 10 clients | 稳步提升 | 更多专家知识 |
+| 20 clients | Avg ≈ 0.36 | 持续受益于更大联邦网络 |
+| **无 GT 答案** | | |
+| FedGRPO (7B, 无 GT) | Avg = 0.327 | 仅略低于有 GT 的 0.369 |
+
+### 关键发现
+- FedGRPO 在多个设置下**接近甚至超越集中式 GRPO**（如 OpenR1-Math 7B 上超出 0.009）
+- 通信开销仅 2.4 MB，比 FedPETuning 低 **三个数量级**，比 DPSDA-FL 低**两个数量级**
+- 即使没有 ground-truth 答案（仅用本地奖励模型），FedGRPO 仍有效
+- 客户端数量增加时性能稳步提升，展现了良好的可扩展性
+- 大模型（7B）比小模型（1.5B, 3B）更能充分发挥联邦学习的优势
+
+## 亮点与洞察
+- **范式创新**：将联邦基础模型优化从"传参数/数据"转变为"传奖励"，根本性地改变了隐私-效率权衡
+- **通信开销随模型大小恒定**：FedGRPO 的 2.4 MB 不受模型规模影响，而传统方法随模型增大线性/超线性增长
+- 巧妙借鉴 DeepSeek 的 GRPO 框架，将"组"从同一模型的多次采样扩展为多个客户端的分布式评估
+- 能力感知的专家选择机制使得异构客户端的知识被自适应利用
+- 在 AIME 等高难度数据集上也有显著改善
+
+## 局限与展望
+- 假设 honest-but-curious 威胁模型，未考虑恶意客户端可能故意给出错误奖励
+- 需要服务器持有少量辅助数据（100 样本），在极端隐私场景下可能不现实
+- 每个问题需要采样 8 个候选策略，服务器端推理开销较大
+- 目前仅验证了数学推理和问答任务，对其他领域（如代码生成、多模态）的适用性待验证
+- 能力评估依赖辅助数据的代表性，如果辅助数据与实际问题分布差异大，专家选择可能不准确
+
+## 相关工作与启发
+- 将 GRPO 的"组内相对评估"扩展到联邦学习场景是一个有价值的思路
+- "只传奖励信号"的隐私保护范式或许可以推广到更多分布式 AI 场景
+- 能力感知路由（competence-based routing）思想与 MoE 专家路由有相似之处
+- 双路评估（AE + ME）的设计思路适用于任何评估信号不统一的场景
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐ — 将 GRPO 创新性地扩展到联邦学习，范式变革性强
+- 实验充分度: ⭐⭐⭐⭐ — 多模型规模、多数据集，但缺少更多领域验证
+- 写作质量: ⭐⭐⭐⭐ — 问题动机清晰，方法描述严谨
+- 价值: ⭐⭐⭐⭐⭐ — 解决了隐私保护联邦学习的实际痛点，通信效率提升巨大
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[AAAI 2026\] Robust Tabular Foundation Models](robust_tabular_foundation_models.md)
+- [\[AAAI 2026\] From Pretrain to Pain: Adversarial Vulnerability of Video Foundation Models without Finetuning](from_pretrain_to_pain_adversarial_vulnerability_of_video_foundation_models_witho.md)
+- [\[CVPR 2026\] Scaling Parallel Sequence Models to Vision Foundation Models](../../CVPR2026/self_supervised/scaling_parallel_sequence_models_to_vision_foundation_models.md)
+- [\[ICLR 2026\] Chart Deep Research in LVLMs via Parallel Relative Policy Optimization](../../ICLR2026/self_supervised/chart_deep_research_in_lvlms_via_parallel_relative_policy_optimization.md)
+- [\[CVPR 2026\] Chain-of-Models Pre-Training: Rethinking Training Acceleration of Vision Foundation Models](../../CVPR2026/self_supervised/com_pt_chain_of_models_pretraining.md)
+
+</div>
+
+<!-- RELATED:END -->

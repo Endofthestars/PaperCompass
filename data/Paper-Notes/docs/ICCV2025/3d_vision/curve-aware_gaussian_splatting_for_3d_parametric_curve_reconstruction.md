@@ -1,0 +1,177 @@
+---
+title: >-
+  [论文解读] Curve-Aware Gaussian Splatting for 3D Parametric Curve Reconstruction
+description: >-
+  [ICCV 2025][3D视觉][参数曲线重建] 提出 CurveGaussian，通过在参数曲线与边缘导向高斯原语之间建立双向耦合机制，实现从多视图边缘图直接端到端优化 3D 参数曲线的一阶段方法，消除了两阶段管线的误差累积，在精度、效率和紧凑性上全面超越先前方法。 参数曲线是 CAD/工业应用中不可或缺的基本几何原语…
+tags:
+  - "ICCV 2025"
+  - "3D视觉"
+  - "参数曲线重建"
+  - "3DGS"
+  - "Bézier曲线"
+  - "端到端优化"
+  - "边缘重建"
+---
+
+# Curve-Aware Gaussian Splatting for 3D Parametric Curve Reconstruction
+
+**会议**: ICCV 2025  
+**arXiv**: [2506.21401](https://arxiv.org/abs/2506.21401)  
+**代码**: [项目页面](https://zhirui-gao.github.io/CurveGaussian)  
+**领域**: 3D视觉  
+**关键词**: 参数曲线重建, 3DGS, Bézier曲线, 端到端优化, 边缘重建
+
+## 一句话总结
+
+提出 CurveGaussian，通过在参数曲线与边缘导向高斯原语之间建立双向耦合机制，实现从多视图边缘图直接端到端优化 3D 参数曲线的一阶段方法，消除了两阶段管线的误差累积，在精度、效率和紧凑性上全面超越先前方法。
+
+## 研究背景与动机
+
+参数曲线是 CAD/工业应用中不可或缺的基本几何原语，精确从多视图图像重建参数曲线是一个重要问题。
+
+**两阶段方法的根本局限**:
+1. 现有方法（NEF, EMAP, EdgeGaussians）都遵循 "边缘点云重建 → 参数曲线拟合" 的两阶段管线
+
+**误差累积**: 2D 边缘检测噪声传播到 3D 点云，再传播到参数曲线拟合，导致多余分支和断裂
+
+**贪婪拟合局部最优**: RANSAC 等迭代拟合容易产生冗余曲线，且随场景复杂度指数增长
+
+**效率低**: NEF 需 1.5 小时，EMAP 需 2.5 小时训练
+
+**核心挑战**: 参数曲线天然不适合基于渲染的多视图优化（无可微渲染能力），而神经渲染框架（NeRF/3DGS）无法保持曲线的几何连续性。
+
+**解决思路**: 建立参数曲线与高斯原语的 **双向耦合**，让高斯充当曲线的 "可渲染代理"，通过渲染损失反向传播直接优化曲线控制点。
+
+## 方法详解
+
+### 整体框架
+
+输入: 多视图 2D 边缘图 + 相机位姿  
+输出: 一组 3D 参数曲线（三次 Bézier 曲线 + 一阶 Bézier 线段）  
+流程: 随机初始化曲线 → 曲线感知高斯溅射渲染 → 渲染损失反传优化控制点 → 自适应拓扑优化
+
+### 关键设计
+
+1. **曲线-高斯双向耦合**:
+
+    - 每条曲线 $c_j$ 均匀采样生成 $N=12$ 个高斯原语
+    - **高斯属性完全由曲线几何决定**:
+        - 位置: 锚定于曲线采样点 $\mathbf{p}_j(t_i)$，$t_i = \frac{i+0.5}{N}$
+        - 方向: 主轴 $\mathbf{v}_0$ 对齐曲线切线 $\mathbf{T}_j(t_i)$，其余轴正交化
+        - 尺度: $\mathbf{s}^{j,i} = [\|\Delta\mathbf{p}_j^i\|, d_j, d_j]^\top$，主轴远大于其余轴，形成 **棒状边缘导向高斯**
+        - 不透明度: 继承父曲线属性 $o_j$
+    - 引入可学习的 **重要性掩码** $m^{j,i} \in [0,1]$，自动识别冗余曲线段
+    - **双向性**: 高斯属性由曲线参数约束，渲染梯度反传更新曲线控制点
+
+2. **参数曲线表示**:
+
+    - **三次 Bézier 曲线**: 4 个控制点，$\mathbf{c}_j(t) = \sum_{k=0}^{3} B_k^3(t)\mathbf{P}_j^k$
+    - **一阶 Bézier（线段）**: 2 个端点，$\mathbf{c}_j(t) = (1-t)\mathbf{P}_j^0 + t\mathbf{P}_j^1$
+    - 每条曲线附加 opacity $o_j$ 和 thickness $d_j$
+
+3. **自适应拓扑优化（四种策略）**:
+
+    - **线性化**: 若三次 Bézier 接近直线（采样点到拟合直线的均方误差 $< \tau_l$），替换为一阶 Bézier
+    - **合并**: 相邻线段方向角 $\theta < \tau_{la}$ 且端点距离 $d < \tau_{ld}$ 时合并；相邻 Bézier 若合并后误差 $< \tau_b$ 也合并
+    - **分裂**: 检测到几何突变（相邻高斯主轴夹角 $> \theta_s$）时在突变点分裂；掩码过低段（$m_j^i < \tau_m$）时移除并保留两侧
+    - **剪枝**: opacity $< \tau_d$ 或所有高斯掩码均低于阈值时移除整条曲线
+    - **时序安排**: 3k 迭代开始线性化，7k 开始合并，每 1k 迭代执行一次
+
+### 损失函数 / 训练策略
+
+**边缘感知渲染损失** ——解决边缘像素稀疏导致的梯度坍塌:
+$$\mathcal{L}_{edge} = \frac{|M_I|}{|E_I|}\sum_{i \in N_I}\|I_i - \hat{I}_i\|_2^2 + \frac{|N_I|}{|E_I|}\sum_{i \in M_I}\|I_i - \hat{I}_i\|_2^2$$
+用互补权重平衡边缘/非边缘像素的贡献。
+
+**平滑连接正则**: $\mathcal{L}_{conn}$ — 最小化相邻曲线端点距离  
+**曲线平滑正则**: $\mathcal{L}_{smo}$ — 最小化相邻高斯方向差异  
+**简洁正则**: $\mathcal{L}_{reg} = \sum \log(1 + o_j^2/0.5)$ — 鼓励低 opacity 曲线被剪枝  
+**掩码损失**: $\mathcal{L}_m$ — 消除冗余高斯
+
+总损失: $\mathcal{L}_{all} = \mathcal{L}_{edge} + \lambda_1\mathcal{L}_{conn} + \lambda_2\mathcal{L}_{smo} + \lambda_3\mathcal{L}_{reg} + \lambda_4\mathcal{L}_m$
+
+训练 10k 迭代，7k 后固定 opacity 并启用掩码损失。
+
+## 实验关键数据
+
+### 主实验
+
+ABC-NEF 数据集（82 个 ABC 模型，DexiNed 边缘检测器）:
+
+| 方法 | Acc.↓ | Comp.↓ | F5↑ | F10↑ | F20↑ | 时间↓ |
+|------|-------|--------|-----|------|------|-------|
+| NEF | 21.9 | 15.7 | 10.8 | 42.1 | 76.8 | 1.5 h |
+| EMAP | 8.8 | 8.9 | 59.1 | 88.9 | 94.9 | 2.5 h |
+| EdgeGaussians | 9.6 | 8.4 | 45.2 | 93.7 | 95.7 | 4 min |
+| **Ours** | **8.2** | **7.5** | **73.7** | **94.0** | **96.2** | **3 min** |
+
+效率与紧凑性对比:
+
+| 方法 | 训练时间↓ | Bézier数↓ | 线段数↓ | 总曲线数↓ |
+|------|----------|-----------|--------|----------|
+| NEF | 1.5 h | 22.9 | 0 | 22.9 |
+| EMAP | 2.5 h | 9.2 | 36.6 | 45.8 |
+| EdgeGaussians | 4 min | 13.0 | 84.9 | 97.9 |
+| **Ours** | **3 min** | **6.9** | **22.0** | **28.9** |
+
+### 消融实验
+
+关键组件消融效果:
+
+| 配置 | Acc.↓ | Comp.↓ | F5↑ | 说明 |
+|------|-------|--------|-----|------|
+| w/o 边缘感知损失 | 退化 | 退化 | 退化 | 梯度坍塌 |
+| w/o 拓扑优化 | 噪声增加 | 增加 | 下降 | 无法消除冗余 |
+| w/o 平滑正则 | 断裂增加 | 增加 | 下降 | 曲线不平滑 |
+| **完整模型** | **8.2** | **7.5** | **73.7** | - |
+
+### 关键发现
+
+- **精度提升 14.5%**: F5 从 EdgeGaussians 的 45.2% 提升至 73.7%（DexiNed）
+- **曲线数减少 70.5%**: 总曲线从 97.9 降至 28.9，重建更紧凑
+- **训练加速 33%**: 3 分钟 vs EdgeGaussians 的 4 分钟
+- 在 Replica 真实场景中，本方法生成的参数曲线更完整且冗余更少
+
+## 亮点与洞察
+
+- **范式突破**: 从两阶段到一阶段，直接在参数空间优化，从根本上解决误差累积
+- **优雅的耦合设计**: 棒状高斯完美贴合曲线几何（主轴=切线、主尺度=段长、副尺度=线宽），使渲染梯度自然流向控制点
+- **自适应拓扑**: 训练中从大量初始曲线逐步精炼到少量精确曲线，与传统 3DGS 的 "从少到多" 相反
+- **参数极致紧凑**: 每条曲线仅需 4 个控制点 + 2 个标量，远少于独立高斯的参数量
+
+## 局限与展望
+
+- 依赖 2D 边缘检测器的质量（不同检测器影响 ~15% 的 F5）
+- 随机初始化可能需要更多迭代才能收敛到最优拓扑
+- 仅支持三次和一阶 Bézier，未覆盖 NURBS 等更一般的参数曲线
+- 未探索结合语义信息的曲线分组
+
+## 相关工作与启发
+
+- **NEF/EMAP**: 两阶段先驱，用 NeRF 重建边缘场，但拟合阶段误差累积
+- **EdgeGaussians**: 用 3DGS 加速边缘重建，但仍受两阶段限制
+- **DiffVG**: 2D 可微矢量图形渲染，本文将类似思想扩展到 3D 参数曲线
+- **3DGS**: 提供高效可微渲染基础
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ (一阶段参数曲线优化 + 曲线-高斯耦合)
+- 技术深度: ⭐⭐⭐⭐ (完整的自适应拓扑策略)
+- 实验充分度: ⭐⭐⭐⭐ (多数据集+效率对比+消融)
+- 实用价值: ⭐⭐⭐⭐ (3分钟训练、紧凑输出，适合 CAD 管线)
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] BezierGS: Dynamic Urban Scene Reconstruction with Bézier Curve Gaussian Splatting](beziergs_dynamic_urban_scene_reconstruction_with_bezier_curve_gaussian_splatting.md)
+- [\[CVPR 2025\] SGCR: Spherical Gaussians for Efficient 3D Curve Reconstruction](../../CVPR2025/3d_vision/sgcr_spherical_gaussians_for_efficient_3d_curve_reconstruction.md)
+- [\[ICCV 2025\] Robust and Efficient 3D Gaussian Splatting for Urban Scene Reconstruction](robust_and_efficient_3d_gaussian_splatting_for_urban_scene_reconstruction.md)
+- [\[ICCV 2025\] CstNet: Constraint-Aware Feature Learning for Parametric Point Cloud](constraint-aware_feature_learning_for_parametric_point_cloud.md)
+- [\[ICCV 2025\] OccluGaussian: Occlusion-Aware Gaussian Splatting for Large Scene Reconstruction and Rendering](occlugaussian_occlusion-aware_gaussian_splatting_for_large_scene_reconstruction_.md)
+
+</div>
+
+<!-- RELATED:END -->

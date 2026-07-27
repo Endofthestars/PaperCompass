@@ -1,0 +1,168 @@
+---
+title: >-
+  [论文解读] Wavelet Policy: Lifting Scheme for Policy Learning in Long-Horizon Tasks
+description: >-
+  [ICCV 2025][自动驾驶][策略学习] Wavelet Policy 首次将小波分析引入具身智能的策略学习，设计了基于可学习提升方案（lifting scheme）的多尺度策略网络，通过将观测序列分解为不同频率分量后逐层合成动作序列，在自动驾驶（CARLA）、机器人操作、多机器人协作等5个长horizon任务上取得了优于或持平基线的性能。
+tags:
+  - "ICCV 2025"
+  - "自动驾驶"
+  - "策略学习"
+  - "小波变换"
+  - "提升方案"
+  - "长horizon任务"
+  - "模仿学习"
+---
+
+# Wavelet Policy: Lifting Scheme for Policy Learning in Long-Horizon Tasks
+
+**会议**: ICCV 2025  
+**arXiv**: [2507.04331](https://arxiv.org/abs/2507.04331)  
+**代码**: [https://hhuang-code.github.io/wavelet_policy/](https://hhuang-code.github.io/wavelet_policy/)  
+**领域**: 自动驾驶  
+**关键词**: 策略学习, 小波变换, 提升方案, 长horizon任务, 模仿学习
+
+## 一句话总结
+
+Wavelet Policy 首次将小波分析引入具身智能的策略学习，设计了基于可学习提升方案（lifting scheme）的多尺度策略网络，通过将观测序列分解为不同频率分量后逐层合成动作序列，在自动驾驶（CARLA）、机器人操作、多机器人协作等5个长horizon任务上取得了优于或持平基线的性能。
+
+## 研究背景与动机
+
+**领域现状**：策略学习的目标是让智能体基于观测生成最优动作。近年来从行为克隆、强化学习发展到更复杂的方法，如 Diffusion Policy（利用条件去噪扩散过程建模多模态动作分布）和 Behavior Transformer（用 Transformer 处理离散化动作）。
+
+**现有痛点**：复杂长horizon任务面临三大挑战：(1) 必须在多步之间保持一致行为、管理长时间依赖，否则误差会累积；(2) 多模态动作模式——达到相同目标常存在多种有效动作序列；(3) 精确操作要求——微小的控制误差可能导致严重问题。
+
+**核心矛盾**：现有策略学习方法直接在原始时域学习动作序列，难以同时捕捉全局趋势（长horizon一致性）和局部细节（精确操作）。长序列包含的高频噪声也干扰了多模态模式的识别。
+
+**本文目标** 如何从信号处理视角构建策略学习框架，同时捕获动作序列的全局趋势和精细变化？
+
+**切入角度**：观察到对机器人关节动作序列做小波分解后，粗尺度（低频）分量清晰展现了几个不同的动作"模式"且无噪声波动，而细尺度（高频）捕获快速变化。这启发了从粗到细逐步生成动作的思路，类似残差连接。
+
+**核心 idea**：基于可学习提升方案的小波策略网络，在分析阶段将观测序列多尺度分解为低频近似和高频细节，通过转换器映射到动作空间，在合成阶段从粗到细逐层重建动作序列。
+
+## 方法详解
+
+### 整体框架
+
+输入观测序列 $S = \{s_t, \ldots, s_{t+N}\}$，目标生成对应动作序列 $A = \{a_t, \ldots, a_{t+N}\}$。框架分两阶段：**分析阶段**将观测递归分解为多尺度的近似分量 $S_s^L$ 和细节分量 $\{S_d^l\}$；**转换器**将各分量从观测空间映射到动作空间 $A_s^L, \{A_d^l\}$；**合成阶段**从粗到细逐层重建完整动作序列。
+
+### 关键设计
+
+1. **可学习提升方案 (Learnable Lifting Scheme)**:
+
+    - 功能：替代传统固定小波（Haar、Daubechies），实现端到端可学习的多尺度信号分解与重建
+    - 核心思路：分析块中，分离器将序列分为两路 $S_e, S_o$，预测网络 $\mathcal{P}$ 捕获高频细节 $S_d = S_o - \mathcal{P}(S_e)$，更新网络 $\mathcal{U}$ 捕获低频近似 $S_s = S_e + \mathcal{U}(S_d)$。合成块中对称操作：$A_e = A_s - \hat{\mathcal{U}}(A_d)$，$A_o = A_d + \hat{\mathcal{P}}(A_e)$。这些网络参数可学习，继承小波优势的同时增加灵活性
+    - 设计动机：手动选择小波类型（Haar、Daubechies、Morlet）是启发式的且不可学，传统小波变换缺乏灵活性和泛化能力。消融实验证实可学习小波（0.339/T4）显著优于固定 Haar（0.265/T4）和 DB2（0.219/T4）
+
+2. **因果膨胀卷积实例化**:
+
+    - 功能：将 $\mathcal{P}$、$\mathcal{U}$、$\hat{\mathcal{P}}$、$\hat{\mathcal{U}}$ 实例化为保持时间因果性的膨胀卷积
+    - 核心思路：因果卷积确保时刻 $t$ 的输出只依赖 $t$ 及之前的输入，防止未来信息泄漏。膨胀设计让网络在不增加参数的情况下整合更宽时间间隔的信息（提升方案中相邻采样点在时间上间隔一步）
+    - 设计动机：策略学习中时间因果性至关重要——当前动作不能依赖未来观测。消融实验显示用非因果卷积替代后性能大幅下降（T1: 0.494 vs 0.953）
+
+3. **冗余提升 + Transformer 融合器**:
+
+    - 功能：解决传统提升方案的输入长度限制和合并操作问题
+    - 核心思路：用 Transformer 自注意力作为分离器（复制输出到两路），避免了 $2^L$ 最短输入长度的限制。用 Transformer 交叉注意力作为融合器（$Q = A_s^l, K = V = A_d^l$），从低频+高频逐层重建，代替传统的位置交错合并
+    - 设计动机：传统提升方案的 even-odd split 要求输入至少 $2^L$ 长；冗余提升方案的 merge 操作会将长度翻倍。Transformer 融合器通过交叉注意力灵活重组，保持输出长度不变且符合从粗到细的重建概念
+
+4. **转换器 (Converter)**:
+
+    - 功能：显式将观测空间的各频率分量映射到动作空间
+    - 核心思路：在分析-合成之间加入可学习子网络（本文用因果卷积实例化），显式完成从观测到动作的空间转换
+    - 设计动机：观测和动作分布不同，隐式转换可能不够有效
+
+### 损失函数 / 训练策略
+
+总损失 $\mathcal{L} = \mathcal{L}_{task} + \alpha \mathcal{L}_{approx} + \beta \mathcal{L}_{detail}$：
+- $\mathcal{L}_{task}$：任务特定损失（MSE 或交叉熵）
+- $\mathcal{L}_{approx}$：近似流约束，确保低频分量保持局部均值一致：$\sum \text{SmoothL}_1(\mathcal{C}(A_s^l) - A_s^{l+1})$，其中 $\mathcal{C}$ 为因果移动平均
+- $\mathcal{L}_{detail}$：细节流约束，防止高频分量过强：$\sum \text{SmoothL}_1(A_d^l)$
+
+超参数 $\alpha = \beta = 0.1$。三种随机种子取均值和标准差。
+
+## 实验关键数据
+
+### 主实验 - CARLA 自驾 + Franka Kitchen
+
+| 任务 | BeT | VQ-BeT | **Wavelet (Ours)** |
+|------|-----|--------|-------------------|
+| CARLA Success | 0.832±0.167 | 0.839±0.125 | **0.847±0.090** |
+| Kitchen T1 | 0.948±0.034 | 0.950±0.021 | **0.953±0.020** |
+| Kitchen T2 | 0.773±0.065 | 0.775±0.046 | **0.775±0.057** |
+| Kitchen T3 | 0.562±0.095 | 0.559±0.105 | **0.563±0.063** |
+| Kitchen T4 | 0.275±0.066 | 0.306±0.057 | **0.339±0.071** |
+| Kitchen T5 | 0.027±0.023 | 0.029±0.020 | **0.041±0.027** |
+
+在长horizon任务（T4/T5）上提升最明显（T4: +10.8% vs BeT），标准差更小表示更稳定。
+
+### 消融实验 - Kitchen
+
+| 配置 | T1 | T2 | T3 | T4 | T5 |
+|------|-----|-----|-----|-----|-----|
+| 非因果卷积 | 0.494 | 0.259 | 0.112 | 0.033 | 0.002 |
+| **因果卷积** | **0.953** | **0.775** | **0.563** | **0.339** | **0.041** |
+| Haar 小波 | 0.884 | 0.668 | 0.535 | 0.265 | - |
+| **可学习小波** | **0.953** | **0.775** | **0.563** | **0.339** | **0.041** |
+
+### 多模态行为分析
+
+| 方法 | CARLA Left/Right | Kitchen Entropy |
+|------|-----------------|-----------------|
+| 演示数据 | 0.50/0.50 | 2.96 |
+| BeT | 0.293/0.699 | 2.506 |
+| VQ-BeT | 0.315/0.674 | 2.508 |
+| **Ours** | **0.337/0.662** | **2.511** |
+
+Wavelet Policy 更接近演示数据的多模态分布。
+
+### 关键发现
+
+- **因果性是决定性因素**：非因果卷积导致性能崩溃（T1 从 0.953 降到 0.494），说明时间因果性在策略学习中不可妥协
+- **可学习小波 >> 固定小波**：Haar 小波 T4 仅 0.265，可学习版本达 0.339（+28%），说明数据驱动的小波能更好适配任务特征
+- **长horizon任务收益更大**：T1-T3 各方法接近，但 T4/T5 wavelet 显著领先，证实多尺度分解对长序列特别有效
+- **与 Diffusion Policy 的集成也有效**：DP-Wavelet 在 Push-T（0.958 vs 0.942）和 Transport-mh（0.497 vs 0.440）上均超过 DP-Transformer，说明 wavelet 架构具有通用性
+- **D3IL 六任务全胜**：在避障、对齐、推、排序、堆叠等六个任务上成功率均超过 BeT 和 IBC
+
+## 亮点与洞察
+
+- **从信号处理视角看策略学习**是全新思路：将动作序列视为信号进行频域分析，低频=全局趋势/动作模式，高频=精细调整/快速变化。这种视角自然适配长horizon任务中的层次化决策
+- **从粗到细的动作生成**：合成阶段先生成最平滑的宏观动作，再逐步添加细节，与人类决策的层次性（先决定大方向再微调）高度一致。这与残差连接的思想异曲同工但更有结构化
+- **可学习提升方案的通用化**：从分析到合成完整复原了提升方案的双向结构，之前工作仅用分析阶段。可迁移到任何需要多尺度时序建模的任务
+
+## 局限与展望
+
+- 提升幅度在部分任务上较小（CARLA Success +1.5%），说明小波架构的优势主要体现在长序列和多模态场景
+- 仅在模拟环境测试，缺乏真实机器人实验验证
+- 提升方案的尺度数 $L$ 需要手动选择，未探索自适应尺度机制
+- 虽然声称自动驾驶领域，但 CARLA 实验仅在简单数据集上做，任务设置相对简单（只有左右转弯）
+- 未与近期强基线如 ACT、3D Diffuser 等对比
+
+## 相关工作与启发
+
+- **vs Behavior Transformer (BeT)**: Wavelet Policy 直接替换 BeT 中的 MinGPT，保持其他组件不变。在 CARLA 和 Kitchen 上全面超越，特别是长 horizon 任务和多模态行为捕捉
+- **vs Diffusion Policy**: Wavelet Policy 替换 Diffusion Policy 中的 Transformer 解码器，在 Push-T 和 Transport 上均有提升，说明两种方法互补
+- **vs IBC (Implicit Behavioral Cloning)**: 在 D3IL 六任务上 Wavelet 全面超越 IBC，后者使用能量模型学习隐式策略
+- 小波分析在视觉任务（去噪、3D形状表示、生成模型）中已有广泛应用，本文首次引入到策略学习领域
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ 首次将小波分析引入策略学习，提出了完整的可学习提升方案框架
+- 实验充分度: ⭐⭐⭐⭐ 五个基准环境+多种基线对比+消融研究充实
+- 写作质量: ⭐⭐⭐⭐ 信号处理背景讲解清楚，方法推导严谨
+- 价值: ⭐⭐⭐⭐ 提供了策略学习的新视角，但部分任务提升幅度有限
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] DriveDPO: Policy Learning via Safety DPO For End-to-End Autonomous Driving](../../NeurIPS2025/autonomous_driving/drivedpo_policy_learning_via_safety_dpo_for_end-to-end_autonomous_driving.md)
+- [\[NeurIPS 2025\] Causality Meets Locality: Provably Generalizable and Scalable Policy Learning for Networked Systems](../../NeurIPS2025/autonomous_driving/causality_meets_locality_provably_generalizable_and_scalable_policy_learning_for.md)
+- [\[ICCV 2025\] Beyond One Shot, Beyond One Perspective: Cross-View and Long-Horizon Distillation for Better LiDAR Representations](beyond_one_shot_beyond_one_perspective_cross-view_and_long-horizon_distillation_.md)
+- [\[CVPR 2025\] Tra-MoE: Learning Trajectory Prediction Model from Multiple Domains for Adaptive Policy Conditioning](../../CVPR2025/autonomous_driving/tra-moe_learning_trajectory_prediction_model_from_multiple_domains_for_adaptive_.md)
+- [\[ICCV 2025\] Generative Active Learning for Long-tail Trajectory Prediction via Controllable Diffusion Model](generative_active_learning_for_long-tail_trajectory_prediction_via_controllable_.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,177 @@
+---
+title: >-
+  [论文解读] Modality-Aware Bias Mitigation and Invariance Learning for Unsupervised Visible-Infrared Person Re-Identification
+description: >-
+  [AAAI 2026][人体理解][跨模态行人重识别] 针对无监督可见光-红外行人重识别（USVI-ReID）中跨模态关联不可靠的核心问题，提出模态感知的 Jaccard 距离修正和"分裂-对比"不变性学习策略，通过消除模态偏差实现可靠的全局跨模态聚类和特征对齐，在 SYSU-MM01 和 RegDB 上达到 SOTA。
+tags:
+  - "AAAI 2026"
+  - "人体理解"
+  - "跨模态行人重识别"
+  - "无监督学习"
+  - "模态偏差消除"
+  - "Jaccard距离修正"
+  - "全局聚类"
+---
+
+# Modality-Aware Bias Mitigation and Invariance Learning for Unsupervised Visible-Infrared Person Re-Identification
+
+**会议**: AAAI 2026  
+**arXiv**: [2512.07760](https://arxiv.org/abs/2512.07760)  
+**代码**: [github](https://github.com/Terminator8758/BMIL)  
+**领域**: 人体理解  
+**关键词**: 跨模态行人重识别, 无监督学习, 模态偏差消除, Jaccard距离修正, 全局聚类
+
+## 一句话总结
+
+针对无监督可见光-红外行人重识别（USVI-ReID）中跨模态关联不可靠的核心问题，提出模态感知的 Jaccard 距离修正和"分裂-对比"不变性学习策略，通过消除模态偏差实现可靠的全局跨模态聚类和特征对齐，在 SYSU-MM01 和 RegDB 上达到 SOTA。
+
+## 研究背景与动机
+
+可见光-红外行人重识别（VI-ReID）是在白天（可见光摄像头）和夜间（红外摄像头）之间匹配同一行人的任务，在夜间监控和人员检索中有重要应用价值。无监督设置（USVI-ReID）旨在不依赖任何标注完成这一任务。
+
+**核心挑战**是跨模态的巨大差异（可见光是彩色 RGB，红外是灰度热成像），使得跨模态关联估计极为困难。
+
+现有方法的主要局限：
+
+**局部匹配策略的缺陷**：主流方法先在每种模态内聚类，再通过最优传输（如匈牙利算法）匹配跨模态聚类。问题是：模态内聚类的噪声会在匹配过程中被传播，且忽视了全局实例级别的相似关系。
+
+**朴素全局聚类的障碍**：直接对所有图像做全局聚类看似合理，但模态偏差导致失败——由于模态差异，同模态图像间的相似度远高于跨模态图像。Jaccard 距离的 K 近邻计算中，检索到的近邻被同模态实例主导（如图 1(a) 所示），导致距离计算进一步偏歧，全局聚类无法有效关联跨模态实例。
+
+**跨模态表示学习的不足**：即使关联建立了，全局聚类中同一簇的可见光和红外特征分布差异很大（呈现"双峰"分布），用单一质心原型无法准确描述这种混合模态聚类的特征分布。
+
+本文从**偏差消除**和**不变性学习**两个互补视角出发，系统性解决跨模态学习问题。
+
+## 方法详解
+
+### 整体框架
+
+基于两阶段学习的标准范式：
+- **阶段 1**：模态内学习——在可见光和红外模态内分别进行迭代聚类和原型对比学习
+- **阶段 2**：跨模态学习——在模态内学习基础上，增加偏差消除的全局关联和模态不变性表示学习
+
+采用双流骨干网络（ResNet-50 + AGW），可见光和红外有独立的初始卷积块，其余部分共享。
+
+### 关键设计
+
+#### 1. **模态内学习基线**：子集聚类缓解过聚类
+
+由于可见光图像通常远多于红外图像（SYSU-MM01 中可见光 22k vs 红外 12k），DBSCAN 对可见光模态容易产生过聚类（预测簇数远大于真实身份数）。
+
+**子集聚类策略**：每个 epoch 随机采样固定比例（如 0.5）的可见光图像用于聚类。优势有二：减小每身份的平均图像数使聚类更容易，且随机采样保证全集覆盖。
+
+模态内对比损失采用标准 InfoNCE：
+$$\mathcal{L}_{intra}^v = -\sum_{i=1}^{N_b} \log \frac{\exp(\mathcal{M}^v[\tilde{y}_i]^T f_\theta(x_i^v)/\tau)}{\sum_{j=1}^{C^v} \exp(\mathcal{M}^v[j]^T f_\theta(x_i^v)/\tau)}$$
+
+#### 2. **模态感知 Jaccard 距离修正**：消除模态偏差的全局关联
+
+这是本文最核心的贡献。核心思想：在 Jaccard 距离计算的关键步骤中，强制平衡模态内和模态间近邻的贡献。
+
+**K 近邻修正**：不使用传统的全局 top-$k_1$ 近邻，而是分别在模态内和模态间各检索 $k_1/2$ 个近邻，然后合并排序：
+$$N^*(x_i, k_1) = N^{intra}(x_i, k_1/2) \cup N^{inter}(x_i, k_1/2)$$
+
+**平衡局部查询扩展**：局部查询扩展同样使用模态平衡的 $k_2$ 近邻：
+$$\overline{Dist}(x_i) = \frac{1}{k_2} \sum_{j \in N^*(x_i, k_2)} Dist(x_j)$$
+
+这两步修正确保了模态内和模态间近邻公平贡献于距离计算，使全局聚类能够有效关联跨模态实例。与之前方法的关键区别是：他们仅在局部查询扩展步骤考虑模态平衡，而本文在 KNN 检索阶段就进行了根本性修正。
+
+#### 3. **"分裂-对比"模态不变性学习**：多正例对比损失
+
+**模态感知全局原型**：利用模态标签作为先验，将每个全局聚类按模态拆分为子簇，分别构建模态特异性原型。这样包含混合模态图像的聚类将由两个原型表示（一个可见光、一个红外），精确捕捉聚类内的模态变异。
+
+**多正例对比损失**：对于来自混合簇的查询图像，存在两个正例原型（同模态和跨模态各一个）。通过多正例 InfoNCE 损失确保特征同时靠近两个正例原型：
+$$\mathcal{L}_{glb}^v = -\sum_{i=1}^{N_b} \frac{1}{|P(z_i)|} \sum_{p \in P(z_i)} \log \frac{\exp(\mathcal{K}[p]^T f_\theta(x_i^v)/\tau)}{\sum_{j \in S(x_i^v)} \exp(\mathcal{K}[j]^T f_\theta(x_i^v)/\tau)}$$
+
+这一设计类似于不变风险最小化（IRM）的精神，通过减少不同模态的响应方差来实现模态不变性。
+
+### 损失函数 / 训练策略
+
+- **总损失** = 模态内对比损失 $\mathcal{L}_{intra}$ + 全局对比损失 $\mathcal{L}_{global}$
+- 两阶段训练，每阶段 50 epochs
+- Adam 优化器，初始学习率 3.5e-3，每 20 epoch 衰减 10 倍
+- Batch size 128，每批采样 8 个伪身份 × 16 张图
+- DBSCAN 用于聚类，eps=0.6（SYSU）/ 0.3（RegDB）
+- 温度 τ=0.05，记忆库更新率 μ=0.1
+- 第二阶段采用两步更新：模态内损失和全局损失在不同 batch 上分别计算
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | 类型 | SYSU All R1 | SYSU All mAP | SYSU Indoor R1 | RegDB V2T R1 | RegDB V2T mAP |
+|------|------|-------------|-------------|-----------------|-------------|-------------|
+| CAJ | 监督 | 69.9 | 66.9 | 76.3 | 85.0 | 79.1 |
+| DEEN | 监督 | 74.7 | 71.8 | 80.3 | 91.1 | 85.1 |
+| PartMix | 监督 | 77.8 | 74.6 | 81.5 | 85.7 | 82.3 |
+| PCLHD† | 无监督 | 65.9 | 61.8 | 70.3 | 89.6 | 83.7 |
+| RPNR | 无监督 | 65.2 | 60.0 | 68.9 | 90.9 | 84.7 |
+| **Ours** | **无监督** | **67.1** | **63.1** | **75.0** | **94.3** | **89.1** |
+
+在 SYSU-MM01 上 All Search Rank-1 提升 1.2%，Indoor 提升 4.7%；RegDB 上 V2T Rank-1 提升 3.4%，mAP 提升 4.4%。无监督方法已可媲美部分监督方法（如 CAJ、DART）。
+
+### 消融实验
+
+| 配置 | SC | BMGC | MIRL | All R1 | All mAP | Indoor R1 | Indoor mAP |
+|------|:--:|:----:|:----:|--------|---------|-----------|------------|
+| M1: Intra Baseline | | | | 39.5 | 38.9 | 47.1 | 55.5 |
+| M2: Global Baseline | | | | 54.9 | 51.5 | 62.9 | 68.9 |
+| M3: +BMGC | | ✓ | | 64.9 | 60.0 | 68.0 | 73.5 |
+| M4: +SC+BMGC | ✓ | ✓ | | 64.8 | 61.0 | 73.9 | 77.4 |
+| M5: +SC+MIRL | ✓ | | ✓ | 61.1 | 58.3 | 72.1 | 76.1 |
+| M6: Full | ✓ | ✓ | ✓ | **67.1** | **63.1** | **75.0** | **78.6** |
+
+- **偏差消除全局聚类 (BMGC)** 相比普通全局聚类提升 10% Rank-1（M2→M3）
+- **模态不变性学习 (MIRL)** 在 BMGC 基础上进一步提升 2.3% Rank-1（M4→M6）
+- **子集聚类 (SC)** 显著改善 Indoor Search（+5.9%），缓解过聚类
+
+### 关键发现
+
+1. **聚类精度大幅领先**：ARI 指标上显著超越现有方法，证明全局聚类关联更加可靠
+2. **特征可视化效果**：T-SNE 显示本方法能将同一身份的跨模态图像聚为紧凑簇，而基线方法则产出多个模态特定的分散簇
+3. **距离分布修正**：修正后的 Jaccard 距离显著缩小了模态内和模态间距离差距（图 6），而改进版 Jaccard 距离（10833701）效果有限
+4. **计算开销可控**：全局聚类 Jaccard 距离计算约 68s vs 普通全局 47s，增加可接受
+
+## 亮点与洞察
+
+- **概念简洁但效果显著**：核心创新就是在 Jaccard 距离的 KNN 检索中强制模态平衡，思路直观但带来了 10% 的巨大提升
+- **从偏差学习的视角看待跨模态匹配**：将模态差异视为一种"偏差"而非需要消除的"gap"，这一视角转换很有启发性
+- **多正例对比学习**：将 IRM 思想引入 Re-ID，通过模态特异性原型实现不变性学习
+- **与 camera-aware 方法互补**：当相机标签可用时，可同时处理模态偏差和相机偏差
+- **子集聚类的巧妙应用**：通过简单的随机采样解决过聚类，同时节省计算
+
+## 局限与展望
+
+1. 依赖于 DBSCAN 的 eps 参数，不同数据集需要手动调整
+2. 子集聚类在小数据集（如 RegDB）上效果一般，非通用策略
+3. 两阶段训练可能不是最优——模态内和跨模态学习的迭代更新可能更好
+4. 全局聚类带来额外的计算开销（68s vs 47s），对于更大规模数据集需要优化
+5. 模态不变性学习假设每个全局簇恰好包含两种模态，对于仅含单模态的簇处理不够灵活
+
+## 相关工作与启发
+
+- **CA-Jaccard**（ICCV 2024）：本文直接的灵感来源，提出相机感知的距离修正
+- **PCLHD / MMM / RPNR**：最新 USVI-ReID SOTA 方法，本文在此基础上进一步提升
+- **IRM**（Invariant Risk Minimization）：不变性学习思想的来源
+- 启发：在无监督跨模态学习中，**距离度量的修正**可能比复杂的特征变换更加有效
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ — 模态感知 Jaccard 距离是一个简洁有效的创新
+- **实验充分度**: ⭐⭐⭐⭐⭐ — 消融、参数分析、可视化、计算复杂度分析俱全
+- **写作质量**: ⭐⭐⭐⭐ — 动机清晰，图示直观，公式推导完整
+- **实用价值**: ⭐⭐⭐⭐ — 方法简单易复现，可广泛应用于跨模态检索场景
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2026\] Spatial-Frequency Collaborative Learning for Occluded Visible-Infrared Person Re-Identification](../../CVPR2026/human_understanding/spatial-frequency_collaborative_learning_for_occluded_visible-infrared_person_re.md)
+- [\[ECCV 2024\] Multi-Memory Matching for Unsupervised Visible-Infrared Person Re-Identification](../../ECCV2024/human_understanding/multi-memory_matching_for_unsupervised_visible-infrared_person_re-identification.md)
+- [\[CVPR 2026\] BIT: Matching-based Bi-directional Interaction Transformation Network for Visible-Infrared Person Re-Identification](../../CVPR2026/human_understanding/bit_matching-based_bi-directional_interaction_transformation_network_for_visible.md)
+- [\[CVPR 2026\] Towards Cross-Modal Preservation, Consistency and Alignment for Privacy-Preserving Visible-Infrared Person Re-Identification](../../CVPR2026/human_understanding/towards_cross-modal_preservation_consistency_and_alignment_for_privacy-preservin.md)
+- [\[ICCV 2025\] Weakly Supervised Visible-Infrared Person Re-Identification via Heterogeneous Expert Collaborative Consistency Learning](../../ICCV2025/human_understanding/weakly_supervised_visible-infrared_person_re-identification_via_heterogeneous_ex.md)
+
+</div>
+
+<!-- RELATED:END -->

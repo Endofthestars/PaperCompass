@@ -1,0 +1,165 @@
+---
+title: >-
+  [论文解读] Interchangeable Token Embeddings for Extendable Vocabulary and Alpha-Equivalence
+description: >-
+  [ICML 2025][LLM 其他][可互换 token 嵌入] 提出双部分 token 嵌入策略（共享可学习部分 + 随机区分部分），使语言模型能在训练后泛化到更大词表，并对 alpha-等价变换具有天然鲁棒性。 在形式逻辑（如线性时序逻辑 LTL、命题逻辑）等任务中存在可互换 token：的概念：语义等价但符号不同的…
+tags:
+  - "ICML 2025"
+  - "LLM 其他"
+  - "可互换 token 嵌入"
+  - "词表扩展"
+  - "Alpha-equivalence"
+  - "形式推理"
+  - "Transformer"
+---
+
+# Interchangeable Token Embeddings for Extendable Vocabulary and Alpha-Equivalence
+
+**会议**: ICML 2025  
+**arXiv**: [2410.17161](https://arxiv.org/abs/2410.17161)  
+**代码**: [necrashter.github.io/interchangeable-token-embeddings](https://necrashter.github.io/interchangeable-token-embeddings)  
+**领域**: LLM/NLP  
+**关键词**: 可互换 token 嵌入, 词表扩展, Alpha-equivalence, 形式推理, Transformer
+
+## 一句话总结
+
+提出双部分 token 嵌入策略（共享可学习部分 + 随机区分部分），使语言模型能在训练后泛化到更大词表，并对 alpha-等价变换具有天然鲁棒性。
+
+## 研究背景与动机
+
+在形式逻辑（如线性时序逻辑 LTL、命题逻辑）等任务中存在**可互换 token** 的概念：语义等价但符号不同的 token（如绑定变量 a, b, c）。传统语言模型为每个 token 学习独立的嵌入向量，存在两个根本问题：
+
+**无法泛化到新 token**：模型训练时只见过 {a, b} 两个原子命题（AP），推理时无法处理包含 {c, d} 的公式，即使 c, d 在语义上和 a, b 完全等价
+
+**缺乏 alpha-等价性认知**：对公式中变量的重命名（alpha-conversion）应保持语义不变，但传统模型会给出不一致的预测
+
+这一问题在 LTL 求解、定理证明、lambda 演算等形式推理领域普遍存在。随着公式变量数增加，数据集生成时间呈指数增长（10 个 AP、长度 50 的公式生成 10 万样本需 2 小时 21 分钟），因此能从少量 AP 训练泛化到更多 AP 具有重要实用价值。
+
+## 方法详解
+
+### 整体框架
+
+核心思想：将可互换 token 的嵌入分为两个部分：
+- **共享可学习部分 α**（$d_\alpha$ 维）：所有可互换 token 共享同一组可学习参数，传达"这些 token 属于同一语义类别"
+- **随机区分部分 β**（$d_\beta$ 维）：为每个可互换 token 随机生成唯一向量，让模型能区分不同 token
+
+总嵌入维度 $d_{\text{model}} = d_\alpha + d_\beta$。对于非可互换 token，$d_\alpha$ 维包含各自独立的可学习参数，$d_\beta$ 维设为 0。
+
+### 关键设计
+
+1. **嵌入矩阵构建**：设词表有 n 个非可互换 token 和 m 个可互换 token。用 $\bm{L} \in \mathbb{R}^{n \times d_\alpha}$ 表示非可互换 token 的可学习嵌入，$\bm{\alpha} \in \mathbb{R}^{1 \times d_\alpha}$ 为所有可互换 token 共享的可学习嵌入，$\bm{\beta}_i \in \mathbb{R}^{1 \times d_\beta}$ 为第 i 个可互换 token 的随机嵌入。完整嵌入矩阵 $\bm{U}$ 通过拼接和归一化构建：非可互换 token 行为 $[f_{bn}(\bm{L}), \bm{0}]$，可互换 token 行为 $[f_{bn}(\bm{\alpha}), f_{bn}(\bm{\beta}_i)]$，最终对整行做 $f_{fn}$ 归一化。**训练时每次 forward pass 都重新采样 $\bm{\beta}_i$**，防止模型适应特定随机值；推理时只采样一次并固定。
+
+2. **三种随机向量生成方法**：论文提出三种生成 $\bm{\beta}_i$ 的策略：
+
+    - **正态分布**：每维独立采样 $\mathcal{N}(0,1)$，候选集无限大
+    - **邻近点（Neighboring Points）**：每维取值 $\{-1, 0, 1\}$，候选集大小 $3^{d_\beta} - 1$（排除零向量）
+    - **超立方体顶点（Hypercube Vertices）**：每维取值 $\{-1, 1\}$，候选集大小 $2^{d_\beta}$
+   
+   后两种离散方法通过整数到向量的映射 + reservoir sampling 高效生成唯一向量，避免实际物化整个候选集。当 $d_\beta > 32$ 时，由于候选集指数增长，重复概率可忽略，直接跳过唯一性检查。
+
+3. **归一化策略**：嵌入矩阵构建中大量使用 L2 归一化，有三重目的：
+
+    - $f_{bn}$（block normalization）：分别归一化 α 和 β 部分，防止两部分的量级互相压制
+    - $f_{fn}$（final normalization）：对拼接后的整行归一化，保持一致的嵌入量级
+    - 对 decoder 最后一层输出（feature vector）也做 $f_{fn}$ 归一化，使 logit 仅由余弦相似度决定
+
+4. **三路权重共享（Three-way Weight Tying）**：将 encoder 嵌入矩阵、decoder 嵌入矩阵、最终投影矩阵三者绑定。由于嵌入矩阵包含手动构造的随机部分，权重共享在本方法中是**必要的**（而非可选的）。
+
+### 损失函数 / 训练策略
+
+- **AdaCos 损失**：由于嵌入和 feature vector 都做了归一化，logit 仅由余弦角度决定。直接套用 softmax loss 即为 cosine loss，但对超参敏感。论文采用 AdaCos 自适应缩放 logit。
+- **序列长度适配**：AdaCos 原本用于分类任务（无序列维度）。论文将 batch 维和 length 维合并（忽略 padding），等效增大 batch。为避免数值问题，将 AdaCos 的 scale 值裁剪到最大 100。
+- **Alpha-renaming 数据增强（baseline）**：作为对比，论文还提出了一种更简单的方法——在训练时每次 forward pass 对数据做随机 alpha-renaming，使固定嵌入模型接触更多 token。
+
+## 实验关键数据
+
+### 主实验
+
+**LTL 求解（LTLRandom35 数据集）**：
+
+| 模型 | 正确率 | 精确匹配 | Alpha-Cov (3AP) | Alpha-Cov (5AP) |
+|------|--------|---------|-----------------|-----------------|
+| Baseline（正常数据） | 98.23% | 83.23% | 96.87% | 91.80% |
+| Baseline（扰动数据） | 34.13% | 12.12% | 64.93% | 40.91% |
+| Alpha-Renaming（扰动） | 97.96% | 77.66% | 99.55% | 98.86% |
+| **本文方法（扰动）** | **95.94%** | **76.45%** | **97.66%** | **98.29%** |
+| Llama 3.2 3B | 24.33% | 0.34% | 68.17% | 62.34% |
+
+**词表泛化（训练 5AP → 测试 10AP）**：
+
+| 方法 | LTL 正确率 | 命题逻辑正确率 | 说明 |
+|------|-----------|--------------|------|
+| 全词表 Baseline（10AP 训练） | 最优 | 最优 | 上界参考 |
+| **本文方法（5AP 训练）** | 90.76% | 77.70% | 仅略低于全词表 |
+| Alpha-Renaming（5AP 训练） | 较低 | 较低 | 有一定泛化能力 |
+| Vanilla Baseline（5AP 训练） | 最差 | 最差 | 无法处理新 AP |
+
+### 消融实验
+
+| 配置 | LTL 正确率 | 命题逻辑正确率 | 说明 |
+|------|-----------|--------------|------|
+| 完整方法 | 90.76% | 77.70% | 基准 |
+| 去掉 $f_{bn}$ | 29.53% | 14.12% | **性能灾难性下降**，α/β 量级不平衡 |
+| 去掉 AdaCos + $f_{fn}$ | 81.45% | ~77% | LTL 有显著影响，命题逻辑影响小 |
+| 计算开销 | +13% 训练时间 | — | 推理时嵌入准备仅 0.0003 秒 |
+
+### 关键发现
+
+1. **$f_{bn}$ 归一化至关重要**：去掉后 LTL 正确率从 90.76% 暴跌至 29.53%，证明共享部分与随机部分之间的量级平衡是方法成功的核心
+2. **本文方法在扰动数据上免疫**：当数据集被 AP 出现顺序偏置扰动后，传统 baseline 正确率从 98% 骤降至 34%，而本方法和 alpha-renaming baseline 几乎不受影响
+3. **超越通用 LLM**：Llama 3.2 3B（参数量远超本文小模型）在 LTL 上仅 24.33% 正确率，远低于本文的 95.94%
+4. **复制任务完美泛化**：在可扩展词表复制任务中，本方法在分布外区域（更大词表+更长序列）实现完美性能
+5. **参数效率**：传统嵌入的参数量随可互换 token 数线性增长，本方法保持常数
+
+## 亮点与洞察
+
+- **问题定义精准**：清晰形式化了"可互换 token"这一被忽视的概念，将其与 alpha-equivalence 关联，定义了词表泛化的实验协议
+- **Alpha-covariance 指标**：提出的归一化指标 $1 - \frac{|\mathbb{U}|-1}{|\mathbb{P}|-1}$ 直觉明确（1 = 完全不受 alpha-conversion 影响），可泛化到任何存在 alpha-equivalence 的领域
+- **设计理念优雅**：共享部分承载"我是变量"的语义，随机部分承载"我是哪个变量"的身份——完美匹配了形式逻辑中绑定变量的本质
+- **训练时重采样是关键 insight**：每次 forward pass 重新采样 β 向量，迫使模型学会对任意随机嵌入都能正确推理，而非记住特定嵌入
+- **实用价值明确**：LTL 数据集生成成本随 AP 数指数增长，本方法用 5AP 训练即可达到接近 10AP 训练的效果，节省大量数据生成成本
+
+## 局限与展望
+
+1. **不适用于自然语言**：自然语言中的 token 携带语义信息（如 electricity_bill vs water_bill），不满足可互换条件
+2. **需手动定义可互换 token 集合**：在某些场景下可能不可行
+3. **需从头训练**：嵌入架构的修改使其无法与预训练模型直接集成
+4. **分布内性能轻微下降**：在 LTLRandom35 上正确率 95.94% vs baseline 98.23%，存在 bias-variance 权衡
+5. **可探索方向**：新的随机化和归一化方法、与预训练模型的结合、多组不同语义类别的可互换 token 支持
+
+## 相关工作与启发
+
+- **DeepLTL (Hahn et al., 2021)**：首次用 Transformer 端到端求解 LTL 问题，本文在此基础上解决词表泛化
+- **Tree-positional encoding (Shiv & Quirk, 2019)**：处理树结构公式的位置编码，与本方法正交且互补
+- **AdaCos (Zhang et al., 2019)**：自适应余弦损失，本文将其扩展到序列建模场景
+- **Weight Tying (Press & Wolf, 2016)**：嵌入与投影矩阵共享，在本方法中从"可选优化"变为"结构必需"
+- **启发**：该思路可扩展到代码生成中变量名的处理、图神经网络中节点标签的泛化、以及任何存在对称性的符号推理任务
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ — 问题定义新颖且被忽视，方法设计简洁有效，但核心思路（共享+随机）不算特别复杂
+- 实验充分度: ⭐⭐⭐⭐⭐ — 三个任务覆盖不同难度，消融完整，与 LLM 对比，计算效率分析齐全
+- 写作质量: ⭐⭐⭐⭐⭐ — 问题形式化清晰，图表设计优秀（热力图直观展示泛化能力），叙述逻辑通顺
+- 价值: ⭐⭐⭐⭐ — 在形式推理领域有明确价值，但适用范围限于存在可互换 token 的场景
+
+## 评分
+- 新颖性: 待评
+- 实验充分度: 待评
+- 写作质量: 待评
+- 价值: 待评
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Token Prepending: A Training-Free Approach for Eliciting Better Sentence Embeddings from LLMs](../../ACL2025/llm_nlp/token_prepending_training_free.md)
+- [\[ICML 2025\] Towards Universal Offline Black-Box Optimization via Learning Language Model Embeddings](towards_universal_offline_black-box_optimization_via_learning_language_model_emb.md)
+- [\[NeurIPS 2025\] Reparameterized LLM Training via Orthogonal Equivalence Transformation](../../NeurIPS2025/llm_nlp/reparameterized_llm_training_via_orthogonal_equivalence_transformation.md)
+- [\[ACL 2025\] Better Embeddings with Coupled Adam](../../ACL2025/llm_nlp/better_embeddings_with_coupled_adam.md)
+- [\[ACL 2025\] Contrastive Prompting Enhances Sentence Embeddings in LLMs through Inference-Time Steering](../../ACL2025/llm_nlp/contrastive_prompting_embeddings.md)
+
+</div>
+
+<!-- RELATED:END -->

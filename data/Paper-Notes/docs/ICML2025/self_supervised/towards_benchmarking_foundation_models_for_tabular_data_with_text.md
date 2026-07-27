@@ -1,0 +1,145 @@
+---
+title: >-
+  [论文解读] Towards Benchmarking Foundation Models for Tabular Data With Text
+description: >-
+  [ICML 2025][自监督学习][tabular data] 首个系统性研究含文本特征的表格数据建模：设计定性反例暴露三类文本嵌入的失败模式，手动策划 13 个真实数据集，发现文本特征在 11/13 数据集上提升预测精度，但无单一最优嵌入方法，表明表格+文本仍是未解决问题。 领域现状：表格基础模型（如 TabPFNv2）…
+tags:
+  - "ICML 2025"
+  - "自监督学习"
+  - "tabular data"
+  - "text features"
+  - "foundation model"
+  - "benchmark"
+  - "TabPFNv2"
+  - "embedding"
+---
+
+# Towards Benchmarking Foundation Models for Tabular Data With Text
+
+**会议**: ICML 2025  
+**arXiv**: [2507.07829](https://arxiv.org/abs/2507.07829)  
+**代码**: TextTabBench 仓库（开源）  
+**领域**: 自监督学习  
+**关键词**: tabular data, text features, foundation model, benchmark, TabPFNv2, embedding
+
+## 一句话总结
+
+首个系统性研究含文本特征的表格数据建模：设计定性反例暴露三类文本嵌入的失败模式，手动策划 13 个真实数据集，发现文本特征在 11/13 数据集上提升预测精度，但无单一最优嵌入方法，表明表格+文本仍是未解决问题。
+
+## 研究背景与动机
+
+**领域现状**：表格基础模型（如 TabPFNv2）正快速发展，自然的下一步是支持混合模态——结构化列与自由文本字段共存。但现有表格基准几乎不包含文本列。
+
+**现有痛点**：含语义丰富文本特征的真实数据集极难找到——即使穷尽搜索 OpenML 和 Kaggle 也仅少量可用。现有方法在文本处理上存在显著分歧：AutoGluon 用 TF-IDF 稀疏向量，CARTE 用 fastText 句向量，TabPFNv2 API 方法未公开。CARTE 基准的 51 个数据集中，作者调查后发现至多 11 个适合评估"表格+文本"。
+
+**核心矛盾**：一个基本问题未回答——哪种嵌入策略最适合表格任务？在什么条件下？缺乏公平基准来回答。
+
+**本文目标** (1) 暴露现有嵌入方法的具体失败模式；(2) 策划高质量"表格+文本"基准；(3) 系统比较嵌入策略在 SOTA 模型上的表现。
+
+**切入角度**：从定性和定量两层面出发——先用合成反例构造每种嵌入的精确失败条件，再在真实数据上量化评估。
+
+**核心 idea**：揭示表格基础模型的文本处理能力仍有显著不足，为社区提供诊断工具（反例）和评测基础设施（基准）。
+
+## 方法详解
+
+### 整体框架
+
+本文不提出新模型，通过三个互补贡献推进理解：(1) 定性调查——构造暴露嵌入失败的合成实验；(2) 基准策划——按五条规则筛选真实数据集；(3) 定量实验——在基准上系统评估。
+
+### 关键设计
+
+1. **定性反例实验**:
+
+    - 功能：精确诊断 TF-IDF/fastText/BERT 各自的失败模式
+    - 核心思路：选取 5 个 OpenML 二分类数据集，构造两个基线（"No Text"用原始特征；"Complete Leak"泄露标签→100%准确率）。三组压力测试：
+        - **N-Gram Break**：将泄露标签替换为同义词（训练"good"→测试"great"等），TF-IDF 因 OOD 词汇失效，fastText 和 BERT 保持 100%
+        - **Simple NLP Break**：标签周围填充随机词（"apple mountain positive girl"），fastText 词向量平均被噪声淹没退化，TF-IDF 和 BERT 稳定
+        - **LLM Break**：标签周围填充语义冲突词（"favourable positive sad charming"），BERT 和 fastText 被歧义干扰，TF-IDF 靠词频驱动反而鲁棒
+    - 设计动机：同义词变化、随机噪声、语义歧义在真实长文本中极为常见，每种嵌入在其中一种模式下系统性失败
+
+2. **基准数据集策划规则**:
+
+    - 功能：确保基准有意义地评估"表格数据中的文本处理"
+    - 五条规则：(i) 真实自由文本（非短编码）；(ii) 双信号要求（文本+结构特征都有预测信息）；(iii) 表格预测任务（排除推荐/检索）；(iv) 可访问性（无需特殊权限）；(v) 领域和目标多样性
+    - 最终 13 个数据集：覆盖二分类（fraud/kick/osha）、多分类（cards/complaints/spotify）、回归（airbnb/beer/houses/laptops/mercari/permits/wine），行数 984-100K
+
+3. **嵌入策略与评估管道**:
+
+    - 功能：公平比较不同嵌入在 SOTA 模型上的效果
+    - 三种嵌入：(1) fastText 句向量；(2) Skrub TableVectorizer（GapEncoder）；(3) AutoGluon TextNgramFeatureGenerator（TF-IDF 管道）
+    - 模型：TabPFNv2（本地）、XGBoost（本地）、TabPFNv2 API、AutoGluon Tabular Predictor
+    - 因 TabPFNv2 内存限制，特征数限制在 300 以内，测试 SHAP/PCA/Lasso/t-test 等降维
+
+### 损失函数
+
+本文为基准研究，不涉及新损失函数。
+
+## 实验关键数据
+
+### 文本 vs 无文本对比（Table 2，SHAP 降维，各模型最佳嵌入）
+
+| 数据集 | 任务 | TabPFNv2 有文本 | TabPFNv2 无文本 | XGBoost 有文本 | XGBoost 无文本 |
+|--------|------|---------------|---------------|--------------|--------------|
+| beer | 回归 | 0.646±0.023 | 0.579±0.020 | 0.594±0.036 | 0.468±0.020 |
+| mercari | 回归 | 0.237±0.050 | 0.001±0.016 | 0.110±0.062 | 0.001±0.006 |
+| spotify | 多分类 | 0.815±0.010 | 0.663±0.016 | 0.807±0.012 | 0.636±0.027 |
+| frauds | 二分类 | 0.962±0.008 | 0.852±0.006 | 0.958±0.004 | 0.849±0.015 |
+| kick | 二分类 | 0.779±0.016 | 0.702±0.010 | 0.769±0.014 | 0.657±0.013 |
+
+### 各嵌入方法获胜统计
+
+| 嵌入方法 | 跨所有模型最佳数据集数/13 |
+|---------|----------------------|
+| fastText | 7 |
+| AutoGluon Pipeline | 5 |
+| Skrub | 1 |
+
+### 关键发现
+
+1. 文本特征在 **11/13** 数据集上提升预测精度，在 mercari 上从近 0 提升到 0.237（文本几乎是唯一信号源）
+2. **没有单一最优嵌入方法**：fastText 最常获胜（7/13）但不统治全局
+3. **没有单一最优降维方法**：SHAP 最常最优但不总赢
+4. 本地模型+自选嵌入有时超越 API，说明嵌入策略的优化空间仍大
+5. TabPFNv2 API 有文本时一致性更好但增益幅度不如本地最优嵌入
+
+## 亮点与洞察
+
+- **合成反例的诊断价值突出**：N-Gram/NLP/LLM Break 三组实验精确定位每种嵌入盲区，研究者可根据数据文本特性选择嵌入
+- **CARTE 基准的系统审查**：发现 51 个数据集中大量不符合"表格+文本"评测要求（不是预测任务 / 偏向短分类文本 / 预处理偏向 CARTE / 同源重复），审查本身对社区有价值
+- **"无赢家"结论的建设性意义**：明确指出表格+文本是未解决问题，为新方法提供具体评测基础设施
+- **对数据集创建者的呼吁**：建议发布聚合前的原始数据，保留文本变异信息
+
+## 局限性
+
+- 策划数据集数量有限（13 个），覆盖领域可扩展
+- 未测试最新指令微调嵌入模型（如 E5-Mistral、GTE）以及基于 LLM 的嵌入
+- 未与 row-as-text 方法（如 TabLLM）在大样本场景下系统对比
+- 多文本列的联合建模策略未讨论
+- 降维到 300 特征的硬约束可能影响某些嵌入的表达能力
+
+## 相关工作与启发
+
+- CARTE（Kim et al., 2024）：最近的表格+文本基准，但本文审查揭示了其诸多局限
+- TabPFNv2（Hollmann et al., 2025）：核心评估的表格基础模型
+- Grinsztajn et al. (2023)：比较 30+ 嵌入方法但不聚焦基础模型
+- 启发：理想的表格基础模型应在预训练阶段就原生处理文本列，而非依赖后处理嵌入拼接
+
+## 评分
+
+⭐⭐⭐⭐ — 填补了表格+文本基准的重要空白。定性反例精准有力，基准策划规则清晰可复现。局限在于未测试更先进嵌入方法和超大规模模型。
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] TabSTAR: A Tabular Foundation Model for Tabular Data with Text Fields](../../NeurIPS2025/self_supervised/tabstar_a_tabular_foundation_model_for_tabular_data_with_text_fields.md)
+- [\[ICML 2025\] Beyond Sensor Data: Foundation Models of Behavioral Data from Wearables Improve Health Predictions](beyond_sensor_data_foundation_models_of_behavioral_data_from_wearables_improve_h.md)
+- [\[ICML 2025\] What Has a Foundation Model Found? Using Inductive Bias to Probe for World Models](what_has_a_foundation_model_found_using_inductive_bias_to_probe_for_world_models.md)
+- [\[ICML 2025\] Test-Time Canonicalization by Foundation Models for Robust Perception](test-time_canonicalization_by_foundation_models_for_robust_perception.md)
+- [\[AAAI 2026\] Robust Tabular Foundation Models](../../AAAI2026/self_supervised/robust_tabular_foundation_models.md)
+
+</div>
+
+<!-- RELATED:END -->

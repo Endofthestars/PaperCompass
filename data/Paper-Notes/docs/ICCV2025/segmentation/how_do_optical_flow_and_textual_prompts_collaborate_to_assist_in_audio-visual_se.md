@@ -1,0 +1,159 @@
+---
+title: >-
+  [论文解读] How Do Optical Flow and Textual Prompts Collaborate to Assist in Audio-Visual Semantic Segmentation?
+description: >-
+  [ICCV 2025][语义分割][音视频语义分割] 提出 SSP (Stepping Stone Plus) 框架，将光流作为辅助掩码提示与两类文本提示协同工作，配合视觉-文本对齐模块 (VTA)，在音视频语义分割任务中实现 SOTA 性能。 音视频语义分割 (AVSS) 要求模型在像素级别识别发声物体并赋予语义标签…
+tags:
+  - "ICCV 2025"
+  - "语义分割"
+  - "音视频语义分割"
+  - "光流"
+  - "文本提示"
+  - "跨模态对齐"
+  - "AVSS"
+---
+
+# How Do Optical Flow and Textual Prompts Collaborate to Assist in Audio-Visual Semantic Segmentation?
+
+**会议**: ICCV 2025  
+**arXiv**: [2601.08133](https://arxiv.org/abs/2601.08133)  
+**代码**: 无  
+**领域**: 音视频分割 / Audio-Visual Segmentation  
+**关键词**: 音视频语义分割, 光流, 文本提示, 跨模态对齐, AVSS
+
+## 一句话总结
+
+提出 SSP (Stepping Stone Plus) 框架，将光流作为辅助掩码提示与两类文本提示协同工作，配合视觉-文本对齐模块 (VTA)，在音视频语义分割任务中实现 SOTA 性能。
+
+## 研究背景与动机
+
+音视频语义分割 (AVSS) 要求模型在像素级别识别发声物体并赋予语义标签，是 AVS 任务的扩展。现有方法分为两大类：
+
+**融合方法**：将音频和视觉模态融合为统一表示，但若模型设计不佳，容易丢失某一模态的关键信息
+
+**提示方法**：包括基于 object queries、mask 和文本提示三种子类。文本提示通常是静态的宏观描述，缺乏动态时间信息；且不同模态使用不同编码器导致编码在隔离的潜空间中
+
+本文的核心洞察是：**发声物体通常与运动相关**。因此光流可以捕捉运动动态，提供有价值的时间上下文。同时，对于静止发声物体（如闹钟），文本提示可以作为补充。
+
+## 方法详解
+
+### 整体框架
+
+SSP 框架基于 AAVS 基线，将 AVSS 任务分解为 AVS + 语义分割两个阶段。框架核心包含四个创新模块：
+- Pre-mask 技术（光流辅助掩码生成）
+- 两种文本提示（场景描述 + 发声物体识别）
+- VTA 视觉-文本对齐模块
+- Post-mask 训练目标
+
+### 关键设计
+
+1. **Pre-mask with Optical Flow（前置掩码+光流）**:
+
+    - 使用 Perceiver IO 提取相邻帧间的光流数据 $O^{\mathcal{T}-1}$
+    - 通过相邻帧均值平滑光流偏差：$O^{\mathcal{T}} = \text{Stack}\{O^1; \text{Mean}(O^t, O^{t+1}); O^{\mathcal{T}}\}$
+    - 将光流转为二值掩码 $\mathcal{M}_O$，与 GT 掩码 $\mathcal{M}_{GT}$ 结合生成三值掩码 $\mathcal{M}_{Pre}$：交集区域=1（确定前景），对称差区域=0.5（不确定），其余=0（背景）
+    - 设计动机：光流交集保证部分分割输出的准确性，不确定区域留给文本提示补充
+
+2. **Textual Prompts（文本提示）**:
+
+    - 使用 MiniCPM-o-2.6 (MLLM) 对完整视频生成两类文本：
+        - **A₁（场景描述）**：回答"描述视频中每个物体的位置和特征"，提供整体语义理解
+        - **A₂（发声物体识别）**：基于 A₁，回答"哪些名词可能发出声音"，定位静止发声物体
+    - A₁ 是 A₂ 的基础，形成层级关系，逐步精炼语义信息
+    - 设计动机：解决光流无法检测静止发声物体的问题（如钢琴），文本提示可补偿灰色不确定区域
+
+3. **Visual-Textual Alignment (VTA) 模块**:
+
+    - 以 BERT 为骨干网络，实现视觉与文本的跨模态对齐
+    - 视觉数据用 CLIP 编码，文本用 BLIP 分词，合并注意力掩码后统一处理
+    - BERT 被调用两次：第一次融合视觉+文本特征，第二次用融合特征进一步精炼文本表示
+    - 输出 Align₁ 和 Align₂ 与视觉解码器最终特征相加并归一化
+    - 设计动机：避免使用独立编码器导致的模态隔离问题
+
+### 损失函数 / 训练策略
+
+总损失由两部分组成：
+
+$$\mathcal{L} = \mathcal{L}_{AVS} + \lambda'_{mask} \cdot \mathcal{L}'_{mask}$$
+
+- $\mathcal{L}_{AVS} = 5\mathcal{L}_{mask} + 5\mathcal{L}_{dice} + 2\mathcal{L}_{bce}$（标准 AVS 损失）
+- **Post-mask 技术**：额外引入 $\mathcal{L}'_{mask}$，标签为 $\mathcal{M}_{Post} = \mathcal{M}_O \cap \mathcal{M}_{GT}$（光流与 GT 的交集），$\lambda'_{mask}=10$（较高权重加大惩罚）
+- 训练设置：S4/MS3 训练 30 epochs，AVSS 训练 60 epochs，batch size=2，学习率 1e-3 衰减到 1e-4
+
+## 实验关键数据
+
+### 主实验
+
+| 方法 | 类型 | S4 mIoU | S4 F | MS3 mIoU | MS3 F | AVSS mIoU | AVSS F |
+|------|------|---------|------|----------|-------|-----------|--------|
+| AVSBench | Fusion | 78.7 | 87.9 | 54.0 | 64.5 | 29.8 | 35.2 |
+| AVSegFormer | Fusion | 82.1 | 89.9 | 58.4 | 69.3 | 36.7 | 42.0 |
+| AAVS | Prompt | 83.2 | 91.3 | 67.3 | 77.6 | 48.5 | 53.2 |
+| COMBO | Prompt | 84.7 | 91.9 | 59.2 | 71.2 | 42.1 | 46.1 |
+| AVS-Mamba | Prompt | 85.0 | 92.6 | 68.6 | 78.8 | 39.7 | 45.1 |
+| TeSO | Prompt | 83.2 | 93.3 | 66.0 | 80.1 | 38.9 | 45.1 |
+| **SSP (Ours)** | **Prompt** | **85.4** | **93.3** | **72.3** | **84.6** | **50.1** | **54.5** |
+
+SSP 相比基线 AAVS：S4 +2.2%/+1.9%，MS3 +5.0%/+7.0%，AVSS +1.6%/+1.3%。
+
+### 消融实验
+
+| 配置 | S4 mIoU | MS3 mIoU | AVSS mIoU |
+|------|---------|----------|-----------|
+| AAVS 基线 | 83.2 | 67.3 | 48.5 |
+| + Pre-mask | 84.1 | 69.5 | 49.2 |
+| + Pre-mask + Post-mask | 85.0 | 70.2 | 49.4 |
+| + Textual prompts (无VTA) | 83.7 | 68.1 | 48.6 |
+| + Textual prompts + VTA | 84.3 | 69.8 | 49.0 |
+| 无 Post-mask | 84.5 | 70.4 | 49.7 |
+| **Full model** | **85.4** | **72.3** | **50.1** |
+
+### 关键发现
+
+- 仅使用光流 pre-mask 即可在 MS3 上带来 +2.2% mIoU 的显著提升，说明光流作为动态提示非常有效
+- VTA 模块相比简单 cross-attention 平均提升 1.1% mIoU，验证了对齐模块的必要性
+- 文本提示质量对性能影响显著，最佳和最差配置差异达 2.3% mIoU
+- $\lambda'_{mask}=10$ 时性能最优，过高或过低都会降低效果
+
+## 亮点与洞察
+
+- **光流作为AVS提示的首创性**：首次将光流引入音视频分割任务，利用"发声物体通常在运动"这一先验知识
+- **双重提示互补设计**：光流捕捉动态物体，文本提示补偿静态发声物体，形成完整的覆盖
+- **三值掩码设计巧妙**：用 0/0.5/1 编码确定性程度，比简单二值掩码更信息丰富
+- **VTA 模块的两次 BERT 调用**：第一次融合跨模态，第二次精炼文本表示，逐步增强对齐质量
+
+## 局限与展望
+
+- 光流提取依赖 Perceiver IO，增加了计算开销
+- 文本提示依赖外部 MLLM（MiniCPM-o-2.6），推理时需要额外模型
+- 训练时使用 GT 掩码参与 pre-mask 构建，推理时 GT 不可用，存在训练-测试差距
+- 文本提示质量受 MLLM 能力限制，prompt 设计需要仔细调优
+
+## 相关工作与启发
+
+- AAVS 的两阶段范式（AVS+SS）提供了有效的任务分解思路
+- 光流在视频理解中的应用可推广到其他音视频协同任务
+- VTA 中 BERT 作为跨模态对齐骨干的思路可借鉴于其他多模态融合场景
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ 光流作为 AVS 辅助提示是创新点，双重提示互补设计合理
+- **实验充分度**: ⭐⭐⭐⭐ 三个数据集、完善的消融实验、文本质量分析和可视化
+- **写作质量**: ⭐⭐⭐ 结构清晰，但部分符号定义较冗余
+- **价值**: ⭐⭐⭐⭐ 为 AVSS 任务提供了一个有效的多模态协同框架
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Implicit Counterfactual Learning for Audio-Visual Segmentation](implicit_counterfactual_learning_for_audio-visual_segmentation.md)
+- [\[ICCV 2025\] TAViS: Text-bridged Audio-Visual Segmentation with Foundation Models](tavis_text-bridged_audio-visual_segmentation_with_foundation_models.md)
+- [\[ICCV 2025\] Towards Omnimodal Expressions and Reasoning in Referring Audio-Visual Segmentation](towards_omnimodal_expressions_and_reasoning_in_referring_audio-visual_segmentati.md)
+- [\[CVPR 2025\] Robust Audio-Visual Segmentation via Audio-Guided Visual Convergent Alignment](../../CVPR2025/segmentation/robust_audio-visual_segmentation_via_audio-guided_visual_convergent_alignment.md)
+- [\[ICCV 2025\] Refer to Any Segmentation Mask Group With Vision-Language Prompts](refer_to_any_segmentation_mask_group_with_vision-language_prompts.md)
+
+</div>
+
+<!-- RELATED:END -->

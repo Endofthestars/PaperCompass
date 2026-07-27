@@ -1,0 +1,115 @@
+---
+title: >-
+  [论文解读] Mind the Gap: Confidence Discrepancy Can Guide Federated Semi-Supervised Learning
+description: >-
+  [CVPR 2025][优化/理论][联邦半监督学习] 提出 TABASCO，一个两阶段二维样本选择框架解决同时存在标签噪声和长尾分布的联邦半监督学习：用加权 JSD（WJSD）和自适应质心距离（ACD）两个互补指标识别干净样本，GMM 聚类后以半监督方式利用剩余噪声数据，在 CIFAR-10（0.1 不平衡+0.4 噪声）上达 85.53%。
+tags:
+  - "CVPR 2025"
+  - "优化/理论"
+  - "联邦半监督学习"
+  - "噪声标签"
+  - "长尾分布"
+  - "WJSD"
+  - "自适应质心"
+---
+
+# Mind the Gap: Confidence Discrepancy Can Guide Federated Semi-Supervised Learning
+
+**会议**: CVPR 2025  
+**arXiv**: [2503.13227](https://arxiv.org/abs/2503.13227)  
+**代码**: [https://github.com/Wakings/TABASCO](https://github.com/Wakings/TABASCO)  
+**领域**: 优化 / 联邦半监督学习  
+**关键词**: 联邦半监督学习, 噪声标签, 长尾分布, WJSD, 自适应质心
+
+## 一句话总结
+
+提出 TABASCO，一个两阶段二维样本选择框架解决同时存在标签噪声和长尾分布的联邦半监督学习：用加权 JSD（WJSD）和自适应质心距离（ACD）两个互补指标识别干净样本，GMM 聚类后以半监督方式利用剩余噪声数据，在 CIFAR-10（0.1 不平衡+0.4 噪声）上达 85.53%。
+
+## 研究背景与动机
+
+**领域现状**：真实场景的联邦学习数据同时面临三个挑战：标签噪声（标注错误）、长尾分布（头尾类别样本量差异巨大）、和分布偏斜（non-IID）。现有方法通常只处理其中一个或两个问题。
+
+**现有痛点**：（1）标签噪声下标准 JSD（Jensen-Shannon 散度）指标在不平衡数据上失效——尾部类的"正常"JSD可能与头部类的"噪声"JSD重叠；（2）基于特征距离的质心方法在有噪声时质心被污染。
+
+**核心矛盾**：对称噪声和非对称噪声需要不同的检测指标——对称噪声中真实类别多样（JSD 更有效），非对称噪声只有一个目标类（特征距离更有效）。
+
+**切入角度**：同时使用 WJSD 和 ACD 两个互补指标，自动选择当前类别更适合的维度进行 GMM 聚类。
+
+**核心 idea**：WJSD（对称噪声）+ ACD（非对称噪声）+ 自适应维度选择 = 噪声+长尾下的干净样本识别。
+
+## 方法详解
+
+### 关键设计
+
+1. **WJSD（加权 Jensen-Shannon 散度）**:
+
+    - 功能：检测标签噪声样本，对长尾不平衡更鲁棒
+    - 核心思路：$WJSD(x_i) = W(x_i) \times JSD(x_i)$，权重 $W(x_i) = \min(\max(\mathbf{p}_i)/p_i^c, \max(\bar{\mathbf{p}}_c)/\bar{p}_c^c)$。权重放大了"预测最高类别不是标注类"的样本的 JSD 值——噪声样本通常预测错误类别比标注类别更自信
+    - 设计动机：标准 JSD 对尾部类和头部类的阈值不同，WJSD 通过归一化使不同类别可比
+
+2. **ACD（自适应质心距离）**:
+
+    - 功能：在特征空间中检测非对称噪声
+    - 核心思路：$ACD(x_i) = \cos(\mathbf{f}_i, \mathbf{o}_c)$，质心 $H_c$ 用高置信度样本加权构建。高置信度权重 $w_i = \max(1, p_i^{t_c}/\bar{p}_c^{t_c})$ 提升了真实样本的贡献
+    - 设计动机：直接用全体样本的质心会被噪声样本污染，纯净度增强的质心更可靠
+
+3. **二维自适应选择**:
+
+    - 功能：对每个类自动选择 WJSD 或 ACD 中更有效的维度
+    - 核心思路：Algorithm 1 基于两个维度的 GMM 聚类质量自动决策
+
+### 损失函数 / 训练策略
+
+选出的干净样本用标准交叉熵+Lovász-Softmax 训练，噪声样本作为无标签数据做半监督学习。
+
+## 实验关键数据
+
+| 设置 | TABASCO | 前 SOTA | 基线 |
+|------|---------|---------|------|
+| CIFAR-10 (0.1不平衡, 0.4对称噪声) | **85.53%** | 84.25% | 71.67% |
+| CIFAR-100 (0.1不平衡, 0.4非对称噪声) | **59.39%** | 55.99% | 44.45% |
+| CIFAR-10N (真实噪声) | 一致 +2-5% | — | — |
+
+### 消融实验
+
+| 改进 | CIFAR-100 提升 |
+|------|---------------|
+| JSD → WJSD | +1.77% |
+| CD → ACD（纯净度增强） | 显著改善非对称场景 |
+| 单维度 → 二维度自适应 | 在混合噪声下更鲁棒 |
+
+### 关键发现
+- WJSD 在对称噪声下主导，ACD 在非对称噪声下主导——互补性得到验证
+- 纯净度增强使尾部类质心准确率接近 100%（Fig. A2）
+- 训练成本 4.49× 基线（CIFAR-100），是效率的代价
+
+## 亮点与洞察
+- **首次同时处理标签噪声+长尾的联邦学习**——这是最接近真实场景的设定
+- **二维指标的互补性**——不试图用一个指标解决所有噪声类型，而是自适应选择
+
+## 局限与展望
+- 假设非对称噪声率 <50%
+- 训练成本高（4.49×）
+- 仅类级过滤，类内实例级噪声未处理
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ WJSD+ACD 的互补设计对实际问题有效
+- 实验充分度: ⭐⭐⭐⭐ 多数据集+真实噪声
+- 写作质量: ⭐⭐⭐⭐ 清晰
+- 价值: ⭐⭐⭐⭐ 为噪声+长尾的联邦学习提供了实用框架
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2026\] Semi-Supervised Conformal Prediction With Unlabeled Nonconformity Score](../../CVPR2026/optimization/semi-supervised_conformal_prediction_with_unlabeled_nonconformity_score.md)
+- [\[CVPR 2025\] SCOPE: Semantic Coreset with Orthogonal Projection Embeddings for Federated Learning](scope_semantic_coreset_with_orthogonal_projection_embeddings_for_federated_learn.md)
+- [\[NeurIPS 2025\] FedQS: Optimizing Gradient and Model Aggregation for Semi-Asynchronous Federated Learning](../../NeurIPS2025/optimization/fedqs_optimizing_gradient_and_model_aggregation_for_semi-asynchronous_federated_.md)
+- [\[CVPR 2025\] Federated Learning with Domain Shift Eraser](federated_learning_with_domain_shift_eraser.md)
+- [\[CVPR 2025\] Model Poisoning Attacks to Federated Learning via Multi-Round Consistency](model_poisoning_attacks_to_federated_learning_via_multi-round_consistency.md)
+
+</div>
+
+<!-- RELATED:END -->

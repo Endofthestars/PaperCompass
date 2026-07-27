@@ -1,0 +1,144 @@
+---
+title: >-
+  [论文解读] On the Creation of Narrow AI: Hierarchy and Nonlocality of Neural Network Skills
+description: >-
+  [NeurIPS 2025][模型压缩][窄域AI] 研究创建窄域（narrow）AI 系统面临的两大挑战：任务的层级依赖使得某些窄域技能必须在宽分布上训练才能学会；技能的非局部性使得剪枝无法精确分离想要保留和舍弃的能力——但剪枝+恢复训练仍优于蒸馏和从头训练。 当前最强的 AI 系统是通用型基础模型——最好的数学模型同时也…
+tags:
+  - "NeurIPS 2025"
+  - "模型压缩"
+  - "窄域AI"
+  - "模型剪枝"
+  - "知识蒸馏"
+  - "课程学习"
+  - "技能非局部性"
+---
+
+# On the Creation of Narrow AI: Hierarchy and Nonlocality of Neural Network Skills
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2505.15811](https://arxiv.org/abs/2505.15811)  
+**代码**: [GitHub](https://github.com/ejmichaud/narrow)  
+**领域**: 模型压缩  
+**关键词**: 窄域AI, 模型剪枝, 知识蒸馏, 课程学习, 技能非局部性
+
+## 一句话总结
+
+研究创建窄域（narrow）AI 系统面临的两大挑战：任务的层级依赖使得某些窄域技能必须在宽分布上训练才能学会；技能的非局部性使得剪枝无法精确分离想要保留和舍弃的能力——但剪枝+恢复训练仍优于蒸馏和从头训练。
+
+## 研究背景与动机
+
+当前最强的 AI 系统是通用型基础模型——最好的数学模型同时也懂罗马历史和烹饪。但通用性带来了效率与安全两方面的问题：
+
+- **效率**：用于编程助手的模型携带了大量无用知识，如果能创建更小的专用网络，可以大幅降低推理成本。
+- **安全**：窄域系统可能减少 CBRN 风险，更易于机械式可解释性分析和性质验证，一个由窄域"工具 AI"组成的生态系统可能比单一通用 AI 更安全。
+
+作者聚焦两个基本问题：
+
+**何时能从头训练窄域模型？** 在层级结构数据上，某些复合技能可能**必须**通过宽分布训练（先学原子技能）才能高效习得——这是一种极强的课程学习效应。
+
+**能否通过剪枝将宽模型变窄？** 神经网络的表征是分布式的（distributed），技能并不局限于特定的可剪枝组件（如神经元），这使得"精准剪枝"成为挑战。
+
+## 方法详解
+
+### 整体框架
+
+作者设计了一个合成任务（CMSP），在其上系统研究课程学习和剪枝行为，然后在 MNIST 和 LLM（Llama 系列）上验证发现，对比剪枝、蒸馏和从头训练三种创建窄域模型的方法。
+
+### 关键设计
+
+1. **组合式多任务稀疏奇偶校验（CMSP）**: 在标准多任务稀疏奇偶校验（MSP）基础上做两个扩展：（a）不同子任务的索引集不相交 $I_i \cap I_j = \emptyset$；（b）允许多个控制位同时为 ON，此时标签为对应索引集并集的奇偶校验。这创造了原子任务和复合任务之间的层级依赖：复合任务在逻辑上可以通过组合原子任务的特征来计算。核心发现：在包含原子任务的宽分布上训练时，27/40 网络能在 $2 \times 10^8$ 样本内学会复合任务；而仅训练复合任务时，**0/40 网络**在 $2 \times 10^9$ 样本内收敛。
+
+2. **剪枝与非局部性分析**: 对训练好的 CMSP 网络分析每个神经元的消融分数 $s_g = |\mathbb{E}[L(f(x;\theta)) - L(f(x;\theta_g^*))]|$，按分数从低到高贪心剪枝。发现在预训练网络中：（a）技能是非局部的——相关连接分散在整个网络中，无明显结构；（b）技能是纠缠的——在尽可能保留任务 {0,1,2} 的稀疏度下，仍可通过少量训练恢复任务 {3,4,5}，说明两个任务共享神经元。
+
+3. **Group Lasso 正则化**: 引入组稀疏正则 $R(\theta) = \sum_{g \in G} \sqrt{\sum_{i \in g} \theta_i^2}$（L2 范数的 L1 范数），在窄域数据上进行额外训练。这同时达到两个目标：（a）将目标技能的特征集中到更少的神经元上，允许更激进的剪枝；（b）遗忘不需要的技能。正则化后的网络在保持 {0,1,2} 性能的情况下，**无法通过任何程度的恢复训练复活** {3,4,5}——实现了鲁棒遗忘。
+
+### 损失函数 / 训练策略
+
+- 剪枝：$s_g = |\mathbb{E}[L(f(x;\theta)) - L(f(x;\theta_g^*))]|$，或线性近似的归因分数 $\hat{s}_g = |\sum_{i \in g} \frac{\partial L}{\partial \theta_i}(-\theta_i)|$。
+- Group Lasso 训练：$\min_\theta \mathbb{E}[L(f(x;\theta)) + \lambda R(\theta)]$，其中 $\lambda = 10^{-3}$（CMSP）或 $5 \times 10^{-4}$ 到 $10^{-3}$（LLM）。
+- 蒸馏：最小化学生与教师输出分布的 KL 散度，温度 $T=20$（MNIST）或 $T=2$（LLM）。
+
+## 实验关键数据
+
+### 主实验 — CMSP 课程学习效应
+
+| 训练分布 | 批量/种子 | 复合任务收敛比例 | 收敛样本数 |
+|---------|----------|---------------|----------|
+| 原子+复合（宽分布） | 2000/子任务, 40种子 | 27/40 | ~2×10⁸ |
+| 仅复合（窄分布） | 2000, 40种子 | **0/40** | >2×10⁹ 未收敛 |
+
+### 主实验 — LLM 窄域化效果（Python 文档）
+
+| 方法 | 数据效率 | 关键观察 |
+|------|---------|---------|
+| 从头训练 Llama 架构 | 最差 | 需要大量数据和参数才达标 |
+| 蒸馏（Llama-3.1-8B→小模型） | 中等 | 优于从头但不如剪枝 |
+| 剪枝 Llama-3.2-1B + 恢复训练 | **最优** | 在数据-参数前沿帕累托占优 |
+
+### 遗忘实验
+
+| 方法 | 稀疏度 | CounterFact | AI2-ARC | WMDP-Bio | WMDP-Cyber |
+|------|--------|------------|---------|----------|------------|
+| 基线（无剪枝） | 0% | 0.18→0.49 | 0.65→0.67 | 0.52→0.62 | 0.35→0.59 |
+| 随机剪枝 | 30% | 0.00→0.50 | 0.24→0.25✓ | 0.22→0.27✓ | 0.27→0.27✓ |
+| 归因剪枝 | 30% | 0.12→0.65 | 0.35→0.69 | 0.36→0.56 | 0.27→0.55 |
+| Group Lasso | 30% | 0.06→0.47 | 0.25→0.25✓ | 0.24→0.31✓ | 0.26→0.27✓ |
+| 随机剪枝 | 80% | 0.00→0.42 | 0.26→0.25✓ | 0.26→0.28✓ | 0.23→0.26✓ |
+
+（✓表示微调后分数比基线低≥10%，即成功遗忘）
+
+### 消融实验
+
+| 配置 | 关键指标 | 说明 |
+|------|----------|------|
+| 归因剪枝 vs 随机剪枝（LLM） | 恢复后性能相同 | 技能极度分布式，归因优势消失 |
+| MNIST: 剪枝 vs 蒸馏 vs 从零 | 剪枝帕累托优于其他 | 特别在高神经元数时优势明显 |
+| Group Lasso 不同 λ | λ=0.001~0.008 | 对超参数敏感但效果一致 |
+
+### 关键发现
+
+- **惊人发现**：在 LLM 上，随机剪枝在恢复训练后与归因剪枝表现相同！这与 Bricken et al. [2023] 发现单语义特征高度分布在大量维度上的结论一致。
+- Group Lasso 在 CMSP 上表现出比 LLM 上更强的差异化遗忘能力，可能因为 CMSP 任务更独立。
+- 剪枝在 LLM 上的数据效率显著优于蒸馏（相同目标性能下需更少数据），尤其当已有预训练模型时。
+
+## 亮点与洞察
+
+- **CMSP 任务设计精巧**：通过索引不相交和组合控制位，干净地创造了层级依赖，是研究课程学习的优秀测试床。
+- **"为什么通用模型在窄域也最强"的部分解释**：某些复合技能的学习依赖于先学会构成原子技能的课程效应。
+- **随机剪枝=归因剪枝** 这一令人意外的实验结果，深刻揭示了特征分布性对剪枝策略设计的影响。
+
+## 局限与展望
+
+- CMSP 是人造任务，其强课程效应在真实任务上的普遍性尚不明确。
+- LLM 实验的超参数未充分优化，剪枝优于从头训练可能部分源于实验设置差异。
+- 仅使用了简单的贪心归因剪枝，更复杂的剪枝策略（如稀疏自编码器引导）可能表现不同。
+- 安全动机很有说服力，但 30% 稀疏度下归因剪枝无法遗忘，说明还需要更精细的方法。
+
+## 相关工作与启发
+
+- 与 Cloud et al. (2023) 的 "gradient routing" 互补：gradient routing 在训练时就将能力路由到特定组件，而本文在训练后通过正则化实现类似效果。
+- Liu et al. (2024) 也研究了类似 CMSP 的任务并发现"多米诺"学习动态，本文提供了更系统的分析。
+- 对 AI 安全领域的机器遗忘研究有直接启示：简单剪枝可能就足以遗忘能力，但需注意归因方法可能无效。
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ CMSP 设计巧妙，"随机剪枝≈归因剪枝"发现新颖
+- 实验充分度: ⭐⭐⭐⭐ 从合成任务到 MNIST 到 LLM 的三级验证体系完整
+- 写作质量: ⭐⭐⭐⭐ 结构清晰，图表有效，但部分实验描述略显零散
+- 价值: ⭐⭐⭐⭐⭐ 对窄域 AI 的基本问题（可训练性、可剪枝性）提供了系统性的初步答案，兼具效率和安全意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] The Graphon Limit Hypothesis: Understanding Neural Network Pruning via Infinite Width Analysis](the_graphon_limit_hypothesis_understanding_neural_network_pruning_via_infinite_w.md)
+- [\[AAAI 2026\] A Closer Look at Knowledge Distillation in Spiking Neural Network Training](../../AAAI2026/model_compression/a_closer_look_at_knowledge_distillation_in_spiking_neural_ne.md)
+- [\[NeurIPS 2025\] AI-Generated Video Detection via Perceptual Straightening](ai-generated_video_detection_via_perceptual_straightening.md)
+- [\[NeurIPS 2025\] KINDLE: Knowledge-Guided Distillation for Prior-Free Gene Regulatory Network Inference](kindle_knowledge-guided_distillation_for_prior-free_gene_regulatory_network_infe.md)
+- [\[ICML 2025\] Lego Sketch: A Scalable Memory-augmented Neural Network for Sketching Data Streams](../../ICML2025/model_compression/lego_sketch_a_scalable_memory-augmented_neural_network_for_sketching_data_stream.md)
+
+</div>
+
+<!-- RELATED:END -->

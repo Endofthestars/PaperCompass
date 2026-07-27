@@ -1,0 +1,186 @@
+---
+title: >-
+  [论文解读] FeatSharp: Your Vision Model Features, Sharper
+description: >-
+  [ICML 2025][语义分割][特征上采样] 提出 FeatSharp，通过将 FeatUp 的联合双边上采样（JBU）与图像瓦片（tiling）特征进行注意力融合，以极低成本将低分辨率视觉编码器的特征图连贯地上采样到高分辨率，同时捕获原始分辨率下丢失的细粒度细节。 当前主流视觉基础模型（VFM）以 Vision Tra…
+tags:
+  - "ICML 2025"
+  - "语义分割"
+  - "特征上采样"
+  - "Transformer"
+  - "多视图一致性"
+  - "联合双边上采样"
+  - "瓦片融合"
+---
+
+# FeatSharp: Your Vision Model Features, Sharper
+
+**会议**: ICML 2025  
+**arXiv**: [2502.16025](https://arxiv.org/abs/2502.16025)  
+**代码**: [https://github.com/NVlabs/FeatSharp](https://github.com/NVlabs/FeatSharp)  
+**领域**: 分割  
+**关键词**: 特征上采样, Vision Transformer, 多视图一致性, 联合双边上采样, 瓦片融合
+
+## 一句话总结
+
+提出 FeatSharp，通过将 FeatUp 的联合双边上采样（JBU）与图像瓦片（tiling）特征进行注意力融合，以极低成本将低分辨率视觉编码器的特征图连贯地上采样到高分辨率，同时捕获原始分辨率下丢失的细粒度细节。
+
+## 研究背景与动机
+
+当前主流视觉基础模型（VFM）以 Vision Transformer（ViT）为骨干，通常以 CLIP 等对比学习方式训练。这些模型存在一个核心缺陷：**分辨率固定且偏低**。CLIP 模型典型的运行分辨率为 224×224 或 336×336，空间特征的下采样率为 14 倍（224² → 16²）。由于学习式位置编码的特性，ViT 对输入分辨率变化也不够灵活。
+
+直接提高输入分辨率面临两个困难：（1）ViT 的计算开销随分辨率**二次增长** $O((w \cdot h)^2)$；（2）很多模型（CLIP、SigLIP 等）在训练分辨率之外的泛化能力很差。
+
+先前工作 FeatUp 提出通过多视图一致性训练学习上采样器，其中 JBU 变体虽然速度快，但存在明显不足：（1）仅依赖 RGB 像素作为引导，在物体内部缺乏语义边界时特征模糊；（2）无法引入比原始分辨率更细的新细节；（3）隐式上采样器虽然更好，但每张图需 1-5 分钟，成本过高。
+
+FeatSharp 的动机就是在 JBU（单次推理、快速）与隐式模型（多次推理、精细）之间找到一个**计算效率与细节质量的最优折中**。
+
+## 方法详解
+
+### 整体框架
+
+FeatSharp 的流程如下：
+
+1. **全局低分辨率推理**：将输入图像送入冻结的视觉编码器，获得低分辨率特征图 $f(x)$
+2. **JBU 上采样**：使用 FeatUp 的联合双边上采样将低分辨率特征图上采样到目标分辨率，以 RGB 图像作为引导
+3. **瓦片推理**：将输入图像分割为 $n \times n$ 瓦片，每个瓦片缩放到编码器原始输入分辨率，**独立**通过编码器，然后拼接回高分辨率特征图
+4. **FeatSharp 融合模块**：将 JBU 上采样特征与瓦片特征沿通道维拼接，通过带滑动窗口注意力的 Transformer 块融合
+5. **输出切分**：取输出的前 $C$ 个通道（对应 JBU 上采样的残差路径）作为最终高分辨率特征
+
+### 关键设计
+
+#### 1. JBU 改进：质因数分解上采样
+
+原始 FeatUp 仅支持 $2\times$ 的 JBU 堆叠。FeatSharp 提出对任意整数上采样因子 $z$ 进行**质因数分解**，为每个质因数使用对应的 JBU 层。例如 14 倍上采样（对应 patch-size-14 的骨干）分解为 $\text{JBU}_{7\times} \circ \text{JBU}_{2\times}$。
+
+#### 2. 瓦片引导注意力融合（FeatSharp 模块）
+
+这是本文的核心创新。JBU 的根本局限在于：
+
+- 依赖 RGB 像素引导，在颜色空间中不显著的语义边界会被模糊
+- 无法捕获低分辨率下不可见的小目标细节
+
+瓦片特征可以提供：高分辨率下的语义信息和原始分辨率不可见的小区域细节。但瓦片拼接后存在**严重的边界不连续性**（不同瓦片间的表示不一致）。
+
+FeatSharp 模块的设计：
+- 将 JBU 特征 $(H, W, C)$ 与瓦片特征 $(H, W, C)$ 沿通道拼接为 $(H, W, 2C)$
+- 通过一个 **Attention + SwiGLU** Transformer 块处理，使用 **2D 局部滑动窗口注意力**避免全局注意力的二次开销
+- 最后切分前 $C$ 个通道作为输出
+
+关键的设计巧思：Transformer 块有残差连接，因此 no-op 等价于直接返回 JBU 特征，学习从瓦片中提取有用信息是渐进的。
+
+#### 3. 特征去噪（可学习偏置缓冲区）
+
+受 ViT-Denoiser 启发，ViT 特征中包含固定的位置相关噪声 $g(E_{pos})$。FeatSharp 添加一个**可学习的偏置缓冲区** $g$：
+
+$$\hat{f}(x) = f(x) + g$$
+
+该缓冲区通过多视图一致性训练自动学习并**抵消位置固定的伪影**。因为固定模式会降低多视图一致性（模式始终是局部的，缺乏全局一致性），所以训练过程自然驱动 $g$ 去消除这些伪影。
+
+#### 4. PHI-S 特征归一化
+
+为了避免直接使用原始特征（分布差异大，训练不稳定），同时避免 LayerNorm（破坏原始特征空间），采用 PHI-S 标准化：基于训练集 100k 样本计算分布统计量进行标准化，保持特征空间兼容性。
+
+### 损失函数 / 训练策略
+
+- **训练目标**：纯粹的**多视图一致性** —— 上采样后的特征经过任意仿射变换并下采样后，应与模型在变换后图像上的原始低分辨率预测一致
+- **损失函数**：仅使用 **MSE 损失**，不使用 FeatUp 中的全变差（TV）和条件随机场（CRF）损失
+- **冻结/可学习**：视觉编码器完全冻结，仅训练 JBU 参数、FeatSharp 融合模块和去噪偏置缓冲区
+
+**计算复杂度优势**：使用 $x$ 倍瓦片时，FeatSharp 的推理代价为 $f(x) = c(1 + x^2)$，而直接在高分辨率运行模型的代价为 $g(x) = cx^4$。对任意 $x > 1$，FeatSharp 都更高效。
+
+## 实验关键数据
+
+### 主实验
+
+**语义分割 (ADE20K mIoU, 线性探针)**
+
+| 模型 | 方法 | 上采样 | 输入尺寸 | mIoU | 说明 |
+|------|------|--------|----------|------|------|
+| RADIOv2.5-L | Baseline | 1× | 1× | 51.47 | 已发表 SOTA |
+| RADIOv2.5-L | FeatSharp | 2× | 2× | **53.13** | **+1.66 mIoU** |
+| RADIOv2.5-L | FeatUp | 2× | 2× | < Baseline 2× | 劣于基线 |
+| 所有模型 | FeatSharp | - | - | 最优 | 在所有模型上均最优 |
+
+**目标检测 (COCO 2017)**
+
+| 上采样方法 | 上采样倍数 | AP* | AP_Sm | AP_Md | AP_Lg |
+|-----------|-----------|-----|-------|-------|-------|
+| Baseline (RADIO) | 1× | 51.38 | 28.73 | 56.56 | 73.72 |
+| Bilinear (RADIO) | 2× | 51.61 | 28.43 | 56.98 | 74.14 |
+| FeatUp (RADIO) | 2× | 46.71 | 21.77 | 52.01 | 72.25 |
+| **FeatSharp (RADIO)** | **2×** | **54.83** | **34.72** | **59.40** | **74.40** |
+| Baseline (SigLIP2) | 1× | 52.66 | 30.31 | 57.94 | 74.31 |
+| **FeatSharp (SigLIP2)** | **2×** | **55.93** | **36.85** | **61.00** | **74.62** |
+
+FeatSharp 在小目标检测上提升尤为显著：RADIO 上 AP_Sm +6.0 pts，SigLIP2 上 +6.5 pts。
+
+### 消融实验
+
+**RADIO 聚合模型训练 (MTL Gain $\Delta_m\%$)**
+
+| 教师上采样方法 | 分类 | 密集 | 3D探针 | 检索 | Pascal | NYUDv2 | VILA | $\Delta_m\%$ |
+|--------------|------|------|--------|------|--------|--------|------|-------------|
+| RADIOv2.5-L | -0.47 | -0.09 | -1.05 | -0.45 | 0.62 | -2.26 | 2.24 | -0.21 |
+| Baseline | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Tile | -0.03 | 0.30 | -0.08 | -0.23 | -0.02 | 1.33 | -3.17 | -0.27 |
+| S2 | -0.05 | 0.15 | -0.03 | -0.44 | 0.13 | 1.33 | -0.89 | 0.03 |
+| FeatUp | -0.07 | 0.14 | 0.23 | -0.07 | 0.14 | 0.32 | -1.58 | -0.13 |
+| **FeatSharp** | **0.06** | **0.16** | **0.83** | **0.13** | **0.17** | **0.93** | **0.43** | **+0.39** |
+
+### 关键发现
+
+1. **FeatSharp 是唯一在所有任务上全面提升的方法**：$\Delta_m = +0.39\%$，Tile 和 FeatUp 在部分任务上反而退步
+2. **CLIP 家族模型不受益于高分辨率输入**：DFN CLIP、SigLIP 等在提高分辨率后分割性能不变甚至下降，而 DINOv2、RADIO 原生受益
+3. **多视图一致性（Fidelity）**：FeatSharp 在所有测试模型上一致取得最高保真度，在"干净"模型（DINOv2-L、RADIOv2.5-L、SAM-H）上优势尤其显著
+4. **FeatSharp 比直接高分辨率运行快 57%**：在 RADIO + ADE20K 实验中，2× 上采样 + 2× 输入比直接 2× 输入快 57%
+
+## 亮点与洞察
+
+1. **极简设计哲学**：整个 FeatSharp 模块只有一个 Attention+SwiGLU 块 + 可学习偏置缓冲区，没有复杂的多阶段架构，但效果远超 FeatUp
+2. **质因数分解 JBU**：支持任意整数上采样倍数（如 14×），而非仅限于 2 的幂次，实用性大幅提高
+3. **去噪与上采样的统一视角**：揭示了 FeatUp 和 ViT-Denoiser 本质上都利用多视图一致性来消除位置固定噪声，并用一个简单的可学习偏置缓冲区优雅解决
+4. **瓦片融合解决了 VLM 中的已知问题**：VLM 中直接拼接瓦片特征会有边界不连续和表示不一致问题，FeatSharp 的注意力融合提供了系统性解决方案
+5. **对模型分辨率鲁棒性的深入分析**：揭示了 CLIP 家族不受益于高分辨率的本质问题，为 VFM 的选择提供重要参考
+
+## 局限与展望
+
+1. **需要额外的瓦片推理**：虽然比直接高分辨率运行便宜，但 $n \times n$ 瓦片仍需 $n^2$ 次额外的编码器推理，对实时应用仍是负担
+2. **仅支持整数上采样倍数**：核心训练算法限制在整数倍上采样，虽然 RADIO 的 emulation 可间接支持任意倍数
+3. **3× 上采样性能下降原因未探究**：论文承认 3× 上采样通常略差于 2× 和 4×，但未给出解释
+4. **瓦片数量的最优选择**：实验仅使用最终层瓦片（$1 + x^2$ 次推理），渐进式上采样的效果留作未来工作
+5. **可学习偏置的可解释性有限**：虽然有可视化，但对偏置缓冲区学到了什么缺乏深入分析
+
+## 相关工作与启发
+
+- **FeatUp (Fu et al., 2024)**：本文的直接基础，提出 JBU 多视图一致性训练框架，FeatSharp 在其上增加瓦片融合和去噪
+- **ViT-Denoiser (Yang et al., 2024)**：揭示 ViT 特征噪声的来源，启发了 FeatSharp 的可学习偏置设计
+- **AM-RADIO / RADIOv2.5 (Ranzinger et al., 2024)**：聚合模型框架，FeatSharp 在其训练中用于提升教师特征质量
+- **LLaVA 1.6 / InternVL (Liu et al., 2024; Chen et al., 2024)**：VLM 中的瓦片策略启发了 FeatSharp 将瓦片引入特征上采样
+- **CARAFE / SAPA / LiFT**：像素自适应上采样方法的演进路线
+
+## 评分
+
+| 维度 | 分数 (1-5) | 说明 |
+|------|-----------|------|
+| 新颖性 | 4 | JBU+Tiling 融合思路清晰且有效，去噪统一视角有洞察 |
+| 实验充分性 | 5 | 7 种基础模型 × 多任务 × 多上采样倍数，覆盖全面 |
+| 实用性 | 4 | 极简模块设计，可即插即用，但仍需额外推理 |
+| 写作质量 | 4 | 结构清晰，图表丰富，动机阐述到位 |
+| 综合评分 | **4.3** | 扎实的工程+方法贡献，对视觉基础模型的高分辨率使用有重要参考价值 |
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[CVPR 2025\] Your ViT is Secretly an Image Segmentation Model](../../CVPR2025/segmentation/your_vit_is_secretly_an_image_segmentation_model.md)
+- [\[ICLR 2026\] TRACE: Your Diffusion Model is Secretly an Instance Edge Detector](../../ICLR2026/segmentation/trace_your_diffusion_model_is_secretly_an_instance_edge_detector.md)
+- [\[CVPR 2026\] VidEoMT: Your ViT is Secretly Also a Video Segmentation Model](../../CVPR2026/segmentation/videomt_your_vit_is_secretly_also_a_video_segmentation_model.md)
+- [\[ICCV 2025\] Know Your Attention Maps: Class-specific Token Masking for Weakly Supervised Semantic Segmentation](../../ICCV2025/segmentation/know_your_attention_maps_class-specific_token_masking_for_weakly_supervised_sema.md)
+- [\[CVPR 2025\] The Devil is in Low-Level Features for Cross-Domain Few-Shot Segmentation](../../CVPR2025/segmentation/the_devil_is_in_low-level_features_for_cross-domain_few-shot_segmentation.md)
+
+</div>
+
+<!-- RELATED:END -->

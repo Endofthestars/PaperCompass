@@ -1,0 +1,146 @@
+---
+title: >-
+  [论文解读] Training-Free Safe Text Embedding Guidance for Text-to-Image Diffusion Models
+description: >-
+  [NeurIPS 2025][图像生成][安全生成] 提出 Safe Text embedding Guidance (STG)，一种无需训练的安全文本到图像生成方法，通过在扩散采样过程中基于安全函数对预期去噪图像的评估来动态调整文本嵌入方向，在有效去除不安全内容的同时最大程度保留原始语义意图。 文本到图像扩散模型凭借大规模…
+tags:
+  - "NeurIPS 2025"
+  - "图像生成"
+  - "安全生成"
+  - "文本嵌入引导"
+  - "扩散模型"
+  - "无训练方法"
+  - "内容安全"
+---
+
+# Training-Free Safe Text Embedding Guidance for Text-to-Image Diffusion Models
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.24012](https://arxiv.org/abs/2510.24012)  
+**代码**: [GitHub](https://github.com/aailab-kaist/STG)  
+**领域**: 扩散模型 / 图像生成  
+**关键词**: 安全生成, 文本嵌入引导, 扩散模型, 无训练方法, 内容安全
+
+## 一句话总结
+提出 Safe Text embedding Guidance (STG)，一种无需训练的安全文本到图像生成方法，通过在扩散采样过程中基于安全函数对预期去噪图像的评估来动态调整文本嵌入方向，在有效去除不安全内容的同时最大程度保留原始语义意图。
+
+## 研究背景与动机
+
+文本到图像扩散模型凭借大规模网络爬取数据集取得了显著进展，但这些数据集中不可避免地包含不当或有偏见的内容，导致模型在面对恶意文本提示时可能生成裸露、暴力或侵犯版权等不安全内容。"安全"的定义因文化背景和个人感知而异，因此需要灵活可适配的安全生成策略。
+
+现有安全生成方法分为两大类，但各有局限：
+
+**训练型方法**（如 ESD、DUO）通过微调模型权重来"遗忘"不安全概念，但需要额外的安全标注数据和大量计算资源，且存在降低模型原始生成能力的风险
+
+**无训练方法**（如 SLD、UCE、SAFREE）在推理时操纵输入或中间表示，但它们通常不直接利用扩散模型产生的中间样本来指导安全机制，且缺乏清晰的理论基础来理解其修改如何影响原始模型分布
+
+核心矛盾在于：如何在不依赖额外训练的情况下，既利用扩散过程产生的中间样本信息来保障安全性，又具备理论保证不破坏原始生成质量。STG 的切入角度是：不安全图像通常源自包含不安全概念的文本提示，因此直接在文本嵌入空间施加安全引导，比在数据空间操作更稳健。
+
+## 方法详解
+
+### 整体框架
+STG 在扩散采样的每一步中，首先通过 Tweedie 公式估计当前噪声图像 $\mathbf{x}_t$ 对应的预期去噪图像 $\bar{\mathbf{x}}_0$，然后使用安全函数 $g$ 在该预期图像上评估安全分数，最后将安全函数关于文本嵌入 $\mathbf{c}$ 的梯度用于更新嵌入，使生成过程偏向更安全的方向。
+
+### 关键设计
+
+1. **Safe Guidance (SG) 理论框架**:
+
+    - 将安全条件建模为贝叶斯条件概率 $q_t(o=1|\mathbf{x}_t, \mathbf{c})$
+    - 安全条件下的得分函数分解为原始文本条件得分 + 安全引导项：$\nabla_{\mathbf{x}_t} \log q_t(\mathbf{x}_t|\mathbf{c}, o=1) = \nabla_{\mathbf{x}_t} \log q_t(\mathbf{x}_t|\mathbf{c}) + \nabla_{\mathbf{x}_t} \log q_t(o=1|\mathbf{x}_t, \mathbf{c})$
+    - 设计动机：直接训练时间依赖的安全分类器成本过高，需要无训练的替代方案
+
+2. **Safe Data Guidance (SDG) → Safe Text Guidance (STG) 的演进**:
+
+    - SDG 在数据空间 $\mathbf{x}_t$ 上施加安全引导（类似 Universal Guidance），但依赖安全函数 $g$ 精确正比于真实安全概率的假设，当函数形状不匹配时会产生偏差
+    - STG 转而在文本嵌入空间施加梯度上升：$\mathbf{c} \leftarrow \mathbf{c} + \rho \nabla_{\mathbf{c}} g_t(\mathbf{x}_t, \mathbf{c})$
+    - 核心公式：$\mathbf{s}_{\text{STG}}(\mathbf{x}_t, \mathbf{c}, t) = \mathbf{s}_\theta\left(\mathbf{x}_t, \mathbf{c} + \rho \nabla_{\mathbf{c}} g\left(\frac{1}{\sqrt{\bar{\alpha}_t}}(\mathbf{x}_t + (1-\bar{\alpha}_t)\mathbf{s}_\theta(\mathbf{x}_t, \mathbf{c}, t))\right), t\right)$
+    - 设计动机：文本嵌入空间的操作同时考虑了底层模型似然和安全方向，避免了数据空间引导的模式坍塌问题
+
+3. **理论保证 (Theorem 1)**:
+
+    - STG 对数据空间的等效影响可分解为原始文本条件得分 + 安全引导项 + 高阶误差 $O(\rho^2)$
+    - 隐式安全概率 $q_t^{\text{STG}}(o=1|\mathbf{x}_t, \mathbf{c}) \propto \exp(\rho \nabla_\mathbf{c} g_t \cdot \nabla_\mathbf{c} \log q_t(\mathbf{x}_t|\mathbf{c}))$
+    - 即安全概率由安全函数梯度与模型似然梯度的对齐程度决定，自然兼顾了安全性与生成质量
+
+4. **实用性设计**:
+
+    - 更新阈值 $\tau$：基于估计安全值决定是否在当前步应用引导
+    - 更新步比 $\gamma$：控制引导频率，在效率与安全性间取得平衡
+    - 支持 FP16 推理，显著减少运行时间和 GPU 内存
+
+### 安全函数 $g$ 的实例化
+- **裸露检测**：$g$ 为 NudeNet 检测器输出的裸露标签置信度之负和
+- **暴力检测**：$g$ 为生成图像与暴力相关文本的 CLIP 分数之负
+- **艺术风格去除**：$g$ 为图像与 'art' 文本 CLIP 分数与目标艺术家 CLIP 分数之差
+
+## 实验关键数据
+
+### 主实验：COCO 数据集生成质量
+
+| 方法 | FID ↓ | CLIP ↑ | 备注 |
+|------|-------|--------|------|
+| Base (SD v1.4) | 23.22 | 31.96 | 基线 |
+| ESD (训练型) | 22.85 | 30.02 | CLIP 下降明显 |
+| DUO (训练型) | 23.27 | 31.90 | 接近基线 |
+| SAFREE (无训练) | 28.39 | 30.27 | FID 恶化严重 |
+| SDG (无训练) | 26.90 | 29.97 | 类似 |
+| **STG (本文)** | **22.00** | **31.14** | FID 甚至优于基线 |
+
+### 消融实验：超参数敏感性
+
+| 配置 | DSR ↑ | PP ↑ | 说明 |
+|------|-------|------|------|
+| $\rho=0.5, \tau=0.15$ | 0.60 | 0.94 | 较弱引导 |
+| $\rho=2.0, \tau=0.15$ | 0.79 | 0.90 | 平衡配置 |
+| $\rho=2.0, \tau=0.40$ | 0.88 | 0.84 | 强引导 |
+| $\rho=2.0, \tau=0.80$ | 0.92 | 0.84 | 最强引导 |
+
+### 跨架构泛化（Ring-A-Bell Violence）
+
+| 模型 | Base DSR | STG DSR ($\tau=0.16$) | FID-1K 变化 |
+|------|----------|------------------------|-------------|
+| FLUX | 0.11 | 0.70 | 56.58→57.77 |
+| SDXL | 0.04 | 0.77 | 48.97→49.44 |
+| SD3 | 0.12 | 0.68 | 53.70→54.91 |
+| LCM | 0.02 | 0.80 | 60.87→62.32 |
+
+### 关键发现
+- STG 在 COCO 安全提示上的 FID 甚至优于基线模型，说明安全引导中的似然保持项有助于生成质量
+- STG 可无缝与训练型方法（如 DUO）组合，在暴力场景下进一步提升防御成功率
+- 2D 玩具实验清晰展示了 STG 相比 SDG 对安全函数形状不匹配的鲁棒性
+
+## 亮点与洞察
+- 理论与实践的优雅结合：Theorem 1 揭示 STG 隐式定义的安全概率自然兼顾模型似然保持，这是其优于 SDG 的根本原因
+- 框架通用性强：同一框架适用于裸露/暴力/艺术风格去除/偏见缓解等多种安全场景，只需更换安全函数 $g$
+
+## 局限与展望
+- 计算开销来自梯度计算更新文本嵌入，虽然 FP16 和阈值机制可缓解，但仍比基线慢
+- 安全函数 $g$ 的选择依赖外部分类器（如 NudeNet、CLIP），其质量直接影响引导效果
+- 对白盒攻击（如 Concept Inversion）的防御仍需与训练型方法结合
+
+## 相关工作与启发
+- **vs SLD**：SLD 使用不安全文本条件的 CFG 引导，不直接利用中间样本；STG 通过预期去噪图像反馈安全信号
+- **vs SAFREE**：SAFREE 在不安全 token 子空间做过滤，与扩散状态解耦；STG 直接将扩散中间状态纳入安全引导
+- **vs DUO**：DUO 是训练型方法，对暴力等多样化类别效果有限；STG 通过测试时 CLIP 引导更灵活
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 文本嵌入空间的安全引导视角新颖，理论分析扎实
+- 实验充分度: ⭐⭐⭐⭐⭐ 覆盖裸露/暴力/风格去除，多架构验证，黑白盒攻击
+- 写作质量: ⭐⭐⭐⭐⭐ 层层递进，从SG→SDG→STG的演进逻辑清晰
+- 价值: ⭐⭐⭐⭐ 实用价值高，可即插即用于各种扩散模型
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Diffusion Adaptive Text Embedding for Text-to-Image Diffusion Models](diffusion_adaptive_text_embedding_for_texttoimage_diffusion.md)
+- [\[NeurIPS 2025\] Safe and Stable Control via Lyapunov-Guided Diffusion Models](safe_and_stable_control_via_lyapunov-guided_diffusion_models.md)
+- [\[NeurIPS 2025\] Prompt-Based Safety Guidance Is Ineffective for Unlearned Text-to-Image Diffusion Models](prompt-based_safety_guidance_is_ineffective_for_unlearned_text-to-image_diffusio.md)
+- [\[NeurIPS 2025\] Mitigating Sexual Content Generation via Embedding Distortion in Text-conditioned Diffusion Models](mitigating_sexual_content_generation_via_embedding_distortion_in_text-conditione.md)
+- [\[NeurIPS 2025\] Token Perturbation Guidance for Diffusion Models](token_perturbation_guidance_for_diffusion_models.md)
+
+</div>
+
+<!-- RELATED:END -->

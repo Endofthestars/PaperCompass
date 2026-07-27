@@ -1,0 +1,166 @@
+---
+title: >-
+  [论文解读] GT-SNT: A Linear-Time Transformer for Large-Scale Graphs via Spiking Node Tokenization
+description: >-
+  [AAAI 2026][图学习][Transformer] 提出 GT-SNT，将脉冲神经网络（SNN）用作图节点分词器（tokenizer），通过多步特征传播生成紧凑的脉冲计数嵌入作为节点 token，再利用码本引导自注意力（CGSA）在线性时间内捕获全局上下文，在 9 个节点分类基准上取得可比性能的同时实现最高 130× 的推理加速。
+tags:
+  - "AAAI 2026"
+  - "图学习"
+  - "Transformer"
+  - "脉冲神经网络"
+  - "节点分词"
+  - "线性复杂度"
+  - "大规模图"
+---
+
+# GT-SNT: A Linear-Time Transformer for Large-Scale Graphs via Spiking Node Tokenization
+
+**会议**: AAAI 2026  
+**arXiv**: [2504.11840](https://arxiv.org/abs/2504.11840)  
+**代码**: [https://github.com/Zhhuizhe/GT-SNT](https://github.com/Zhhuizhe/GT-SNT)  
+**领域**: Graph Learning  
+**关键词**: 图Transformer, 脉冲神经网络, 节点分词, 线性复杂度, 大规模图
+
+## 一句话总结
+提出 GT-SNT，将脉冲神经网络（SNN）用作图节点分词器（tokenizer），通过多步特征传播生成紧凑的脉冲计数嵌入作为节点 token，再利用码本引导自注意力（CGSA）在线性时间内捕获全局上下文，在 9 个节点分类基准上取得可比性能的同时实现最高 130× 的推理加速。
+
+## 研究背景与动机
+
+图 Transformer（GT）结合消息传递和自注意力机制，在图预测任务上表现卓越，但面临**二次复杂度**的瓶颈：
+
+- **全注意力 GT**：O(N²) 复杂度在大规模图（如 ogbn-products，245 万节点）上不可行
+- **线性注意力 GT**（NodeFormer、SGFormer）：虽然降低了计算量，但可能导致"过度全局化"问题
+- **节点分词方法**（GOAT、VQGraph）：使用 VQ-VAE 风格的码本，但存在严重的**码本坍塌**问题——预定义的大型码本中大量码字从未被使用
+
+作者观察到一个有趣的联系：**脉冲神经网络（SNN）天然将连续高精度输入转换为低精度的事件驱动表示**——这本质上就是一种"序列到 token"的转换方式。由此提出核心研究问题：*我们能否超越将脉冲神经元仅视为低功耗单元，而是利用脉冲表示构建高效的分词化图 Transformer？*
+
+**核心 idea**：利用 SNN 的脉冲发放机制将多步传播的节点嵌入序列转化为离散的脉冲计数向量作为 node token，从而实现无需预定义码本、100% 码本利用率的图节点分词。
+
+## 方法详解
+
+### 整体框架
+
+GT-SNT 包含四个模块：
+1. **SNT（脉冲节点分词）**：生成脉冲计数嵌入和动态重构的码本
+2. **辅助 MPNN**：提取包含语义和局部拓扑信息的节点嵌入
+3. **CGSA（码本引导自注意力）**：基于脉冲计数 token 实现线性时间的全局聚合
+4. **分类头**：简单的全连接层
+
+### 关键设计
+
+1. **脉冲节点分词（SNT）**:
+
+    - 功能：将图的拓扑信息编码为离散的脉冲计数向量
+    - 核心思路：
+      * 采样可学习的 D 维随机特征矩阵 R
+      * 通过传播算子 P 迭代 T 步收集节点嵌入序列 M = {M⁰, M¹, ..., M^T}
+      * 将序列送入 IF/LIF/PLIF 脉冲神经元，碰到阈值 V_th 就发放脉冲 S^t
+      * 累积脉冲得到脉冲计数嵌入 Ŝ = Σ S^t
+      * 对 Ŝ 去重得到码本 C，同时获得 one-hot 索引矩阵 U
+    - 设计动机：
+      * 离散脉冲计数空间 |C̃| = (T+1)^D，但实际使用的码本大小 B ≪ |C̃|，避免码本坍塌
+      * 利用传播步骤构建序列输入（而非重复输入静态图），减少额外计算开销
+      * 脉冲机制天然注入了图的局部性先验
+
+2. **码本引导自注意力（CGSA）**:
+
+    - 功能：基于脉冲计数 token 实现线性复杂度的全局注意力
+    - 核心思路：
+      * Query 和 Value 来自辅助 MPNN 的节点嵌入 H
+      * Key 由码本 C 通过 U·G 矩阵乘法生成，其中 G = Norm(Linear(C))
+      * 注意力分解为 softmax(Q·Ĉ^T)·U^T·V，复杂度 O(NBd_v)，其中 B ≪ N
+    - 设计动机：节点到 token 的注意力降低了全节点对注意力的计算量，B 远小于 N 保证了线性增长
+
+3. **截断策略**:
+
+    - 功能：控制训练初期码本大小不会爆炸
+    - 核心思路：按码字使用频率排序，仅保留 Top B_max 个码字
+    - 设计动机：训练初期脉冲模式不稳定，可能产生过多独特码字
+
+### 损失函数 / 训练策略
+
+- 使用标准交叉熵损失进行节点分类
+- 辅助 MPNN 采用单层 GCN（无归一化层），避免大规模图上的过拟合
+- 丢弃投影层和 MLP，仅保留自注意力模块和残差连接
+- 替代梯度（surrogate gradient）解决脉冲函数不可微的问题
+
+## 实验关键数据
+
+### 主实验
+
+**9 个节点分类数据集上的精度（%）**：
+
+| 模型 | Cora | CiteSeer | PubMed | Co-CS | Co-Physics | Actor | arXiv | Products |
+|------|------|----------|--------|-------|------------|-------|-------|----------|
+| GCN | 81.6 | 71.6 | 78.8 | 92.5 | 95.7 | 30.1 | 70.4 | 75.7 |
+| SGFormer | 84.5 | 72.6 | 80.3 | 91.8 | 95.9 | 37.9 | 72.6 | 72.6 |
+| VQGraph | 81.1 | 74.5 | 77.1 | 93.3 | 95.0 | 38.7 | 72.4 | 78.3 |
+| SpikeGT | 82.0 | 70.5 | 71.1 | 92.1 | 95.7 | 36.0 | 70.2 | OOM |
+| **GT-SNT** | **84.7** | **74.0** | **80.6** | **93.7** | **96.2** | **39.1** | 72.4 | **74.8** |
+
+**推理速度和资源对比**：
+
+| 数据集 | 指标 | NAGphormer | GOAT | NodeFormer | SGFormer | GT-SNT | 加速比 |
+|--------|------|-----------|------|-----------|---------|--------|--------|
+| Physics | Latency(s) | 1.79 | 10.98 | 0.14 | 0.02 | **0.02** | **130×** (vs avg) |
+| Products | Latency(s) | 25.74 | 2416.84 | 41.78 | 24.34 | **20.83** | **30×** (vs avg) |
+| CS | Memory(MB) | 3400 | 12490 | 2822 | 1662 | **1638** | 最低 |
+
+### 消融实验
+
+| 配置 | 说明 | 关键观察 |
+|------|------|---------|
+| SNT 参数 (D, T) | D=4,T=3 到 D=7,T=6 | 隐空间过小(D≤3)会损害性能；T>6 效果递减 |
+| 码本利用率 | GOAT: 10.6%, VQGraph: 16.9% | GT-SNT: **100%**，完全消除码本坍塌 |
+| 与 spike-based 方法比 | SpikingGCN, SpikeNet, SpikeGCL, SpikeGT | GT-SNT 平均提升 **3.9%** |
+
+### 关键发现
+
+- **码本坍塌问题的彻底解决**：GOAT 和 VQGraph 在隐空间大于 2^10 时码本利用率低于 50%，而 GT-SNT 始终保持 100%
+- **异质图的强表现**：在 Actor（异质性较强）上达到 39.1%，超越所有基线
+- **算是首次**：将 SNN 用作图数据的节能分词器，而非简单的低功耗替代单元
+- **OOM 免疫**：在 ogbn-products（245 万节点）上正常运行，而 SpikingGCN、SpikeGCL、GAT、SpikeGT 全部 OOM
+
+## 亮点与洞察
+
+- **跨领域创新**：将神经形态计算（SNN）与图 Transformer 分词技术巧妙结合，提出了全新的"序列到 token"范式
+- **理论优雅性**：脉冲计数向量天然形成离散码本，无需显式训练，也无需辅助损失（VQ-VAE 的 commitment loss）
+- **实用价值突出**：在大规模图上真正可用的线性时间 GT，推理速度提升巨大
+- **消融实验全面**：码本利用率、隐空间大小、传播步数、能耗等多个维度的分析非常扎实
+
+## 局限与展望
+
+- 在 arXiv 数据集上未超过 VQGraph 和 SGFormer（72.4 vs 72.4 / 72.6），大规模异同性图上的优势不一致
+- 目前仅验证了节点分类任务，图分类和链接预测的效果待探索
+- 随机特征矩阵的初始化可能引入额外的方差，需要多次运行取平均
+- SNN 的超参数（阈值 V_th、时间常数 τ、传播步数 T）的调优可能增加实践难度
+- Products 上的 74.8% 弱于 VQGraph 的 78.3%，说明在极大规模图上码本引导策略可能不够充分
+
+## 相关工作与启发
+
+- VQ-VAE 和 LFQ 的分词思想在图领域的适配，本文提出了一种更自然的基于物理过程（脉冲发放）的替代方案
+- SGFormer 的线性注意力结合 GT-SNT 的分词可能产生互补效果
+- SNN 在图数据上的应用刚刚起步，本文展示了超越"低功耗替代品"的创新应用方向
+- 脉冲计数嵌入的思想可能也适用于点云、分子图等结构化数据的分词
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐⭐
+- 实验充分度: ⭐⭐⭐⭐⭐
+- 写作质量: ⭐⭐⭐⭐
+- 价值: ⭐⭐⭐⭐
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[AAAI 2026\] NTSFormer: A Self-Teaching Graph Transformer for Multimodal Isolated Cold-Start Node Classification](ntsformer_a_self-teaching_graph_transformer_for_multimodal_isolated_cold-start_n.md)
+- [\[AAAI 2026\] Spiking Heterogeneous Graph Attention Networks](spiking_heterogeneous_graph_attention_networks.md)
+- [\[ICLR 2026\] Graph Tokenization for Bridging Graphs and Transformers](../../ICLR2026/graph_learning/graph_tokenization_for_bridging_graphs_and_transformers.md)
+- [\[AAAI 2026\] MyGram: Modality-aware Graph Transformer with Global Distribution for Multi-modal Entity Alignment](mygram_modality-aware_graph_transformer_with_global_distribution_for_multi-modal.md)
+- [\[AAAI 2026\] MoToRec: Sparse-Regularized Multimodal Tokenization for Cold-Start Recommendation](motorec_sparse-regularized_multimodal_tokenization_for_cold-start_recommendation.md)
+
+</div>
+
+<!-- RELATED:END -->

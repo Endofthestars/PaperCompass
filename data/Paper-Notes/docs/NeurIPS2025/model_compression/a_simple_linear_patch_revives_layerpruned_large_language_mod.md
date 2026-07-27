@@ -1,0 +1,137 @@
+---
+title: >-
+  [论文解读] A Simple Linear Patch Revives Layer-Pruned Large Language Models
+description: >-
+  [NeurIPS 2025][模型压缩][层剪枝] LinearPatch 通过在层剪枝界面插入一个融合了 Hadamard 变换和通道缩放的轻量对称矩阵，修复了剪枝造成的激活幅度失配问题，在 LLaMA-3-8B 上无训练保留 94.15% 性能，30 分钟蒸馏后达 95.16%。 领域现状：层剪枝是压缩大语言模型的一种简…
+tags:
+  - "NeurIPS 2025"
+  - "模型压缩"
+  - "层剪枝"
+  - "激活幅度对齐"
+  - "Hadamard变换"
+  - "通道缩放"
+  - "知识蒸馏"
+---
+
+# A Simple Linear Patch Revives Layer-Pruned Large Language Models
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2505.24680](https://arxiv.org/abs/2505.24680)  
+**代码**: [https://github.com/chenxinrui-tsinghua/LinearPatch](https://github.com/chenxinrui-tsinghua/LinearPatch)  
+**领域**: 模型压缩  
+**关键词**: 层剪枝, 激活幅度对齐, Hadamard变换, 通道缩放, 知识蒸馏
+
+## 一句话总结
+
+LinearPatch 通过在层剪枝界面插入一个融合了 Hadamard 变换和通道缩放的轻量对称矩阵，修复了剪枝造成的激活幅度失配问题，在 LLaMA-3-8B 上无训练保留 94.15% 性能，30 分钟蒸馏后达 95.16%。
+
+## 研究背景与动机
+
+**领域现状**：层剪枝是压缩大语言模型的一种简洁方式——直接移除冗余 Transformer 层，无需特殊硬件支持或底层 kernel 修改，比非结构化剪枝和 N:M 稀疏更容易部署加速。ShortGPT、SLEB、LLM-Streamline 等方法已经提出了多种层选择策略（余弦相似度、困惑度、Taylor 分数等）。
+
+**现有痛点**：尽管层剪枝简单直观，但剪掉几层后性能往往急剧下降。现有工作主要集中在选哪些层可以安全删掉，却忽略了一个更本质的问题——删掉层之后，剩余层之间的激活分布发生了什么变化。
+
+**核心矛盾**：作者发现性能退化的主因不在于信息丢失本身，而在于**剪枝界面处的激活幅度失配**。LLM 中不同层的隐状态在不同 channel 上的幅度差异显著，直接拼接未剪枝层会导致分布偏移。更棘手的是，特殊 token（如 [BOS]、分隔符）存在量级达 $10^3$ 的巨大 outlier，使得简单的通道缩放无法同时适配所有 token。
+
+**本文目标** (1) 如何对齐剪枝界面两侧的通道幅度？(2) 如何处理特殊 token 的巨大 outlier 导致 token 间缩放不一致的问题？
+
+**切入角度**：作者观察到 Hadamard 变换可以将集中在少数 token 上的 outlier 重新分散到所有 channel，使得共享一组通道缩放因子成为可能。将 Hadamard 变换和通道缩放融合为一个矩阵乘法，开销极低。
+
+**核心 idea**：在剪枝界面插入 $P = HDH^\top$ 一个对称矩阵（H为Hadamard矩阵，D为对角缩放），一次 GEMM 即可同时压制 outlier 和对齐通道幅度。
+
+## 方法详解
+
+### 整体框架
+
+输入是一个已经通过余弦相似度等指标确定了要删除哪些层的 LLM。在剪枝界面（被删层之前的最后一层和之后的第一层之间），插入一个矩阵 $P \in \mathbb{R}^{C \times C}$，将前一层的输出 $X^{(\ell^*)}$ 变换为 $X^{(\ell^*)} P$ 后再送入后续层。整个方法分两步：先无训练初始化 $P$，再可选地用 5K 样本蒸馏微调。
+
+### 关键设计
+
+1. **通道幅度对齐（Channel Magnitude Alignment）**:
+
+    - 功能：消除剪枝前后隐状态在各 channel 上的幅度差异
+    - 核心思路：在校准集上统计每个 channel k 的幅度比 $d_k = \|X_{:,k}^{(\ell^*+n)}\|_1 / \|X_{:,k}^{(\ell^*)}\|_1$，得到缩放向量 $d \in \mathbb{R}^C$，做成对角矩阵进行逐通道缩放
+    - 设计动机：实验表明 alpha=1（即恰好用统计幅度比）时困惑度最优，偏离会大幅退化
+
+2. **Token 幅度平滑（Token Magnitude Smoothing via Hadamard）**:
+
+    - 功能：解决由特殊 token 的巨大 outlier 导致单一通道缩放无法适配所有 token 的问题
+    - 核心思路：利用 Walsh-Hadamard 矩阵的正交性，对激活做旋转 XH，将集中在少数 token 上的 outlier 重新分散到所有 channel，从而降低 token 间缩放标准差（从 2137.75 降至 230.32）
+    - 设计动机：旋转后在 Hadamard 空间中做通道缩放，再旋转回来，效果远优于直接在原空间缩放
+
+3. **LinearPatch 融合**:
+
+    - 功能：将 Hadamard 变换和通道缩放融合成一次矩阵乘法
+    - 核心思路：由谱定理 P = HDH^T 就是一个实对称矩阵，三次 GEMM 融合为一次
+    - 设计动机：推理开销极低，且结构化的 P 矩阵方便后续微调
+
+### 损失函数 / 训练策略
+
+可选的知识蒸馏阶段：离线存储教师模型的 top-100 logits 概率分布（内存节省 320x），冻结所有模型参数，只微调 P 矩阵，最小化 KL 散度。仅需 5K 样本、30 分钟单 V100 即可完成 7B 模型的蒸馏。
+
+## 实验关键数据
+
+### 主实验
+
+| 模型 | 剪枝层数/总层数 | 方法 | QA Avg. | 保留性能(RP) |
+|------|----------------|------|---------|-------------|
+| LLaMA-2-7B | 7/32 | ShortGPT | 60.59 | 86.06% |
+| LLaMA-2-7B | 7/32 | LLM-Streamline | 60.59 | 86.06% |
+| LLaMA-2-7B | 7/32 | **LinearPatch** | **62.42** | **88.88%** |
+| LLaMA-3-8B | 5/32 | LLM-Streamline | 63.06 | 90.84% |
+| LLaMA-3-8B | 5/32 | **LinearPatch** | **65.42** | **94.15%** |
+| LLaMA-3-8B | 5/32 | **LinearPatch+蒸馏** | **66.13** | **95.16%** |
+
+### 消融实验
+
+| 配置 | QA Avg. | 说明 |
+|------|---------|------|
+| 无 patch（直接剪枝） | 56.52 | baseline |
+| 仅通道缩放 | 58.31 | +1.79，说明通道对齐有效 |
+| 仅 Hadamard | 57.68 | +1.16，outlier 压制有效 |
+| LinearPatch（两者融合） | 59.14 | +2.62，互补效果显著 |
+| LinearPatch + 蒸馏 | 62.42 | 蒸馏进一步提升 |
+
+### 关键发现
+- 通道缩放和 Hadamard 变换是互补的，二者缺一不可
+- LinearPatch 对不同剪枝指标（余弦相似度、Taylor、困惑度）都有效，具有通用性
+- 蒸馏时使用 KL 散度损失优于 MSE 损失，后者容易过拟合
+- 128 条校准样本即足以初始化缩放因子，对校准集大小不敏感
+
+## 亮点与洞察
+- **极简但有效**：整个方法就是一个矩阵乘法，推理开销可忽略不计，但效果显著。这种用线性变换修复分布偏移的思路可以迁移到其他剪枝/量化场景
+- **将 Hadamard 变换用于层剪枝**：之前 Hadamard 主要用在量化（QuaRot、FlatQuant）中来处理 outlier，本文首次将其引入层剪枝领域，说明 outlier 问题是 LLM 压缩中的共性挑战
+- **离线蒸馏策略**：只存 top-K logits 就能做蒸馏，无需同时加载 teacher 和 student，内存友好
+
+## 局限与展望
+- 论文只测试了 7B-13B 规模的模型，更大模型（70B+）上的效果未验证
+- 剪枝比例限制在 30% 以内，更激进的剪枝（>50%）时 patch 能否依然有效存疑
+- 仅考虑了连续层剪枝，对于非连续层剪枝（多个剪枝界面）如何放置多个 patch 缺乏讨论
+- 可以探索将 LinearPatch 与量化结合——先层剪枝 + patch，再量化，可能实现更高压缩比
+
+## 相关工作与启发
+- **vs ShortGPT/LLM-Streamline**: 它们关注选哪些层剪，LinearPatch 关注剪完之后怎么修，两者正交互补
+- **vs LoRA 微调恢复**: Shortened LLaMA 用 LoRA 恢复性能，需要更多训练资源；LinearPatch 无训练版本已经超过 LoRA 方案
+- **vs QuaRot/FlatQuant**: 它们在量化中用 Hadamard 处理 outlier，LinearPatch 在层剪枝中用同样思路处理激活失配
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 发现并量化了激活幅度失配这个被忽视的问题，解决方案简洁优雅
+- 实验充分度: ⭐⭐⭐⭐ 多模型多指标多消融，但缺少大模型实验
+- 写作质量: ⭐⭐⭐⭐⭐ 问题阐述清晰，可视化出色，逻辑链条流畅
+- 价值: ⭐⭐⭐⭐ 即插即用的实用技术，对层剪枝领域有实质推动
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Restoring Pruned Large Language Models via Lost Component Compensation](restoring_pruned_large_language_models_via_lost_component_compensation.md)
+- [\[NeurIPS 2025\] LayerIF: Estimating Layer Quality for Large Language Models using Influence Functions](layerif_estimating_layer_quality_for_large_language_models_using_influence_funct.md)
+- [\[NeurIPS 2025\] The Structure of Relation Decoding Linear Operators in Large Language Models](the_structure_of_relation_decoding_linear_operators_in_large_language_models.md)
+- [\[NeurIPS 2025\] Correlation Dimension of Auto-Regressive Large Language Models](correlation_dimension_of_auto-regressive_large_language_models.md)
+- [\[NeurIPS 2025\] PermLLM: Learnable Channel Permutation for N:M Sparse Large Language Models](permllm_learnable_channel_permutation_for_nm_sparse_large_language_models.md)
+
+</div>
+
+<!-- RELATED:END -->

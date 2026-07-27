@@ -1,0 +1,153 @@
+---
+title: >-
+  [论文解读] Restoring Pruned Large Language Models via Lost Component Compensation
+description: >-
+  [NeurIPS 2025 Spotlight][模型压缩][LLM剪枝] RestoreLCC 提出了一种面向剪枝 LLM 的定向恢复策略：通过对比探测定位关键注意力头，利用 SVD 分解提取剪枝丢失的激活成分，将其作为可优化的偏置向量注入回剪枝模型，在不影响稀疏性和推理速度的前提下显著恢复性能。
+tags:
+  - "NeurIPS 2025 Spotlight"
+  - "模型压缩"
+  - "LLM剪枝"
+  - "性能恢复"
+  - "注意力激活"
+  - "成分补偿"
+  - "PEFT"
+---
+
+# Restoring Pruned Large Language Models via Lost Component Compensation
+
+**会议**: NeurIPS 2025 Spotlight  
+**arXiv**: [2510.21834](https://arxiv.org/abs/2510.21834)  
+**代码**: [GitHub](https://github.com/zijian678/restorelcc/)  
+**领域**: 模型压缩 / LLM剪枝恢复  
+**关键词**: LLM剪枝, 性能恢复, 注意力激活, 成分补偿, PEFT
+
+## 一句话总结
+
+RestoreLCC 提出了一种面向剪枝 LLM 的定向恢复策略：通过对比探测定位关键注意力头，利用 SVD 分解提取剪枝丢失的激活成分，将其作为可优化的偏置向量注入回剪枝模型，在不影响稀疏性和推理速度的前提下显著恢复性能。
+
+## 研究背景与动机
+
+LLM 剪枝（如 Wanda、SparseGPT、SlimGPT）是降低模型尺寸和加速推理的关键技术，但必然带来性能下降。现有恢复方法主要依赖参数高效微调（PEFT），如 LoRA，来恢复剪枝模型的性能。
+
+**核心矛盾**：LoRA 等 PEFT 方法原本为稠密模型设计，用于适配下游任务，在应用于剪枝模型时忽视了剪枝模型的独特属性——需要补偿被剪掉的信息。这导致参数搜索效率低下和次优恢复效果。
+
+**关键洞察**：剪枝导致的信息损失反映在注意力头的激活中。通过对比分析稠密模型和剪枝模型的注意力激活差异，发现：
+1. 将丢失的成分直接注入回剪枝头可以显著恢复 logit 差异和最终准确率
+2. 不同注意力头的重要性和恢复行为差异很大
+3. 判别性信息可能存在于次要成分而非主成分中
+
+**切入角度**：不做通用的无目标 fine-tuning，而是显式地补偿剪枝过程中丢失的关键信息方向。
+
+## 方法详解
+
+### 整体框架
+
+RestoreLCC 包含两个核心模块：(1) 对比探测（Contrastive Probing），用于定位对恢复最关键的注意力头；(2) 丢失成分补偿（Lost Component Compensation, LCC），提取并优化丢失信息的方向成分，注入回剪枝模型。
+
+### 关键设计
+
+1. **对比探测（Contrastive Probing）**:
+
+    - **对比样本构建**：对于每个样本 $(q, r^+)$，用句子编码器（如 MiniLM-L6）找到语义最相似的负样本 $r^-$，构成三元组 $(q, r^+, r^-)$
+    - **激活编辑**：假设恢复后的问题激活 $z_c^q = z_p^q + c^q$，其中 $c^q$ 为丢失的主成分
+    - **注意力头探测**：将问题转化为自然语言推理任务——如果注意力头重要且对应成分有用，恢复后的激活应该与正确序列激活"蕴含"，与错误序列激活"矛盾"
+    - 训练线性探测分类器评估每个头的判别能力，按分类准确率排序注意力头的重要性
+
+2. **丢失成分补偿（LCC）**:
+
+    - 对剪枝丢失的激活矩阵 $\Delta\mathbf{Z}^{(l,h)} = \mathbf{Z}_d^{(l,h)} - \mathbf{Z}_p^{(l,h)}$ 做 SVD 分解
+    - 固定所有方向向量 $v_i$（正交单位向量），为每个方向学习一个标量大小 $\beta_i$
+    - 丢失成分建模为：$c_{\text{learned}} = \sum_{i=1}^{d_h} \beta_i v_i + b$
+    - $b$ 为可训练偏置向量，用于覆盖预定义方向之外的信息
+    - 恢复后的激活：$\tilde{z}_p = z_p + c_{\text{learned}}$
+
+3. **即插即用的偏置注入**:
+
+    - 最终学到的 $c_{\text{learned}}$ 是一个常数偏置向量，捕获所有样本共同丢失的关键信息
+    - 直接吸收为多头注意力模块的常数偏置，推理时几乎不增加计算
+    - 参数开销极小：每层最多增加 $1/(2d_l)$ 参数，对隐藏维度 > 1000 的模型影响 < 0.05%
+
+### 损失函数 / 训练策略
+
+- 使用 Alpaca 指令数据集进行通用恢复训练
+- 任务特定恢复仅需 100 个训练样本
+- 选择 10%-25% 的重要注意力头进行补偿
+- 成分数 $K=1$ 用于头重要性识别
+
+## 实验关键数据
+
+### 主实验（LLaMA-7B 通用恢复）
+
+| 剪枝方式 | 方法 | PPL↓ | 平均准确率↑ | 提升 |
+|----------|------|------|------------|------|
+| 非结构化 50% | Wanda (基线) | 7.26 | 54.09% | — |
+| 非结构化 50% | LoRA | 7.09 | 56.27% | +2.18 |
+| 非结构化 50% | LoFiT | 7.35 | 56.82% | +2.73 |
+| 非结构化 50% | **RestoreLCC** | **6.93** | **58.83%** | **+4.74** |
+| 半结构化 2:4 | SparseGPT (基线) | 11.04 | 48.99% | — |
+| 半结构化 2:4 | DoRA | 9.16 | 52.35% | +3.36 |
+| 半结构化 2:4 | **RestoreLCC** | **8.99** | **55.00%** | **+6.01** |
+| 结构化 20% | SlimGPT (基线) | 7.46 | 57.54% | — |
+| 结构化 20% | DoRA | 7.54 | 58.51% | +0.97 |
+| 结构化 20% | **RestoreLCC** | **7.53** | **59.76%** | **+2.22** |
+
+### 消融实验
+
+| 配置 | 平均准确率 | 说明 |
+|------|-----------|------|
+| 完整 RestoreLCC | 58.83% | — |
+| 无对比探测（随机选头） | 57.57% (-1.26) | 对比探测有效定位关键头 |
+| MSE 选头 | 58.14% (-0.69) | 不如对比探测精准 |
+| KL 选头 | 57.92% (-0.91) | 不如对比探测精准 |
+| 无方向成分 $\sum \beta_i v_i$ | 57.13% (-1.70) | 方向成分是核心贡献 |
+| 无偏置 $b$ | 58.26% (-0.57) | 偏置提供额外灵活性 |
+
+### 关键发现
+- RestoreLCC 在非结构化/半结构化/结构化三种剪枝方式下一致超越所有 PEFT 基线
+- 任务特定恢复中（60% 稀疏度），仅用 100 样本就比 LoFiT 高 3.56%
+- LLaMA-13B 上同样有效：非结构化 +1.04%，半结构化 +1.73%，结构化 +1.45%
+- 补偿的偏置向量对稀疏性和推理速度几乎无影响
+
+## 亮点与洞察
+
+- **从"修补"到"恢复"的思路转变**：不是用通用 PEFT 去无目标地微调剪枝模型，而是精确识别丢失了什么、在哪里丢失、如何补回来
+- **SVD 分解 + 标量学习的高效设计**：固定正交方向仅学标量，极大降低参数量和训练成本
+- **次要成分可能更重要的发现**：挑战了"主成分最重要"的直觉，暗示判别性信息可能编码在低方差方向上
+- **对比探测作为通用注意力头重要性评估方法**：可迁移到其他需要定位关键注意力头的场景
+
+## 局限与展望
+
+- 仅补偿注意力头而非 FFN 模块，可能遗漏 FFN 中的关键信息
+- 对比探测需要构建对比样本对，对数据分布有一定依赖
+- 当前使用固定的 SVD 方向，未来可以探索自适应方向学习
+- 主要在 LLaMA 系列上验证，对 GPT/Mistral 等架构的泛化性有待验证
+- 仅补偿一个常数向量，无法处理输入依赖的激活损失
+
+## 相关工作与启发
+
+- **vs LoRA**: LoRA 为通用 PEFT，不考虑剪枝特性；RestoreLCC 定向补偿剪枝丢失信息
+- **vs EoRA**: EoRA 在特征空间搜索低秩空间，而 RestoreLCC 利用 SVD 分解的全方向并学习重要性
+- **vs LoFiT**: LoFiT 也干预注意力激活，但不针对剪枝丢失的信息方向
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 对比探测 + 丢失成分补偿思路新颖，但核心仍是在激活空间加偏置
+- 实验充分度: ⭐⭐⭐⭐⭐ 三种剪枝方式 × 多个模型尺寸 × 通用/任务特定恢复 × 详细消融
+- 写作质量: ⭐⭐⭐⭐⭐ 从洞察到方法的推导逻辑清晰，三个 Finding 很有说服力
+- 价值: ⭐⭐⭐⭐ 对 LLM 剪枝落地有直接价值，即插即用且不影响推理效率
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] A Simple Linear Patch Revives Layer-Pruned Large Language Models](a_simple_linear_patch_revives_layerpruned_large_language_mod.md)
+- [\[NeurIPS 2025\] The Structure of Relation Decoding Linear Operators in Large Language Models](the_structure_of_relation_decoding_linear_operators_in_large_language_models.md)
+- [\[AAAI 2026\] First-Order Error Matters: Accurate Compensation for Quantized Large Language Models](../../AAAI2026/model_compression/first-order_error_matters_accurate_compensation_for_quantized_large_language_mod.md)
+- [\[ICLR 2026\] PASER: Post-Training Data Selection for Efficient Pruned Large Language Model Recovery](../../ICLR2026/model_compression/paser_post-training_data_selection_for_efficient_pruned_large_language_model_rec.md)
+- [\[NeurIPS 2025\] Correlation Dimension of Auto-Regressive Large Language Models](correlation_dimension_of_auto-regressive_large_language_models.md)
+
+</div>
+
+<!-- RELATED:END -->

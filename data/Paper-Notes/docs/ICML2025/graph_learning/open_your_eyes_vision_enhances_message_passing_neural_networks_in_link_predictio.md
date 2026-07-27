@@ -1,0 +1,157 @@
+---
+title: >-
+  [论文解读] Open Your Eyes: Vision Enhances Message Passing Neural Networks in Link Prediction
+description: >-
+  [ICML2025][图学习][图神经网络] 首次将视觉感知引入消息传递图神经网络(MPNN)，通过将子图可视化为图像并用视觉编码器提取视觉结构特征(VSF)，提出 GVN/E-GVN 框架，在 7 个链接预测基准上均达到 SOTA。 - 链接预测：是图机器学习的核心任务，广泛应用于推荐系统、药物交互预测、知识推理等 - 当…
+tags:
+  - "ICML2025"
+  - "图学习"
+  - "图神经网络"
+  - "链接预测"
+  - "视觉感知"
+  - "多模态学习"
+  - "结构特征"
+---
+
+# Open Your Eyes: Vision Enhances Message Passing Neural Networks in Link Prediction
+
+**会议**: ICML2025  
+**arXiv**: [2505.08266](https://arxiv.org/abs/2505.08266)  
+**代码**: [WEIYanbin1999/EGVN](https://github.com/WEIYanbin1999/EGVN)  
+**领域**: 图学习 / 链接预测  
+**关键词**: 图神经网络, 链接预测, 视觉感知, 多模态学习, 结构特征
+
+## 一句话总结
+
+首次将视觉感知引入消息传递图神经网络(MPNN)，通过将子图可视化为图像并用视觉编码器提取视觉结构特征(VSF)，提出 GVN/E-GVN 框架，在 7 个链接预测基准上均达到 SOTA。
+
+## 研究背景与动机
+
+- **链接预测**是图机器学习的核心任务，广泛应用于推荐系统、药物交互预测、知识推理等
+- 当前主流方法是**结构特征增强的 MPNN**（如 SEAL、BUDDY、NCNC），通过手工设计的拓扑启发式（CN、SPD 等）增强 MPNN 表达力
+- 然而，人类理解图数据最直觉的方式之一是**视觉感知**——直接"看"图的结构，这一模态在 MPNN 社区被完全忽视
+- 视觉编码器（VGG、ResNet、ViT）已在 NLP 等领域带来巨大提升，将视觉引入图学习既合理又及时
+- 论文提出三个核心问题：(1) 如何从视觉感知图结构？(2) 视觉是否真的有助于链接预测？(3) 如何有效融合视觉与 MPNN？
+
+## 方法详解
+
+### 整体框架：Graph Vision Network (GVN)
+
+GVN 分三步将视觉信息融入 MPNN：
+
+**Step 1: 范围解耦的子图可视化 (Scope-Decoupled Subgraph Visualization)**
+
+- 对查询边 $(u,v)$，提取其 $k$-hop 包围子图 $S_{uv}^k$
+- 使用 Graphviz 等工具将子图渲染为图像：$I_{uv}^k = \text{GV}(S_{uv}^k, u, v)$
+- 关键设计原则：
+    - **风格一致性**：所有子图使用相同的布局算法、节点颜色、形状
+    - **高亮查询边**：目标节点着色标记，目标边被 mask
+    - **去除节点标签**：强制模型关注拓扑结构而非标签信息
+- **解耦视觉范围与消息传递范围**：视觉感知范围 $k \leq 3$ 固定，不随 MPNN 层数变化，避免过平滑和邻居爆炸
+
+**Step 2: 自适应视觉结构特征提取 (Adaptive Extraction of VSFs)**
+
+- 可视化图像通过视觉编码器（默认 ResNet50）提取视觉结构特征：
+
+$$\mathbf{v}_{uv} = \text{VE}_\psi(I_{uv}^k) \in \mathbb{R}^S$$
+
+- VSF 的三大优势：
+    - **链接区分力**：MPNN 无法区分同构节点的链接，但子图可视化后的图像可以明显不同
+    - **细粒度子结构感知**：VSF 显著提升 MPNN 对三角形、3-star 等子结构的计数能力（误差下降 6-8 个数量级）
+    - **信息丰富且自适应**：VSF 可复现 CN/RA/AA/SPD/DRNL/DE 等多种结构特征（复现率 72-83%），且可通过微调自适应调整信息分布
+
+**Step 3: 兼容性特征融合 (Compatible Features Integration)**
+
+提供三种融合策略，均独立于消息传递过程：
+
+1. **注意力融合**（默认）：先线性投影 $\tilde{\mathbf{v}}_{uv} = \text{Linear}(\mathbf{v}_{uv})$，再交叉注意力更新节点表示 $\tilde{\mathbf{y}}_u = \text{CA}(\mathbf{y}_u, \tilde{\mathbf{v}}_{uv})$
+2. **拼接融合**：$\tilde{\mathbf{y}}_u = \mathbf{y}_u \| \mathbf{v}_{uv}$
+3. **加权融合**：$p(u,v) = \delta \cdot p_{\text{vision}} + (1-\delta) \cdot p_{\text{MPNN}}$，$\delta$ 可学习
+
+### E-GVN：高效变体
+
+针对大规模图的可扩展性优化：
+
+| 设计 | GVN | E-GVN |
+|------|-----|-------|
+| 可视化粒度 | 以边为中心 $S_{uv}^k$ | 以节点为中心 $S_v^k$ |
+| 可视化数量 | $O(l)$（边数） | $O(n)$（节点数） |
+| 视觉编码器 | 端到端微调 | 冻结 + 可训练 Adapter |
+| 融合位置 | MPNN 之后 | MPNN 之前（融入节点属性） |
+
+E-GVN 的 Adapter 机制：$\tilde{\mathbf{v}}_v = \text{Adaptor}_\phi(\mathbf{v}_v)$，冻结编码器减少存储开销，Adapter 保留自适应能力。
+
+## 实验关键数据
+
+### 主实验：7 个链接预测基准（Table 3）
+
+| 方法 | Cora | Citeseer | Pubmed | ogbl-collab | ogbl-ppa | ogbl-citation2 | ogbl-ddi |
+|------|------|----------|--------|-------------|----------|----------------|----------|
+| GCN | 66.79 | 67.08 | 53.02 | 44.75 | 18.67 | 84.74 | 37.07 |
+| SEAL | 81.71 | 83.89 | 75.54 | 64.74 | 48.80 | 87.67 | 30.56 |
+| BUDDY | 88.00 | 92.93 | 74.10 | 65.94 | 49.85 | 87.56 | 78.51 |
+| NCNC | 89.65 | 93.47 | 81.29 | 66.61 | 61.42 | 89.12 | 84.11 |
+| **GVN_NCNC** | 90.70 | 94.12 | 82.17 | - | - | - | - |
+| **E-GVN_NCNC** | **91.47** | **94.44** | **84.02** | **68.14** | **63.45** | **90.72** | **87.31** |
+
+- E-GVN_NCNC 在全部 7 个数据集上均取得最优，且在大规模 OGB 数据集上也可扩展
+- GVN 在小规模数据集有效但无法扩展到大规模图（>12h/epoch）
+
+### 子结构计数实验（Table 1）
+
+| 方法 | 三角形(Best) | 3-Star(Best) |
+|------|-------------|-------------|
+| GCN | 0.69 | 0.49 |
+| VSF+GCN | **6.76E-9** | **3.22E-8** |
+
+VSF 将子结构计数误差降低了约 **8 个数量级**。
+
+### VSF 信息丰富度
+
+在 ogbl-ddi 数据集上，VSF 对各类结构特征的复现率：CN=80.23%, RA=78.47%, AA=78.89%, SPD=75.85%, DRNL=73.34%, DE=72.12%。
+
+## 亮点与洞察
+
+1. **开创性视角**：首次将视觉模态引入 MPNN 链接预测，提出了全新的研究方向
+2. **坚实的理论分析**：从链接区分力、子结构感知、信息丰富度三个角度论证 VSF 的优势
+3. **正交兼容性**：GVN/E-GVN 可无缝叠加到任何现有 MPNN 方法上，带来一致提升
+4. **范围解耦设计**：视觉感知范围与消息传递范围解耦，巧妙避免过平滑和邻居爆炸
+5. **自适应特征分布**：VSF 可通过微调自动调整对不同结构特征的侧重——稠密图弱化路径特征、稀疏图增强邻居特征
+
+## 局限与展望
+
+1. **计算开销**：即便 E-GVN 优化后，对每个节点/边生成可视化图像仍带来额外预处理开销
+2. **非置换等变**：VSF 不具备置换等变性，虽然实验中表现良好，但理论保证有限
+3. **视觉编码器选择**：默认使用 ResNet50，未充分探索 ViT 等更强视觉编码器的潜力
+4. **可视化工具依赖**：图的视觉表示强依赖于 Graphviz 的布局算法，不同布局可能影响结果
+5. **仅限链接预测**：未探索视觉增强在节点分类、图分类等其他图任务上的效果
+
+## 相关工作与启发
+
+- **NCNC** (Wang et al., 2024)：当前 SOTA 的结构特征增强 MPNN，是 GVN 的主要基线
+- **SEAL** (Zhang & Chen, 2018)：基于 SPD 的子图方法，启发了子图可视化的思路
+- **BUDDY** (Chamberlain et al., 2023)：高阶共同邻居建模，与 VSF 的信息互补
+- 启发：视觉模态作为"通用结构特征池"的思路可扩展到更多图学习任务
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐⭐ — 首次将视觉感知引入 MPNN 链接预测，开创性极强
+- 实验充分度: ⭐⭐⭐⭐⭐ — 7 个数据集、多种基线、消融实验、子结构分析、自适应分析一应俱全
+- 写作质量: ⭐⭐⭐⭐ — 三个 RQ 结构清晰，分析详实，但符号较重
+- 价值: ⭐⭐⭐⭐⭐ — 打开了图学习+视觉的新方向，实验结果扎实
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] Beyond Message Passing: Neural Graph Pattern Machine](beyond_message_passing_neural_graph_pattern_machine.md)
+- [\[ICML 2025\] L-STEP: Learnable Spatial-Temporal Positional Encoding for Link Prediction](learnable_spatial-temporal_positional_encoding_for_link_prediction.md)
+- [\[NeurIPS 2025\] What Expressivity Theory Misses: Message Passing Complexity for GNNs](../../NeurIPS2025/graph_learning/what_expressivity_theory_misses_message_passing_complexity_for_gnns.md)
+- [\[ICML 2025\] GlycanAA: Modeling All-Atom Glycan Structures via Hierarchical Message Passing and Multi-Scale Pre-training](modeling_all-atom_glycan_structures_via_hierarchical_message_passing_and_multi-s.md)
+- [\[NeurIPS 2025\] TAMI: Taming Heterogeneity in Temporal Interactions for Temporal Graph Link Prediction](../../NeurIPS2025/graph_learning/tami_taming_heterogeneity_in_temporal_interactions_for_temporal_graph_link_predi.md)
+
+</div>
+
+<!-- RELATED:END -->

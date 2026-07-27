@@ -1,0 +1,131 @@
+---
+title: >-
+  [论文解读] Navigating Simply, Aligning Deeply: Winning Solutions for Mouse vs. AI 2025
+description: >-
+  [NeurIPS 2025][模型压缩][视觉鲁棒性] 在NeurIPS 2025 Mouse vs. AI竞赛中，本文展示了轻量级两层CNN在视觉鲁棒性任务上大幅超越深度网络的反直觉发现，同时证明深层ResNet架构在神经对齐任务上更具优势，揭示了行为鲁棒性与生物合理性之间的根本张力。 视觉导航中的分布外鲁棒性一直是强化学…
+tags:
+  - "NeurIPS 2025"
+  - "模型压缩"
+  - "视觉鲁棒性"
+  - "神经对齐"
+  - "轻量级CNN"
+  - "门控线性单元"
+  - "强化学习"
+---
+
+# Navigating Simply, Aligning Deeply: Winning Solutions for Mouse vs. AI 2025
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2602.00982](https://arxiv.org/abs/2602.00982)  
+**代码**: 暂无  
+**领域**: 模型压缩  
+**关键词**: 视觉鲁棒性, 神经对齐, 轻量级CNN, 门控线性单元, 强化学习
+
+## 一句话总结
+
+在NeurIPS 2025 Mouse vs. AI竞赛中，本文展示了轻量级两层CNN在视觉鲁棒性任务上大幅超越深度网络的反直觉发现，同时证明深层ResNet架构在神经对齐任务上更具优势，揭示了行为鲁棒性与生物合理性之间的根本张力。
+
+## 研究背景与动机
+
+视觉导航中的分布外鲁棒性一直是强化学习面临的核心挑战。生物系统（如小鼠）能够在显著的环境变化下保持稳定的导航性能，但人工智能系统在遇到训练分布外的视觉扰动时往往表现急剧下降。NeurIPS 2025的Mouse vs. AI竞赛为研究这一鲁棒性差距提供了独特的基准——它包含两个互补的赛道：
+
+- **赛道1（视觉鲁棒性）**：评估智能体在未见过的视觉扰动（雾、光照变化等）下的泛化能力
+- **赛道2（神经对齐）**：评估人工视觉表征与小鼠视觉皮层19000+神经元的神经活动的预测能力
+
+作者最初的探索遵循了"复杂任务需要复杂架构"的传统思路，尝试了InceptionNet、24层IMPALA ResNet和LSTM模型，但这些复杂架构一致表现出训练不稳定、严重过拟合以及在扰动下性能暴跌35%。这些失败促使作者从根本上重新思考：**简单架构配合精心选择的增强组件能否实现更优的鲁棒性？**
+
+## 方法详解
+
+### 整体框架
+
+本文提出两个独立架构分别针对两个赛道进行优化：赛道1使用极简两层CNN + GLU + 观测归一化（1.4M参数）；赛道2使用16层深度ResNet + GLU门控（17.8M参数）。两者均使用PPO算法进行强化学习训练。
+
+### 关键设计
+
+1. **轻量级视觉编码器（赛道1）**：仅两层卷积完成特征提取。第一层使用$8 \times 8$卷积核、步长4处理$86 \times 155 \times 1$的灰度输入，输出16通道；第二层$4 \times 4$卷积核、步长2扩展至32通道，均使用LeakyReLU（负斜率0.2）。展平后经全连接层投射至256维。设计动机：容量受限的浅层网络无法记忆训练特定模式，被迫学习可泛化特征。
+
+2. **门控线性单元（GLU）模块**：对编码特征施加选择性信息门控。采用Swish激活的特征变换路径和Sigmoid激活的门控路径并行处理，通过逐元素乘法实现门控：
+$$\mathbf{h}_{\text{GLU}} = \text{Swish}(\text{FC}(\mathbf{z})) \odot \sigma(\text{FC}(\mathbf{z}))$$
+门控机制学习识别在视觉扰动下仍可靠的特征，抑制噪声敏感的分量。
+
+3. **观测归一化**：使用指数移动平均维护运行统计量，对输入进行通道级归一化：
+$$\hat{\mathbf{x}} = \frac{\mathbf{x} - \boldsymbol{\mu}_{\text{running}}}{\boldsymbol{\sigma}_{\text{running}} + \epsilon}$$
+这提供了对全局光照变化的不变性——这是评估协议中视觉扰动的主要来源。
+
+4. **深层ResNet架构（赛道2）**：16层卷积组织为残差结构，通道逐步扩展（64→128→256→512），配合GLU门控用Softmax实现特征路由。17.8M参数量提供足够容量捕获层次化视觉表征，以匹配生物视觉皮层的多样化调谐特性。
+
+### 训练策略
+
+赛道1采用两阶段训练：先训练1,400,000步的卷积骨干网络，再从最佳检查点添加GLU模块继续训练350,000步。赛道2进行了系统性的检查点分析，从60K到1.14M步保存多个检查点，发现最优性能在约200K步出现而非收敛时。
+
+## 实验关键数据
+
+### 主实验——赛道1视觉鲁棒性
+
+| 模型架构 | ASR (%) | MSR (%) | 最终得分 (%) |
+|---------|---------|---------|-------------|
+| IMPALA ResNet (24层) | 80.96 | 51.00 | 65.98 |
+| IMPALA ResNet (4层) | 91.40 | 84.00 | 87.70 |
+| + 数据增强 | 72.60 | 47.00 | 59.80 |
+| SimpleCNN (本文) | 94.20 | 89.00 | 91.60 |
+| SimpleCNN + GLU | 95.60 | 88.00 | 91.80 |
+| **SimpleCNN + GLU + Norm** | **96.80** | **94.00** | **95.40** |
+
+### 消融实验——赛道1组件贡献
+
+| 配置 | ASR (%) | MSR (%) | 最终得分 (%) | 说明 |
+|------|---------|---------|-------------|------|
+| 完整模型 | 96.80 | 94.00 | 95.40 | 所有组件 |
+| 去掉归一化 | 95.60 | 88.00 | 91.80 | 归一化贡献+3.6 pp |
+| 去掉GLU | 94.20 | 89.00 | 91.60 | GLU贡献+0.2 pp |
+| 全部去掉 | 94.20 | 89.00 | 91.60 | 基线 |
+
+### 关键发现
+
+- **深度有害**：24层ResNet的ASR和MSR差距达30个百分点（80.96% vs 51.00%），说明深层网络过拟合了训练分布的视觉模式
+- **数据增强反效果**：对ResNet施加数据增强使性能从87.70%暴跌至59.80%，降低27.9个百分点
+- **训练时长与性能非单调**：赛道2中200K步的检查点几乎追平114万步的最佳模型（0.1507 vs 0.1517），仅相差0.66%
+- **InceptionNet完全失败**：多尺度卷积架构在50万步内未能收敛，LSTM模型也表现出训练不稳定
+- **参数量对比**：赛道1仅1.4M参数，赛道2需17.8M参数（12.8倍差异），两种目标的容量需求截然不同
+
+## 亮点与洞察
+
+- 本文最核心的洞察是**行为鲁棒性与生物合理性需要截然不同的架构选择**：简单模型提供鲁棒性（防止过拟合），深层模型提供表征丰富性（匹配神经响应）
+- 观测归一化的"一行代码"效果惊人，单独贡献3.8个百分点的最终得分提升
+- 系统性记录失败方案（InceptionNet、深度ResNet、LSTM、数据增强）的做法非常有价值
+
+## 局限与展望
+
+- 任务特异性：结果可能不泛化到更复杂的视觉导航场景
+- 评估指标局限：线性读出和表征相似度仅捕获生物视觉的部分方面
+- 未探索Transformer等更多架构可能
+- 竞赛环境仅提供视觉输入，未涉及多感官融合
+
+## 相关工作与启发
+
+本文与domain randomization、IMPALA架构、GLU/SwiGLU等领域密切相关。其"简单架构+精准增强"的范式对高效模型设计有广泛启发：在资源受限或需要鲁棒性的场景下，减少模型复杂度反而可能是正确策略。
+
+赛道2的结论与神经科学中视觉皮层的层次化组织一致——V1到高级视觉区域的多尺度表征需要足够的模型容量来近似。SimpleCNN虽然行为优秀但神经对齐排名仅13，说明任务最优表征和生物合理表征可能是**不同的优化目标**。训练时长的非单调关系也值得关注——200K步的检查点几乎追平1.14M步，意味着在实际开发中应系统性评估多个中间检查点而非仅用最终模型。
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ 竞赛驱动的实证发现，反直觉结论有价值
+- **实验充分度**: ⭐⭐⭐⭐⭐ 消融详尽，失败方案记录充分
+- **写作质量**: ⭐⭐⭐⭐ 结构清晰，分析深入
+- **价值**: ⭐⭐⭐⭐ 对视觉RL和高效架构设计有实际指导意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] AI-Generated Video Detection via Perceptual Straightening](ai-generated_video_detection_via_perceptual_straightening.md)
+- [\[NeurIPS 2025\] On the Creation of Narrow AI: Hierarchy and Nonlocality of Neural Network Skills](on_the_creation_of_narrow_ai_hierarchy_and_nonlocality_of_neural_network_skills.md)
+- [\[NeurIPS 2025\] When Worse is Better: Navigating the Compression-Generation Trade-off in Visual Tokenization](when_worse_is_better_navigating_the_compression-generation_tradeoff_in_visual_to.md)
+- [\[ACL 2026\] SSSD: Simply-Scalable Speculative Decoding](../../ACL2026/model_compression/sssd_simply-scalable_speculative_decoding.md)
+- [\[ACL 2025\] Beyond Logits: Aligning Feature Dynamics for Effective Knowledge Distillation](../../ACL2025/model_compression/beyond_logits_aligning_feature_dynamics_for_effective_knowledge_distillation.md)
+
+</div>
+
+<!-- RELATED:END -->

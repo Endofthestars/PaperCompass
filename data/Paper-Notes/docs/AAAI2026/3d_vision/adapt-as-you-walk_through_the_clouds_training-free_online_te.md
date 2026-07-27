@@ -1,0 +1,188 @@
+---
+title: >-
+  [论文解读] Adapt-As-You-Walk Through the Clouds: Training-Free Online Test-Time Adaptation of 3D Vision-Language Foundation Models
+description: >-
+  [AAAI 2026][3D视觉][测试时适应] 提出 Uni-Adapter，一种面向3D视觉-语言基础模型(VLFM)的无训练在线测试时适应框架，通过基于聚类的动态原型缓存和图正则化标签平滑来应对分布偏移，在多个3D损坏基准上取得SOTA。 3D VLFM的零样本能力与实际部署的差距：Uni3D、ULIP-2、OpenS…
+tags:
+  - "AAAI 2026"
+  - "3D视觉"
+  - "测试时适应"
+  - "3D点云"
+  - "视觉-语言基础模型"
+  - "动态原型学习"
+  - "无训练适应"
+  - "在线聚类"
+  - "图正则化"
+---
+
+# Adapt-As-You-Walk Through the Clouds: Training-Free Online Test-Time Adaptation of 3D Vision-Language Foundation Models
+
+**会议**: AAAI 2026  
+**arXiv**: [2511.15311v2](https://arxiv.org/abs/2511.15311v2)  
+**代码**: [有](https://github.com/Mehran-TAM/Uni-Adapter)  
+**领域**: 3D视觉 / 测试时适应 / 视觉-语言基础模型  
+**关键词**: 测试时适应, 3D点云, 视觉-语言基础模型, 动态原型学习, 无训练适应, 在线聚类, 图正则化  
+
+## 一句话总结
+
+提出 Uni-Adapter，一种面向3D视觉-语言基础模型(VLFM)的无训练在线测试时适应框架，通过基于聚类的动态原型缓存和图正则化标签平滑来应对分布偏移，在多个3D损坏基准上取得SOTA。
+
+## 研究背景与动机
+
+**3D VLFM的零样本能力与实际部署的差距**：Uni3D、ULIP-2、OpenShape等模型通过点云-图像-文本三模态对齐实现了强大的零样本识别，但实际采集的点云受传感器噪声、稀疏性、低分辨率影响，与训练分布产生显著偏移
+
+**训练型TTA计算开销大**：TPT等方法需要在推理时反向传播优化prompt或参数，每个测试样本都要梯度迭代，不适合实时部署和流式推理场景
+
+**高置信缓存的模式覆盖不足**：现有无训练方法（TDA、Point-Cache）仅缓存高置信样本作为原型，但同一语义类别的3D特征往往呈多模式分布（如"飞机"类在特征空间中形成多个子群），高置信原型只能代表部分模式，导致决策边界偏差
+
+**伪标签噪声污染缓存**：基于缓存的方法依赖伪标签将样本分配到对应类别，但在域偏移下伪标签不可靠，错误分类的样本会持续污染缓存，形成负反馈
+
+**3D领域的cache-based TTA几乎空白**：cache-based TTA主要在2D CLIP上探索，3D VLFM上仅Point-Cache一项工作，该方向有很大探索空间
+
+**Point-Cache的双缓存设计效率低**：Point-Cache使用全局缓存+局部缓存的双重结构，且局部缓存需对每个样本的patch特征做k-means，导致吞吐量仅为零样本的25%
+
+## 方法详解
+
+### 整体框架
+
+Uni-Adapter 由三个核心模块串联组成，在推理的前向过程中完成全部适应操作，完全不需要反向传播：
+
+1. **在线原型模块(Online Prototyping)**：对每个类别维护最多 $N$ 个聚类中心作为原型，通过置信加权移动平均持续更新
+2. **原型重分配模块(Prototype Reassignment)**：构建原型间的余弦相似度图，通过图拉普拉斯正则化平滑来修正噪声伪标签
+3. **基于熵的融合(Entropy-Based Fusion)**：将缓存logit与原始VLFM logit按各自熵值加权融合，信心越低分量越小
+
+### 关键设计1：基于聚类的在线原型缓存
+
+- **功能**：对每个类别维护最多 $N$ 个聚类中心，新样本到来时匹配最近原型并更新，或在有空槽时初始化新原型
+- **核心思路**：对新输入 $\mathbf{X}_t$ 编码为 $\mathbf{f}_t$ 后，先通过与文本嵌入的余弦相似度预测伪类别 $k$，在该类别原型中找最相似的进行置信加权更新：
+
+$$\mathbf{c}_{k,n}^{\text{new}} = \frac{\alpha_t \mathbf{f}_t + b_{k,n} \alpha_{k,n} \mathbf{c}_{k,n}^{\text{old}}}{\alpha_t + b_{k,n} \alpha_{k,n}}$$
+
+其中 $\alpha_t = \exp(-\beta \cdot H_t)$ 是基于预测熵的置信权重，$b_{k,n}$ 是累积样本计数
+- **设计动机**：高置信缓存只覆盖分布的"高峰"区域，而聚类中心能覆盖分布的各个模式。t-SNE可视化清晰显示，同一类在特征空间形成多个子簇，多原型设计能捕获这种类内多样性
+
+### 关键设计2：图正则化原型标签平滑
+
+- **功能**：在所有原型之间构建相似度图，通过图正则化优化修正噪声伪标签
+- **核心思路**：收集所有原型特征 $\mathbf{U} \in \mathbb{R}^{M \times d}$，计算余弦相似度矩阵 $\mathbf{A} = \mathbf{U}\mathbf{U}^\top$，以阈值 $\gamma$ 稀疏化后构建归一化图拉普拉斯 $\mathbf{L}_{\text{norm}}$，求解：
+
+$$\mathbf{Z}^* = (\mathbf{I} + \lambda_{\text{reg}} \mathbf{L}_{\text{norm}})^{-1} \mathbf{Z}^{(0)}$$
+
+使用共轭梯度法高效求解，复杂度从 $O(M^3)$ 降至 $O(\rho \cdot \text{nnz}(\mathbf{L}_{\text{norm}}))$
+- **设计动机**：在线聚类受伪标签噪声影响，错误标签的原型会误导后续样本分配。通过图结构让相似原型"互相拉向"一致的标签分配，比单纯置信度过滤更鲁棒
+
+### 关键设计3：缓存logit计算与熵加权融合
+
+- **功能**：基于原型与输入的相似度计算cache logit，再与原始VLFM logit融合
+- **核心思路**：缓存logit按类别归一化原型数量：$\mathbf{s}^{\text{cache}} = \mathbf{\Lambda} \mathbf{Z}^{*\top} (\mathbf{U} \mathbf{f}_t)$，最终通过熵交叉加权融合：
+
+$$\mathbf{s}^{\text{final}} = \frac{H_{\text{cache}} \cdot \mathbf{s}^{\text{main}} + H_t \cdot \mathbf{s}^{\text{cache}}}{H_{\text{cache}} + H_t}$$
+
+- **设计动机**：熵高的一方（不确定性大）给对方更大话语权。当缓存刚初始化（不可靠）时自动倾向原始模型，当缓存积累充分后逐渐发挥更大作用，实现自适应的渐进适应
+
+### 损失函数 / 训练策略
+
+本方法**完全无需训练**，不涉及任何损失函数或梯度计算。所有适应操作都在推理的前向过程中完成：
+
+- 在线聚类更新：置信加权移动平均
+- 图正则化求解：共轭梯度法，最多100次迭代
+- 逐样本适应：batch size = 1，支持流式推理
+
+关键超参数：聚类中心数 $N=30$，稀疏阈值 $\gamma=0.5$，置信衰减 $\beta=10$，标签平滑系数 $\lambda_{\text{reg}}=0.3$。
+
+## 实验
+
+### 主实验：损坏数据集上的分布偏移适应（Uni3D-Large, batch=1）
+
+| 数据集 | Source-Only | TDA* (CVPR24) | Point-Cache* (CVPR25) | **Uni-Adapter** | 相对提升 |
+|---|---|---|---|---|---|
+| ModelNet-40C | 59.15% | 63.63% | 66.73% | **69.70%** | +10.55% |
+| ScanObjectNN-C | 38.07% | 40.62% | 42.13% | **46.33%** | +8.26% |
+| ShapeNet-C | 57.92% | 59.43% | 57.70% | **62.41%** | +4.49% |
+
+在15种corruption类型上一致性领先。ModelNet-40C上超过最强基线Point-Cache约3个百分点。
+
+### 干净数据集与大规模数据集
+
+| 数据集 | 规模 | Source-Only | Point-Cache | **Uni-Adapter** |
+|---|---|---|---|---|
+| ModelNet40 | 40类 | 83.47% | 83.43% | **83.96%** |
+| ScanObjectNN | 15类 | 61.46% | 61.46% | **64.03%** |
+| ShapeNet | 55类 | 81.23% | 80.96% | **81.23%** |
+| Objaverse-LVIS | 1156类 | 51.59% | 51.65% | **52.44%** |
+
+即使在无分布偏移的干净数据上也不损失性能，在ScanObjectNN上反而提升2.57%。
+
+### 计算效率
+
+| 方法 | 吞吐量(test/s) | 相对零样本比率 |
+|---|---|---|
+| Zero-shot | 39.19 | 100% |
+| Point-Cache | 9.73 | 25% |
+| **Uni-Adapter** | **36.93** | **94%** |
+
+Uni-Adapter仅损失约6%吞吐量，Point-Cache损失75%。
+
+### 消融实验要点
+
+1. **组件贡献**：Online Prototyping贡献主要提升（59.15→68.48），Prototype Reassignment再加1.22%（→69.70）
+2. **聚类 vs 置信缓存**：在ShapeNet-C所有corruption类型上，基于聚类的缓存一致优于基于置信度的缓存
+3. **聚类中心数N**：N=30最优，太少无法覆盖类内分布，太多引入噪声
+4. **标签平滑 $\lambda_{\text{reg}}$**：0.3最优，接近0时平滑效果消失、接近1时过度平滑
+5. **共轭梯度 vs 直接求逆**：共轭梯度更快（27.07ms vs 29.20ms），MAE<0.0005%
+6. **统计显著性**：所有对比的p值远低于0.05，最强对比Point-Cache在ModelNet-40C上p=8.04×10⁻⁷
+7. **跨模型验证**：在ULIP-2和OpenShape上同样有效，ModelNet-40C上分别提升+7.97%和+4.64%
+
+## 亮点
+
+1. **真正的无训练适应**：不需要反向传播、不修改模型参数、不需标注数据，batch size=1即可工作
+2. **聚类缓存设计精巧**：解决了高置信缓存的模式覆盖不足问题，用在线聚类捕获类内多模式分布
+3. **图正则化标签平滑**：利用原型间的拓扑关系修正伪标签，比简单的置信度过滤更优雅
+4. **计算效率突出**：吞吐量接近零样本推理（仅降6%），远优于Point-Cache（降75%），且内存开销可忽略
+5. **模型无关性**：在Uni3D、ULIP-2、OpenShape三种3D VLFM上均有效
+6. **实验全面**：覆盖损坏数据集（15种corruption×5级别）、干净数据集、大规模数据集（1156类），并做了统计显著性检验
+
+## 局限性
+
+1. **冷启动不稳定**：缓存初始化阶段（原型尚未充分积累时），在严重噪声输入下性能不稳定——作者也承认了这一点
+2. **伪标签累积偏差**：虽然图平滑能修正部分错误，但基于argmax的伪标签生成本身在域偏移极大时可能持续错误
+3. **固定聚类数N**：所有类别共享同一个最大聚类数，但不同类可能有不同的分布复杂度
+4. **仅评估分类任务**：3D点云的分割、检测等下游任务未涉及
+5. **未考虑连续域漂移**：实验中假设corruption类型固定，未测试域随时间连续变化的场景
+
+## 相关工作
+
+| 方法 | 类型 | 是否无训练 | 3D专用 | VLFM专用 | ModelNet-40C |
+|---|---|---|---|---|---|
+| TENT (ICLR21) | 训练型TTA | ❌ | ❌ | ❌ | 59.48 |
+| T3A (NeurIPS21) | 无训练TTA | ✅ | ❌ | ❌ | 64.12 |
+| TPT (NeurIPS22) | 训练型TTA | ❌ | ❌ | ✅ | 61.02 |
+| TDA (CVPR24) | 无训练TTA | ✅ | ❌ | ✅ | 63.63 |
+| CloudFixer (ECCV24) | 输入适应 | ✅ | ✅ | ❌ | 56.09 |
+| Point-Cache (CVPR25) | 无训练TTA | ✅ | ✅ | ✅ | 66.73 |
+| **Uni-Adapter** | 无训练TTA | ✅ | ✅ | ✅ | **69.70** |
+
+关键区别：Point-Cache用高置信缓存+k-means局部特征（双缓存结构），Uni-Adapter用在线聚类全局原型+图平滑（单一统一缓存），吞吐量远优。
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 聚类缓存替代置信缓存+图平滑修正是有意义的创新，但整体框架仍是cache-based TTA的改进
+- 实验充分度: ⭐⭐⭐⭐⭐ 3个损坏数据+3个干净数据+2个大规模数据集，3种3D VLFM，统计显著性检验，消融全面
+- 写作质量: ⭐⭐⭐⭐ 结构清晰，动机阐述充分，公式推导完整
+- 价值: ⭐⭐⭐⭐ 3D VLFM的无训练TTA是实用且及时的课题，方法高效实用
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[AAAI 2026\] Parameter-Free Fine-tuning via Redundancy Elimination for Vision Foundation Models](parameter-free_fine-tuning_via_redundancy_elimination_for_vision_foundation_mode.md)
+- [\[ECCV 2024\] CloudFixer: Test-Time Adaptation for 3D Point Clouds via Diffusion-Guided Geometric Transformation](../../ECCV2024/3d_vision/cloudfixer_test-time_adaptation_for_3d_point_clouds_via_diffusion-guided_geometr.md)
+- [\[AAAI 2026\] VGGT-DP: Generalizable Robot Control via Vision Foundation Models](vggt-dp_generalizable_robot_control_via_vision_foundation_models.md)
+- [\[CVPR 2026\] Low-Rank Test-Time Training for Pre-Trained Point Cloud Models](../../CVPR2026/3d_vision/low-rank_test-time_training_for_pre-trained_point_cloud_models.md)
+- [\[CVPR 2026\] ZipMap: Linear-Time Stateful 3D Reconstruction via Test-Time Training](../../CVPR2026/3d_vision/zipmap_linear-time_stateful_3d_reconstruction_via_test-time_training.md)
+
+</div>
+
+<!-- RELATED:END -->

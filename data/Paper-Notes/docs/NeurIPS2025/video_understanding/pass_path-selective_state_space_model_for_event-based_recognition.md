@@ -1,0 +1,169 @@
+---
+title: >-
+  [论文解读] PASS: Path-Selective State Space Model for Event-Based Recognition
+description: >-
+  [NeurIPS 2025][视频理解][事件相机] PASS提出路径选择性事件聚合与扫描（PEAS）模块和多面选择引导（MSG）损失，利用SSM的线性复杂度和频率泛化能力，实现了从10^6到10^9事件长度的广泛分布上的事件识别，并在推理频率变化时保持性能仅下降8.62%（基线下降20.69%）。
+tags:
+  - "NeurIPS 2025"
+  - "视频理解"
+  - "事件相机"
+  - "状态空间模型"
+  - "频率泛化"
+  - "长时序建模"
+  - "Mamba"
+---
+
+# PASS: Path-Selective State Space Model for Event-Based Recognition
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2409.16953](https://arxiv.org/abs/2409.16953)  
+**代码**: [GitHub](https://github.com/jiazhou-garland/PASS_Homepage)  
+**领域**: 视频理解 / 事件相机  
+**关键词**: 事件相机, 状态空间模型, 频率泛化, 长时序建模, Mamba
+
+## 一句话总结
+
+PASS提出路径选择性事件聚合与扫描（PEAS）模块和多面选择引导（MSG）损失，利用SSM的线性复杂度和频率泛化能力，实现了从10^6到10^9事件长度的广泛分布上的事件识别，并在推理频率变化时保持性能仅下降8.62%（基线下降20.69%）。
+
+## 研究背景与动机
+
+事件相机是仿生传感器，以异步方式捕获亮度变化，具有高时间分辨率、高动态范围、低延迟等优势。然而现有事件识别方法面临两大关键挑战：
+
+**事件长度分布受限**：现有数据集的事件长度仅覆盖10^6-10^7范围，高速场景或长时事件流需要处理更广范围(10^6-10^9)的事件；变压器的二次复杂度导致大事件量时计算瓶颈
+
+**推理频率泛化差**：事件相机对高速动态场景有天然优势，但当推理采样频率偏离训练频率时，模型性能显著下降（最高-20.69%），无法充分发挥高时间分辨率优势
+
+现有两种模型结构各有软肋：
+- 逐步(step-by-step)结构：并行处理但注意力复杂度高
+- 循环(recurrent)结构：无法并行且易遗忘早期信息
+
+核心idea：**利用SSM（Mamba）的线性复杂度和输入频率泛化特性，配合自适应的事件帧选择机制，处理广泛事件分布并泛化到不同推理频率**。
+
+## 方法详解
+
+### 整体框架
+
+事件流 → 固定事件长度采样+帧聚合 → PEAS模块（选择性扫描编码为固定维度特征）→ MSG损失引导优化 → SSM时空建模模块 → 分类预测
+
+### 关键设计
+
+1. **事件采样与帧聚合**:
+
+    - 在固定时间窗口 $1/f$ 处采样（$f$为采样频率），每次采样固定数量$G$个事件
+    - 得到 $P = Tf$ 个事件组，转换为事件帧表征 $F \in \mathbb{R}^{P \times H \times W \times 3}$
+    - 固定事件长度聚合优于固定时间窗口聚合（更鲁棒）
+
+2. **PEAS模块 (Path-selective Event Aggregation and Scan)**:
+
+    - **选择掩码预测**：用两层3D卷积+激活函数从事件帧 $F$ 生成选择掩码 $M \in \mathbb{R}^{K \times P}$（$K$为选择帧数，$P$为原始帧数）
+    - **可微选择**：训练时用Gumbel Softmax实现可微的帧选择，推理时用标准Softmax
+    - **矩阵乘法选择**：通过Einsum将掩码与原始帧相乘得到选定帧 $F' \in \mathbb{R}^{K \times H \times W \times 3}$
+    - **双向事件扫描**：对选定帧按时空顺序展开为1D序列（遵循VideoMamba的时空扫描方式），从左到右、从上到下级联
+    - 核心价值：将变长事件流(10^6-10^9)自适应压缩为固定维度特征，端到端可学习
+
+3. **MSG损失 (Multi-faceted Selection Guiding)**:
+
+    - **WEIE损失 (Within-Frame Event Information Entropy)**：
+        - 计算每个选定帧的灰度直方图信息熵
+        - 最大化此损失 → 鼓励选择信息量大的帧，减少选择空白帧（padding）的随机性
+        - $\mathcal{L}_{WEIE} = -\sum_{k=1}^{K}\sum_{i=1}^{N}P_i^k \log P_i^k / K$
+    - **IEMI损失 (Inter-frame Event Mutual Information)**：
+        - 计算相邻选定帧间的联合分布互信息（含空间位置信息）
+        - 最小化此损失 → 减少选定帧间的冗余，确保每帧携带独特信息
+    - 总目标：$\mathcal{L}_{total} = \mathcal{L}_{IEMI} - \mathcal{L}_{WEIE} + \mathcal{L}_{CLS}$
+
+4. **事件时空建模模块**:
+
+    - 3D卷积(1×16×16)做patch embedding
+    - 拼接可学习的CLS token + 空间位置嵌入 + 时间嵌入
+    - 送入$L$层堆叠的B-Mamba块（双向Mamba）
+    - 提取CLS token经归一化+线性分类头得到最终预测
+    - 使用VideoMamba预训练权重初始化
+
+### 损失函数 / 训练策略
+
+- 总损失 = IEMI（最小化）- WEIE（最大化）+ 交叉熵分类损失
+- 模型规模：Tiny(7M)、Small(25M)、Middle(74M)
+- 选定帧数K为超参数，不同数据集使用不同值（1/2/8/16/32）
+- 自建数据集：ArDVS100（100类动作转换，事件长度1s-256s）、TemArDVS100（细粒度时序标注）、Real-ArDVS10（真实世界10类）
+
+## 实验关键数据
+
+### 主实验
+
+| 数据集 | 事件规模 | 指标 | PASS | 之前SOTA | 提升 |
+|--------|---------|------|------|----------|------|
+| N-Caltech101 | ~10^6 | Top-1 | **94.60%** | EventDance: 92.35% | +2.25% |
+| N-Imagenet | ~10^6 | Top-1 | **61.32%** | MEM: 57.89% | +3.43% |
+| PAF | ~10^7 | Top-1 | **98.28%** | ExACT: 94.83% | +3.45% |
+| SeAct | ~10^7 | Top-1 | **66.38%** | ExACT: 66.07% | +0.38% |
+| HARDVS | ~10^7 | Top-1 | **98.41%** | S5-ViT: 95.98% | +8.31% |
+| ArDVS100 | ~10^9 | Top-1 | **97.35%** | S5-ViT: 93.39% | +3.96% |
+| TemArDVS100 | ~10^9 | Top-1 | **89.00%** | S5-ViT: 79.62% | +9.38% |
+| Real-ArDVS10 | ~10^9 | Top-1 | **100%** | S5-ViT: 93.33% | +6.67% |
+
+### 消融实验
+
+| 配置 | PAF Top-1 | ArDVS100 Top-1 | 说明 |
+|------|-----------|---------------|------|
+| 无采样 | 92.90% | 92.31% | 直接用所有帧 |
+| 随机采样 | 92.98% | 92.23% | 随机选K帧 |
+| PEAS | 93.33% | 92.84% | +0.35/+0.61% |
+| PEAS + MSG | **94.83%** | **93.85%** | +1.85/+1.62% |
+
+| 频率泛化 | 训练60Hz→推理100Hz性能下降 |
+|---------|------------------------|
+| Time Windows基线 | -20.69% |
+| Event Count基线 | ~-15% |
+| PASS | **-8.62%** |
+
+### 关键发现
+
+- PEAS模块虽然压缩了帧数，但选择的帧保留了任务关键信息（优于"无采样"基线+0.43%）
+- MSG损失的两个组件互相配合：IEMI减少冗余(+0.77%)，WEIE减少随机性（额外+1.08%）
+- 在10^9量级事件上，PASS仍保持优异性能（97.35%），而基线方法在如此长的序列上挣扎
+- 频率泛化是PASS的核心优势：无论在20Hz、60Hz还是100Hz训练，跨频率推理性能下降最多仅8.62%
+
+## 亮点与洞察
+
+- **SSM+事件相机的天然契合**：SSM的线性复杂度和频率泛化能力完美匹配事件流的高时间分辨率特性
+- **信息论引导的帧选择**：用信息熵和互信息作为选择引导信号，比启发式规则更有原则性
+- **Gumbel Softmax的端到端选择**：通过可微的帧选择实现PEAS的端到端训练，避免了两阶段训练的复杂性
+- **自建长时序数据集**：ArDVS100、TemArDVS100填补了10^9级别事件识别基准的空白
+- **频率泛化的实际意义**：在实际部署中，推理频率通常与训练频率不同，PASS的强泛化性大幅降低了部署难度
+
+## 局限与展望
+
+- 较大规模的VideoMamba模型出现过拟合现象，需要更好的正则化策略
+- 选定帧数K是手动超参数，未能自适应确定
+- 事件帧表征仅是多种事件表征之一，与voxel grid或时间surface等表征的对比不足
+- 自建数据集通过拼接合成，与真实世界长时间连续事件流可能存在分布差异
+
+## 相关工作与启发
+
+- **vs ExACT**: ExACT用471M参数的大模型暴力处理，PASS用74M参数更高效且效果更好
+- **vs S5-ViT**: S5-ViT首次将SSM引入事件检测但关注频率泛化的低通限制损失，PASS从帧选择角度更本质地解决频率泛化问题
+- **vs VideoMamba**: PASS基于VideoMamba但针对事件流特性设计了PEAS模块和MSG损失，不是简单套用
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ SSM用于事件识别的动机自然，PEAS+MSG的设计有原创性，但非突破性创新
+- 实验充分度: ⭐⭐⭐⭐⭐ 5个公开数据集+3个自建数据集，频率泛化实验详尽，消融全面
+- 写作质量: ⭐⭐⭐⭐ 问题定义清晰，图表丰富，但部分公式符号略有混淆
+- 价值: ⭐⭐⭐⭐ 为事件相机识别提供了高效的长时序建模方案，频率泛化特性实用性强
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ECCV 2024\] VideoMamba: Spatio-Temporal Selective State Space Model](../../ECCV2024/video_understanding/videomamba_spatio-temporal_selective_state_space_model.md)
+- [\[CVPR 2025\] MambaVLT: Time-Evolving Multimodal State Space Model for Vision-Language Tracking](../../CVPR2025/video_understanding/mambavlt_time-evolving_multimodal_state_space_model_for_vision-language_tracking.md)
+- [\[ECCV 2024\] VideoMamba: State Space Model for Efficient Video Understanding](../../ECCV2024/video_understanding/videomamba_state_space_model_for_efficient_video_understanding.md)
+- [\[CVPR 2025\] GG-SSMs: Graph-Generating State Space Models](../../CVPR2025/video_understanding/gg-ssms_graph-generating_state_space_models.md)
+- [\[AAAI 2026\] MambaMia: State-Space Hierarchical Compression for Hour-Long Video Understanding in Large Multimodal Models](../../AAAI2026/video_understanding/state-space_hierarchical_compression_with_gated_attention_an.md)
+
+</div>
+
+<!-- RELATED:END -->

@@ -1,0 +1,146 @@
+---
+title: >-
+  [论文解读] Do LLMs Give Psychometrically Plausible Responses in Educational Assessments?
+description: >-
+  [ACL 2025][LLM 其他][心理测量学] 从心理测量学（经典测试理论 CTT 和项目反应理论 IRT）的角度评估 18 个指令微调 LLM 在教育评估中的"类人性"，发现即使经过温度缩放校准，LLM 的响应分布与人类仍有本质差异——大模型过度自信，且无法预测人类被干扰项吸引的模式，零样本 LLM 不适合替代人类进行测试预试验。
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "心理测量学"
+  - "项目反应理论"
+  - "经典测试理论"
+  - "教育评估"
+  - "LLM评估"
+---
+
+# Do LLMs Give Psychometrically Plausible Responses in Educational Assessments?
+
+**会议**: ACL 2025  
+**arXiv**: [2506.09796](https://arxiv.org/abs/2506.09796)  
+**代码**: [https://github.com/mainlp/llm-psychometrics](https://github.com/mainlp/llm-psychometrics)  
+**领域**: LLM/NLP, 教育评估  
+**关键词**: 心理测量学, 项目反应理论, 经典测试理论, 教育评估, LLM评估
+
+## 一句话总结
+
+从心理测量学（经典测试理论 CTT 和项目反应理论 IRT）的角度评估 18 个指令微调 LLM 在教育评估中的"类人性"，发现即使经过温度缩放校准，LLM 的响应分布与人类仍有本质差异——大模型过度自信，且无法预测人类被干扰项吸引的模式，零样本 LLM 不适合替代人类进行测试预试验。
+
+## 研究背景与动机
+
+**领域现状**：教育评估（如 SAT、GRE 等）的开发是一个漫长且昂贵的过程，涉及专家编写试题、反复用数百至数千名真人受试者进行预试验（pilot study）来评估题目质量。最近有研究探索用 LLM 模拟受试者来加速这一过程。
+
+**现有痛点**：要让 LLM 有效替代人类受试者，其响应必须在心理测量学框架（CTT 和 IRT）下表现出"类人性"——即 LLM 认为难的题目人类也应该觉得难，LLM 的错误选项分布应与人类类似。但目前缺乏从 CTT/IRT 双框架系统评估 LLM 心理测量学合理性的研究。
+
+**核心矛盾**：LLM 在答题准确率上已非常强大，但准确 ≠ 类人。一个总是选对的模型（过度自信）无法提供有用的题目分析信息，因为它无法揭示哪些题目是"好题"（有区分度的题目）。
+
+**本文目标** 提出基于 CTT 和 IRT 的心理测量学合理性评估方法，并在 18 个 LLM × 2 个数据集 × 3 个学科上进行系统基准测试。
+
+**切入角度**：将 LLM 的 first-token 概率分布视为"一组虚拟受试者的响应分布"，与真实人类受试者的响应统计量进行对比。
+
+**核心 idea**：用 CTT 的题目难度相关性和 IRT 的项目特征曲线拟合来定量衡量 LLM 响应的心理测量学合理性。
+
+## 方法详解
+
+### 整体框架
+
+提出心理测量学合理性（psychometric plausibility）的三维评估方法：(1) 响应分布比较——用 KL 散度衡量 LLM 与人类在选项概率分布上的相似性；(2) CTT 分析——用 Pearson 相关系数衡量 LLM 答对概率与人类题目难度（item facility）的一致性；(3) IRT 分析——将 LLM 响应与基于人类数据拟合的项目特征曲线（ICC）进行比较。
+
+### 关键设计
+
+1. **响应概率提取与温度缩放**:
+
+    - 功能：从 LLM 的 first-token logits 中提取 A/B/C/D 四个选项的概率，使用循环置换（cyclic permutation）消除选项顺序偏差，并通过温度缩放校准分布
+    - 核心思路：对每道题生成 4 次响应（每种选项位置排列），取平均概率。然后通过最小化 KL 散度搜索最优温度参数 $T$，使 LLM 响应分布尽可能接近人类。大模型通常过度自信（几乎所有概率集中在一个选项），温度缩放可以缓解
+    - 设计动机：直接使用原始 logits 会使模型显得极度过度自信（90%+ 概率在正确选项上），无法与人类分布（通常更分散）比较
+
+2. **CTT 分析——题目难度相关性**:
+
+    - 功能：计算 LLM 答对概率与人类 item facility（人类答对比例）之间的 Pearson 相关系数
+    - 核心思路：如果 LLM 心理测量学合理，那么人类认为简单的题目，LLM 也应该给正确选项更高的概率。强正相关表示 LLM 在题目难度维度上与人类一致
+    - 设计动机：CTT 是教育评估中最基础的分析框架，item facility 是最直观的题目特征
+
+3. **IRT 分析——ICC 拟合度**:
+
+    - 功能：使用 3PL（三参数逻辑）IRT 模型 $P(X=1) = c + \frac{1-c}{1+e^{-a(\theta-b)}}$ 的预期响应概率（$\theta=0$，即平均能力受试者）与 LLM 的答对概率进行相关分析
+    - 核心思路：IRT 的 ICC 包含题目的区分度 $a$、难度 $b$ 和猜测参数 $c$，提供了比 CTT 更精细的题目特征描述。如果 LLM 与这些特征匹配，则说明其响应行为能模拟一个特定能力水平的人类受试者
+    - 设计动机：IRT 的优势在于题目参数不依赖特定受试者群体，提供了更理论化的评估标准
+
+### 数据集
+
+- **NAEP**（美国全国教育进步评估）：549 道四选一题（阅读 252、美国历史 204、经济学 93），涵盖 4/8/12 年级，有人类响应分布和 IRT 参数
+- **CMCQRD**（剑桥多选阅读题）：504 道四选一题，覆盖 B1-C2 四个 CEFR 水平，针对英语二语学习者，有人类响应分布
+
+## 实验关键数据
+
+### 主实验：响应分布相似性（KL 散度）
+
+| 模型族 | 规模 | NAEP 阅读 | NAEP 历史 | CMCQRD B1 |
+|--------|------|---------|---------|----------|
+| Llama 3 | 8B | 中-高 | 高 | 中 |
+| Llama 3 | 70B | 中 | 中-高 | 低 |
+| Qwen 2.5 | 72B | 中 | 中-高 | 低 |
+| OracleBaseline | — | 参考 | 参考 | 参考 |
+
+模型越大，KL 散度越低（响应越接近人类），但仅极少数大模型在 CMCQRD B1 上显著超越 OracleBaseline（一个仅正确选项概率高、干扰项等概率的简单基线）。
+
+### 消融实验：CTT 相关性分析
+
+| 领域 | 年级/水平 | 最高相关 | 最低相关 | 显著比例 |
+|------|---------|---------|---------|--------|
+| CMCQRD B1 (阅读) | B1 | 0.56 | 0.32 | 高 |
+| NAEP 阅读 | 8年级 | ~0.4 | ~0.2 | 中 |
+| NAEP 历史 | 8年级 | ~0.3 | ~0.1 | 低 |
+| NAEP 经济 | 12年级 | ~0.2 | ~0.1 | 极低 |
+
+阅读理解的相关性最高（LLM 最"类人"），历史和经济学则很低，甚至出现显著负相关（LLM 在难题上反而更自信）。
+
+### 关键发现
+
+- LLM 不容易被干扰项"欺骗"——它们擅长识别正确答案，但完全不能预测哪些错误选项对人类有吸引力。温度缩放无法解决这一根本问题
+- 所有模型族和大小的结果高度一致，说明"类人性"不是通过模型缩放能解决的
+- 学科间差异显著——阅读理解最类人，历史/经济学最不类人。可能原因：(1) 阅读理解更依赖文本理解能力（LLM 相对擅长），而非长期记忆提取（历史/经济学需要的知识性信息）；(2) 历史/经济学题目更常包含图片，纯文本 LLM 无法完全理解
+- 4 年级历史的某些 IRT 量表上出现显著负相关——LLM 在难题上反而更自信，完全违反心理测量学预期
+
+## 亮点与洞察
+
+- 首次从 CTT+IRT 双框架系统评估 LLM 作为"虚拟受试者"的心理测量学合理性，方法论贡献突出
+- "LLM 不容易被干扰项欺骗"这一发现具有深层含义——说明 LLM 的"错误"与人类的"错误"由不同机制驱动，LLM 的出错不是因为被表面特征误导
+- 学科间差异的发现为理解 LLM 的认知特征提供了线索——LLM 的阅读理解更接近人类，而知识性推理与人类差异更大
+- 实验设计严谨——18 个模型 × 2 数据集 × 3 学科的大规模系统评估，且所有代码和数据公开
+
+## 局限与展望
+
+- 仅评估零样本场景，微调（如在人类响应分布上微调）可能显著改善心理测量学合理性
+- NAEP 数据包含图片题目（用 alt text 替代），可能影响了历史/经济学的结果
+- 仅使用公开聚合数据，缺乏个体受试者级别的数据做更精细分析
+- 温度缩放是在评估数据上优化的（上界估计），实际应用需要独立校准集
+- 未探讨多模态 LLM 是否能在含图像的题目上表现更类人
+
+## 相关工作与启发
+
+- **vs Hayakawa & Saggion (2024)**: 该工作也用 CTT 比较了 LLM 与人类的题目难度，但仅关注阅读任务；本文扩展到多学科并引入 IRT 框架
+- **vs Lalor et al. (2019)**: 采用"人工群体"（在部分/损坏数据上训练多模型）模拟不同能力的受试者；本文探索更现代化的单 LLM + 温度缩放方案
+- **vs Zotos et al. (2025)**: 用 LLM 不确定性预测学生响应分布，结论类似——零样本 LLM 不够类人
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 从心理测量学角度评估 LLM 是新颖且有价值的跨学科研究
+- 实验充分度: ⭐⭐⭐⭐⭐ 18 个模型 × 2 数据集 × 3 学科 × 3 评估维度（KL/CTT/IRT），极为系统
+- 写作质量: ⭐⭐⭐⭐ 心理测量学概念解释清晰，对 NLP 读者友好
+- 价值: ⭐⭐⭐⭐ 为教育 AI 领域提供了重要的否定结论——零样本 LLM 不能替代人类预试验，标定了当前能力边界
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] LLMs can Perform Multi-Dimensional Analytic Writing Assessments](llm_writing_assessment.md)
+- [\[ACL 2025\] Value Portrait: Assessing Language Models' Values through Psychometrically and Ecologically Valid Items](value_portrait_assessing_language_models_values_through_psychometrically_and_eco.md)
+- [\[ACL 2025\] LLM-Powered Test Case Generation for Detecting Bugs in Plausible Programs](llm_test_case_gen_bugs.md)
+- [\[ACL 2025\] Which Demographics Do LLMs Default to During Annotation?](which_demographics_do_llms_default_to_during_annotation.md)
+- [\[ACL 2025\] Do Language Models Mirror Human Confidence? Exploring Psychological Insights to Address Overconfidence in LLMs](do_language_models_mirror_human_confidence_exploring_psychological_insights_to_a.md)
+
+</div>
+
+<!-- RELATED:END -->

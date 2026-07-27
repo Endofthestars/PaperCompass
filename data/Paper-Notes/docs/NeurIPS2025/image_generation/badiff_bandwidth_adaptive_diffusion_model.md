@@ -1,0 +1,168 @@
+---
+title: >-
+  [论文解读] BADiff: Bandwidth Adaptive Diffusion Model
+description: >-
+  [NeurIPS 2025][图像生成][bandwidth-adaptive] 提出 BADiff——首个带宽自适应扩散模型，通过将目标熵约束作为条件嵌入扩散反向过程，配合可微熵正则化损失和自适应停止策略，使模型根据实时带宽动态调整生成质量并自适应提前终止采样，在保持感知质量的同时减少计算开销，从根本上避免了传统"高质量生成→后压缩"流程中的压缩伪影和计算浪费。
+tags:
+  - "NeurIPS 2025"
+  - "图像生成"
+  - "bandwidth-adaptive"
+  - "扩散模型"
+  - "entropy conditioning"
+  - "early stopping"
+  - "cloud streaming"
+---
+
+# BADiff: Bandwidth Adaptive Diffusion Model
+
+**会议**: NeurIPS 2025  
+**arXiv**: [2510.21366](https://arxiv.org/abs/2510.21366)  
+**代码**: [GitHub](https://github.com/xzhang9308/BADiff)  
+**作者**: Xi Zhang, Hanwei Zhu, Yan Zhong, Jiamang Wang, Weisi Lin (NTU & Alibaba)  
+**领域**: 扩散模型 / 图像压缩 / 带宽自适应生成  
+**关键词**: bandwidth-adaptive, diffusion model, entropy conditioning, early stopping, cloud streaming
+
+## 一句话总结
+
+提出 BADiff——首个带宽自适应扩散模型，通过将目标熵约束作为条件嵌入扩散反向过程，配合可微熵正则化损失和自适应停止策略，使模型根据实时带宽动态调整生成质量并自适应提前终止采样，在保持感知质量的同时减少计算开销，从根本上避免了传统"高质量生成→后压缩"流程中的压缩伪影和计算浪费。
+
+## 研究背景与动机
+
+**领域现状**：扩散模型（DDPM、LDM 等）已能生成极高保真度图像，但在实际云-设备部署中面临传输带宽瓶颈。当前主流做法是先用扩散模型生成高质量图像，再通过 BPG / 学习型图像编码器（LIC）做有损压缩后传输。
+
+**现有痛点**：
+   - **级联方案浪费严重**：扩散模型花大量计算精心构建的细节纹理，被后续压缩直接擦除，计算和质量双重浪费
+   - **朴素提前终止效果差**：简单减少扩散步骤会导致视觉伪影和感知不连贯，因为模型本身未针对提前终止做过优化
+   - **生成过程缺乏带宽感知**：标准扩散模型对下游传输约束完全无知
+
+**核心矛盾**：生成过程与传输约束完全解耦——模型不知道带宽有多少，生成了无法传输的过高质量；或者压缩后细节全丢。
+
+**切入角度**：扩散模型天然具有从粗到细的逐步精炼特性——早期步骤构建全局结构，后期步骤添加细节纹理。这意味着不同带宽需求可以对应不同的终止点，关键是让模型在训练时就学会"在任意终止点都输出高感知质量的图像"。
+
+## 方法详解
+
+### 3.1 熵条件扩散模型（Entropy-Conditioned Diffusion）
+
+核心思想：将目标熵 $H_{\text{target}}$（作为带宽的代理量，单位为 bpp）作为显式条件注入扩散模型的每一个反向去噪步骤。
+
+- **熵嵌入网络**：通过一个轻量 MLP $\psi_\eta$ 将标量 $H_{\text{target}}$ 映射为 128 维向量 $\mathbf{h}$
+- **条件注入方式**：在 UNet 每个残差块中，将熵嵌入与 sinusoidal 时间步嵌入相加，形成混合调制信号 $\mathbf{g}_l(t, H_{\text{target}}) = \mathbf{g}(t) + \mathbf{W}^{(l)} \mathbf{h}$，等价于 additive FiLM 机制
+- **参数开销极低**：额外参数 < 0.1%，但为模型提供了对生成细节程度的连续控制"旋钮"
+- 训练时随机采样 $H_{\text{target}} \sim \mathcal{U}(H_{\min}, H_{\max})$，使模型暴露于各种带宽约束
+
+### 3.2 熵正则化损失（Entropy Regularization Loss）
+
+仅做条件嵌入不够——模型仍可能输出超预算的图像。因此引入可微的熵约束：
+
+$$\mathcal{L}_{\text{entropy}} = \max(0, H_\phi(\hat{\mathbf{x}}_0) - H_{\text{target}})$$
+
+- **可微神经熵估计器** $H_\phi$：借鉴学习型图像压缩中的熵模型，使用离散 logistic 分布建模像素级条件概率，输出每像素期望编码长度（bpp）
+- **hinge 形式**：仅当实际熵超过预算时才有梯度，避免过度约束
+- **上下文提取**：采用 hyper-prior + 自回归掩码卷积提取因果上下文 $\mathbf{c}_u$
+- **端到端可微**：梯度可以从熵损失一路回传到 UNet，无需 straight-through trick
+
+### 3.3 校准损失（Calibration Loss）
+
+为了让熵估计器 $E_\phi$ 的预测与实际编解码器对齐，引入辅助校准损失：
+
+$$\mathcal{L}_{\text{calibration}} = \frac{1}{|\Omega|} \sum_{u \in \Omega} D_{\text{KL}}(q_u \| p_\phi(\cdot | \mathbf{c}_u))$$
+
+其中 $q_u(k)$ 来自参考端到端优化编解码器的像素级分布。这使熵预测值更接近实际编码后的码率。
+
+### 3.4 自适应采样策略（Adaptive Sampling Policy）
+
+引入轻量 MLP 策略网络 $f_\phi$，在每个采样步判断是否该停止：
+
+- **输入**：空间平均池化的潜变量特征 $\mathbf{h}_t$、当前步 $t$、目标熵 $H_{\text{target}}$
+- **输出**：停止概率 $p_t$；当 $p_t \geq 0.5$ 时终止采样
+- **监督信号**：离线运行完整采样得到每步的代价 $\mathcal{C}(t) = \text{entropy} + \beta \cdot \text{distortion} + \gamma \cdot t$，标记最优停止点作为 teacher label
+- **训练目标**：$\mathcal{L}_{\text{stop}} = \text{BCE}(y_t, p_t)$
+- **额外开销极低**：< 0.3 ms/步（RTX 4090）
+
+### 3.5 总训练目标
+
+$$\mathcal{L} = \mathcal{L}_{\text{denoise}} + \lambda_{\text{ent}} \mathcal{L}_{\text{entropy}} + \lambda_{\text{cal}} \mathcal{L}_{\text{calibration}} + \lambda_{\text{stop}} \mathcal{L}_{\text{stop}}$$
+
+默认超参：$\lambda_{\text{ent}}=0.1$，$\lambda_{\text{cal}}=10^{-3}$，$\lambda_{\text{stop}}=10^{-2}$。Adam 优化器，lr=$10^{-4}$，训练 800k 迭代。
+
+## 实验关键数据
+
+### FID 对比（低码率 0.2–0.5 bpp，DDPM 骨干）
+
+| 方法 | CIFAR-10 | CelebA-HQ | LSUN |
+|------|----------|-----------|------|
+| DDPM + BPG（级联） | 15.2 | 28.5 | 25.7 |
+| DDPM + LIC（级联） | 13.6 | 25.3 | 22.8 |
+| Early-Stop + LIC | 22.9 | 35.0 | 31.9 |
+| PNDM + LIC | 18.1 | 30.4 | 27.3 |
+| **BADiff** | **11.4** | **21.7** | **19.6** |
+
+### 推理速度（CIFAR-10，ms/image，DDPM 骨干）
+
+| 方法 | 低码率 | 中码率 | 高码率 |
+|------|--------|--------|--------|
+| Cascade + LIC | 115 | 115 | 115 |
+| Early-Stop | 58 | 75 | 92 |
+| **BADiff** | **65** | **78** | **94** |
+
+BADiff 在低码率下比级联方案快 **1.7×**，同时 FID 显著更优。
+
+### 消融实验（CIFAR-10，低码率）
+
+| 变体 | FID↓ | Δbpp↓ |
+|------|------|-------|
+| 去掉熵条件 | 13.1 | 0.038 |
+| 去掉 hinge 损失 | 16.2 | 0.055 |
+| 去掉校准损失 | 18.6 | 0.043 |
+| **完整 BADiff** | **11.4** | **0.021** |
+
+### 高分辨率扩展
+
+- **512×512**：BADiff FID 6.85 vs DDPM+LIC 8.45，推理 64.1ms vs 121.3ms
+- **1024×1024**：BADiff FID 17.8 vs DDPM+LIC 21.5，推理 145.6ms vs 228.7ms
+
+### Text-to-Image 扩展（Stable Diffusion 骨干）
+
+| 方法 | 低码率 FID | 中码率 FID | 高码率 FID |
+|------|-----------|-----------|-----------|
+| SD + BPG | 33.5 | 21.4 | 14.8 |
+| SD + LIC | 30.7 | 19.2 | 13.1 |
+| **BADiff** | **26.1** | **16.2** | **11.0** |
+
+## 亮点与洞察
+
+- **范式转变**：将带宽约束从事后压缩前移到生成过程本身——不再"先精心生成再粗暴压缩"，而是让模型从一开始就知道带宽有多少
+- **利用扩散模型的天然特性**：从粗到细的逐步精炼 → 低带宽只需前几步的粗结构，高带宽再继续添加细节
+- **端到端可微的熵控制**：通过神经熵估计器实现梯度直通，比直方图近似更精确
+- **solver 无关**：BADiff 的熵条件机制可与 PNDM、DPM-Solver 等快速求解器搭配使用
+- **Teacher label 生成代价低**：离线一次计算即可，仅占单个训练 epoch 的 5–8%
+
+## 局限性与未来方向
+
+- **空间均匀预算**：当前仅支持全局统一熵预算，未考虑空间自适应码率分配（显著区域多给码率）
+- **仅验证图像**：视频扩散场景带宽约束更严格，但论文未涉及
+- **未与快速求解器组合**：论文聚焦 DDPM/LDM 骨干，与 PNDM/DPM-Solver 组合留作 future work
+- **分辨率上限**：主实验在 256×256，高分辨率实验为补充性质
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 首次将带宽约束直接集成到扩散生成过程，熵条件 + 可微熵损失 + 自适应停止的组合设计完整
+- 实验充分度: ⭐⭐⭐⭐ 三个数据集 × 三种码率 × 两种骨干，消融完整，补充了高分辨率和 T2I 实验
+- 写作质量: ⭐⭐⭐⭐ 问题定义清晰，方法推导严谨，公式与算法伪代码完备
+- 价值: ⭐⭐⭐⭐ 对云端图像流式传输场景有明确实际价值，范式思路可推广到视频生成
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[NeurIPS 2025\] Diffusion Adaptive Text Embedding for Text-to-Image Diffusion Models](diffusion_adaptive_text_embedding_for_texttoimage_diffusion.md)
+- [\[NeurIPS 2025\] BlurDM: A Blur Diffusion Model for Image Deblurring](blurdm_a_blur_diffusion_model_for_image_deblurring.md)
+- [\[CVPR 2025\] Re-HOLD: Video Hand Object Interaction Reenactment via Adaptive Layout-instructed Diffusion Model](../../CVPR2025/image_generation/re-hold_video_hand_object_interaction_reenactment_via_adaptive_layout-instructed.md)
+- [\[NeurIPS 2025\] Accelerating Parallel Diffusion Model Serving with Residual Compression](accelerating_parallel_diffusion_model_serving_with_residual_compression.md)
+- [\[NeurIPS 2025\] ItDPDM: Information-Theoretic Discrete Poisson Diffusion Model](itdpdm_information-theoretic_discrete_poisson_diffusion_model.md)
+
+</div>
+
+<!-- RELATED:END -->

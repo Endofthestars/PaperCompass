@@ -1,0 +1,160 @@
+---
+title: >-
+  [论文解读] Steering off Course: Reliability Challenges in Steering Language Models
+description: >-
+  [ACL 2025][LLM 其他][语言模型引导] 本文系统性地评估了三种主流的语言模型引导方法（DoLa、功能向量、任务向量）在多达36个模型上的泛化性，发现这些方法存在严重的脆弱性和高方差问题，并揭示了其底层假设的根本缺陷。 语言模型引导（steering）方法作为微调的轻量级替代方案越来越受关注…
+tags:
+  - "ACL 2025"
+  - "LLM 其他"
+  - "语言模型引导"
+  - "激活修补"
+  - "DoLa"
+  - "功能向量"
+  - "可解释性"
+---
+
+# Steering off Course: Reliability Challenges in Steering Language Models
+
+**会议**: ACL 2025  
+**arXiv**: [2504.04635](https://arxiv.org/abs/2504.04635)  
+**代码**: [github](https://github.com/patrickdasilva/steering-off-course)  
+**领域**: LLM/NLP  
+**关键词**: 语言模型引导, 激活修补, DoLa, 功能向量, 可解释性
+
+## 一句话总结
+
+本文系统性地评估了三种主流的语言模型引导方法（DoLa、功能向量、任务向量）在多达36个模型上的泛化性，发现这些方法存在严重的脆弱性和高方差问题，并揭示了其底层假设的根本缺陷。
+
+## 研究背景与动机
+
+语言模型引导（steering）方法作为微调的轻量级替代方案越来越受关注，它通过在推理时修改模型内部激活来实现特定行为的调整，几乎不需要额外数据也不修改模型参数。已有方法被应用于提升事实性、减少有害输出等。
+
+然而，LM引导领域积累了一个**泛化盲点**：绝大多数研究仅在少数几个模型上报告结果。例如DoLa仅测试了Llama 1系列，功能向量仅用GPT-J验证。随着越来越多证据表明引导方法可能脆弱并损害通用能力，迫切需要在更广泛的模型上进行系统性评估。
+
+本文的核心目标：量化三种引导方法在不同模型家族和规模（14个家族、1.5B-70B、最多36个模型）上的泛化能力。
+
+## 方法详解
+
+### 整体框架
+
+作者基于两个流行的可解释性工具——Logit Lens和激活修补（Activation Patching），系统评估了衍生的三种引导方法：
+
+1. **DoLa**（基于Logit Lens）
+2. **功能向量（Function Vectors, FV）**（基于激活修补）
+3. **任务向量（Task Vectors, TV）**（基于激活修补）
+
+### 关键设计
+
+1. **DoLa分析**:
+
+    - DoLa的核心假设：事实知识分布在模型后层，对比最终层与"早熟层"的概率变化可以提升事实性
+    - 早熟层选择：选择与最终层JSD距离最大的候选层
+    - 输出概率更新：p̂(x_t) = softmax(F(q_L, q_P))，其中F计算对数概率比
+    - 作者发现原论文使用F的原始logits而非softmax后的概率来计算指标，这会引入长度偏差
+    - 实验覆盖10个模型、7个家族、两种规模，搜索4种bucket配置和6种α值
+
+2. **功能向量（FV）分析**:
+
+    - 基于"局部化假设"：少量注意力头可以媒介许多ICL任务
+    - 构建过程：计算任务数据集上所有提示的注意力头平均激活，通过因果中介分析选择top-n个头的激活之和
+    - 作者扩展了超参数搜索：n∈{2,16,32,64,128,256,512,1024}，并引入强度乘子λ∈{0.5,1,2,4,8,16,32,64}
+    - 测试36个模型，11个ICL任务
+
+3. **任务向量（TV）分析**:
+
+    - 不依赖局部化或因果分析，直接将ICL提示编码到模型的激活空间
+    - 在推理时用引导向量替换（α=0）特定层的隐藏状态
+    - 仅有一个超参数：注入层ℓ的选择
+
+### 损失函数 / 训练策略
+
+本文不提出新方法，而是对现有方法的系统性评估。评估设置：
+- DoLa：TruthfulQA和FACTOR数据集，6-shot，MC1/MC2/MC3指标
+- FV/TV：11个ICL任务、50个测试样本/任务、记录zero-shot引导后的准确率并与5-shot性能归一化
+
+## 实验关键数据
+
+### 主实验
+
+**DoLa在TruthfulQA上的表现**（使用softmax纠正后的结果）：
+
+| 模型 | Base MC1 | DoLa MC1 | Base MC2 | DoLa MC2 |
+|------|------|----------|------|------|
+| Llama 7B (原文) | 0.26 | 0.32 | 0.41 | 0.64 |
+| Llama 7B (纠正) | 0.26 | 0.32 | 0.41 | 0.52 |
+| Llama 2 7B | 0.29 | 0.29 | 0.43 | 0.44 |
+| Llama 3 8B | 0.32 | 0.32 | 0.49 | 0.49 |
+| Qwen 2 7B | 0.39 | 0.37 | 0.58 | 0.51 |
+| Qwen 2 72B | 0.44 | 0.39 | 0.63 | 0.46 |
+
+纠正指标计算后，Llama 1的DoLa增益大幅缩水。除Llama 1和Pythia外，其余模型几乎无改善甚至性能下降。
+
+**功能向量和任务向量的性能恢复率**（相对5-shot性能的百分比）：
+
+| 方法 | 达到50%性能 | 达到75%性能 | 达到90%性能 | 达到100%性能 |
+|------|------|----------|------|------|
+| FV默认参数 | 47% | 37% | 20% | 12% |
+| FV参数搜索 | 76% | 68% | 52% | 28% |
+| 任务向量 | 69% | 54% | 35% | 16% |
+
+即使在最优超参数下，FV仅52%的模型-任务组合能恢复90%的5-shot性能；TV更差，仅35%。
+
+### 消融实验
+
+| 分析维度 | 关键发现 | 说明 |
+|------|---------|------|
+| λ（FV强度乘子） | 模型偏好差异大 | 有些模型需要λ=1，有些需要λ=16-32 |
+| n（注意力头数量） | 部分任务需要大量头 | eng→[lang]翻译需要n≥64才开始有效 |
+| 注入层ℓ | 最优层在模型和任务间高度变化 | TV对ℓ非常敏感，peak和mean差距大 |
+| base vs post-trained | FV上后训练模型更好；TV上后训练模型更差 | 引导方法间矛盾的后训练效果 |
+| Logit Lens动态 | 正确和错误token在同一层开始尖峰 | 对比早期层几乎无信息 |
+
+### 关键发现
+
+1. **DoLa的假设有缺陷**：作者通过LogitLens分析发现，正确和错误token的概率在同一层开始急剧上升，这意味着对比早期层与最终层无法有效区分正确和错误答案
+2. **DoLa原文指标计算有误**：使用原始logits而非softmax概率来计算指标，引入长度偏差，导致报告的增益被高估
+3. **FV和TV的泛化性极差**：在36个模型上，大量模型-任务组合无法恢复5-shot性能，引导效果高度依赖模型家族、规模和任务
+4. **局部化假设不总成立**：部分任务需要大量注意力头（如512个）才能使FV有效，与"少数头即可"的假设矛盾
+5. **后训练对不同引导方法的影响不一致**：FV受益于指令微调，但TV性能下降，暗示这些方法依赖不同且不稳定的内部机制
+
+## 亮点与洞察
+
+1. **规模化的批判性评估**：不同于大多数仅在2-3个模型上报告成功的工作，本文在14个家族36个模型上进行系统测试，揭示了领域内的"发表偏差"问题
+2. **指标修正的重要性**：发现DoLa原论文的指标计算错误，提醒社区注意实验细节的重要性
+3. **假设验证优先于方法创新**：在提出新方法之前，先验证底层假设是否成立，这种研究范式值得推广
+4. **对可解释性研究的警示**：大量可解释性研究通过博客帖子非正式发布，缺乏严格评估，本文呼吁更严谨的评估标准
+
+## 局限与展望
+
+1. 超参数搜索虽然广泛但不可能穷尽所有组合（如DoLa的bucket组合数为指数级的）
+2. 仅测试了decoder-only架构，未覆盖encoder-decoder模型
+3. 未能确定性地验证脆弱性的根本原因（预训练数据、架构差异等假设均未最终确认）
+4. FV/TV实验中每个任务仅50个测试样本，统计变异性可能较大
+5. 未提出替代解决方案，停留在"问题揭示"层面
+
+## 相关工作与启发
+
+本文与模型编辑（ROME/MEMIT）的脆弱性研究高度相关，两者都揭示了"精准干预"方法的可靠性问题。此外，SAE引导（Durmus et al., 2024）和对比激活加法（Rimsky et al., 2024）也被发现存在类似脆弱性。该研究对于任何基于模型内部机制进行推理时干预的方法都是重要的警示。未来研究应在发布引导方法时，标配大规模、多模型的评估实验。
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ 虽非提出新方法，但大规模系统性评估本身具有独到价值
+- 实验充分度: ⭐⭐⭐⭐⭐ 36个模型、14个家族、广泛超参数搜索、多任务评估，覆盖极为全面
+- 写作质量: ⭐⭐⭐⭐ 结构清晰，分析深入，但内容偏"负面结果"可能降低部分读者兴趣
+- 价值: ⭐⭐⭐⭐⭐ 对引导方法领域的重要警示，对社区的实验规范化具有推动作用
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ACL 2025\] Multi-Attribute Steering of Language Models via Targeted Intervention](multi_attribute_steering.md)
+- [\[ACL 2025\] CogSteer: Cognition-Inspired Selective Layer Intervention for Efficiently Steering Large Language Models](cogsteer_cognition-inspired_selective_layer_intervention_for_efficiently_steerin.md)
+- [\[ICLR 2026\] Fine-Grained Activation Steering: Steering Less, Achieving More](../../ICLR2026/llm_nlp/fine-grained_activation_steering_steering_less_achieving_more.md)
+- [\[ACL 2025\] Beyond Prompt Engineering: Robust Behavior Control in LLMs via Steering Target Atoms](beyond_prompt_engineering_robust_behavior_control_in_llms_via_steering_target_at.md)
+- [\[ACL 2025\] Contrastive Prompting Enhances Sentence Embeddings in LLMs through Inference-Time Steering](contrastive_prompting_embeddings.md)
+
+</div>
+
+<!-- RELATED:END -->

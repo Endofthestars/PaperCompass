@@ -1,0 +1,186 @@
+---
+title: >-
+  [论文解读] Estimating 2D Camera Motion with Hybrid Motion Basis
+description: >-
+  [ICCV 2025][3D视觉][相机运动估计] 提出 CamFlow，通过混合运动基（12 个物理基 + 随机噪声基）表示复杂的 2D 相机运动，揭示了多个单应性流场叠加的非线性特性，结合基于 Laplace 分布的概率损失函数，在标准和跨数据集零样本条件下均大幅超越现有单应性和 meshflow 方法。
+tags:
+  - "ICCV 2025"
+  - "3D视觉"
+  - "相机运动估计"
+  - "单应性"
+  - "运动基"
+  - "光流"
+  - "视频稳定"
+---
+
+# Estimating 2D Camera Motion with Hybrid Motion Basis
+
+**会议**: ICCV 2025  
+**arXiv**: [2507.22480](https://arxiv.org/abs/2507.22480)  
+**代码**: [lhaippp.github.io/CamFlow](https://lhaippp.github.io/CamFlow/)  
+**领域**: 3D视觉  
+**关键词**: 相机运动估计, 单应性, 运动基, 光流, 视频稳定
+
+## 一句话总结
+
+提出 CamFlow，通过混合运动基（12 个物理基 + 随机噪声基）表示复杂的 2D 相机运动，揭示了多个单应性流场叠加的非线性特性，结合基于 Laplace 分布的概率损失函数，在标准和跨数据集零样本条件下均大幅超越现有单应性和 meshflow 方法。
+
+## 研究背景与动机
+
+### 问题定义
+
+2D 相机运动估计是将 3D 相机运动（旋转 $\mathbf{R}$ + 平移 $\mathbf{t}$）在 2D 图像平面上的投影进行恢复的基础视觉任务：
+$$\mathbf{M} = \mathbf{K}(\mathbf{R} + \mathbf{t}\frac{\mathbf{n}^T}{d})\mathbf{K}^{-1}$$
+
+由于场景中存在多个深度和平面，不同区域经历不同的变换，导致运动本质上是非线性的。
+
+### 已有方法的不足
+
+**单应性方法**（BasesHomo、HomoGAN）：只能对齐单一平面，无法处理视差和多平面场景
+
+**Meshflow 方法**：将图像分成 $N \times N$ 网格，每个格子估计局部单应性，但增加网格数会带来优化困难
+
+**关键假设错误**：BasesHomo 假设单应性可由 8 个基线性表示，但**多个单应性流场的叠加是非线性的**——两个单应性的流相加后，无法用任何单一单应性表示（论文通过实验严格证明）
+
+### 核心 idea
+
+利用 Taylor 展开将单应性运动分解为 12 个物理基（$\{1, x, y, xy, x^2, y^2\}$ 在 x 和 y 方向），再通过随机采样单应性矩阵并 SVD 提取正交分量作为额外的随机基，两者共同构成高维混合运动基空间来表达复杂非线性相机运动。
+
+## 方法详解
+
+### 整体框架
+
+CamFlow 框架：输入图像对 → 多尺度特征金字塔 → Motion Estimation Transformer (MET) → 预测物理基和随机基的权重 → 线性组合运动基得到双向密集运动场 → 置信度 mask 网络过滤动态物体 → 概率损失优化。
+
+### 关键设计
+
+#### 1. 物理运动基（12 个）
+
+- **功能**：从单应性变换的 Taylor 展开中推导基本运动模式
+- **核心推导**：对单应性诱导的位移 $\Delta x$ 在 $(0,0)$ 处做二阶 Taylor 展开：
+  $$\Delta x \approx w_1 \cdot 1 + w_2 \cdot x + w_3 \cdot y + w_4 \cdot xy + w_5 \cdot x^2 + w_6 \cdot y^2$$
+  $\Delta y$ 同理，共得到 12 个基函数：$\mathbf{F} = \{(b_i, 0)\} \cup \{(0, b_i)\}$，其中 $b = [1, x, y, xy, x^2, y^2]$
+- **设计动机**：这 12 个基涵盖了平移、旋转、缩放和透视变换等基本几何变换
+
+#### 2. 随机运动基
+
+- **功能**：通过随机采样捕捉高阶运动模式
+- **核心方法**：生成 $K$ 个随机 $3 \times 3$ 矩阵（元素 $\sim \mathcal{N}(0,1)$，$h_9=1$），转换为流场后做 SVD 提取 $N-12$ 个正交分量
+- **设计动机**：完整的相机运动空间是无限维的（高阶 Taylor 项），随机基利用了高维空间中随机向量近乎正交的性质来近似覆盖
+
+#### 3. 混合概率损失
+
+- **功能**：基于 Laplace 分布建模运动估计的不确定性
+- **核心公式**：对水平和垂直分量分别建模为 Laplace 分布，置信度 mask $\mathbf{d}$ 控制方差
+- **双重损失**：
+    - 运动监督损失 $\ell_{NLL_m}$：使用伪标签的负对数似然
+    - 光度损失 $\ell_{NLL_p}$：warped 特征一致性的负对数似然
+    - 自适应平衡：$\ell_{overall} = \ell_{NLL_p} + \mathbf{w} \times \frac{|\ell_{NLL_p}|}{|\ell_{NLL_m}|} \cdot \ell_{NLL_m}$
+- **设计动机**：光度损失提供细粒度约束，运动损失提供粗粒度引导，Laplace 分布比高斯更鲁棒
+
+### 损失函数 / 训练策略
+
+- 在 CAHomo 数据集（460K 训练对）上训练
+- 零样本测试在 GHOF 和自建的 GHOF-Cam 基准上进行
+- GHOF-Cam 通过 SAM 检测动态物体并 mask，隔离纯相机运动
+
+## 实验关键数据
+
+### 主实验
+
+**CAHomo 测试集 PME（Point Matching Error）↓**
+
+| 方法 | 类型 | AVG | RE | LT | LL | SF | LF |
+|------|------|-----|----|----|----|----|-----|
+| SIFT+RANSAC | 传统 | 1.41 | 0.30 | 1.34 | 4.03 | 0.81 | 0.57 |
+| SPSG+MAGSAC | 传统 | 0.63 | 0.36 | 0.79 | 0.70 | 0.71 | 0.70 |
+| DMHomo | 监督 | 0.31 | 0.19 | 0.33 | 0.40 | 0.38 | 0.28 |
+| HomoGAN | 无监督 | 0.39 | 0.22 | 0.41 | 0.57 | 0.44 | 0.31 |
+| **CamFlow** | 无监督 | **0.32** | **0.19** | **0.32** | **0.39** | **0.39** | 0.31 |
+
+**GHOF-Cam 零样本 EPE ↓**
+
+| 方法 | AVG | RE | FOG | LL | RAIN | SNOW |
+|------|-----|----|----|-----|------|------|
+| BasesHomo | 1.74 | 1.39 | 0.97 | 4.12 | 0.66 | 1.58 |
+| MeshFlow | 2.15 | 1.09 | 2.21 | 5.57 | 0.44 | 1.69 |
+| **CamFlow** | **1.10** | **1.08** | **0.74** | **2.15** | **0.46** | **1.05** |
+
+**GHOF 零样本 PME ↓**
+
+| 方法 | AVG | RE | FOG | LL | RAIN | SNOW |
+|------|-----|----|----|-----|------|------|
+| RealSH | 1.72 | 1.60 | 0.88 | 4.42 | 0.43 | 1.28 |
+| HomoGAN | 1.95 | 1.73 | 0.60 | 3.95 | 0.47 | 3.02 |
+| **CamFlow** | **1.23** | **1.15** | **0.96** | **2.69** | **0.40** | **0.93** |
+
+### 消融实验
+
+**运动基数量消融**
+
+| 基数量 | CAHomo PME | GHOF PME | GHOF-Cam EPE | 推理时间 |
+|--------|----------|---------|-------------|---------|
+| 8 (仅物理) | 0.37 | 1.68 | 1.45 | 76.42ms |
+| 12 (物理) | 0.36 | 1.54 | 1.23 | 75.38ms |
+| 24 (混合) | **0.33** | **1.23** | **1.10** | 79.63ms |
+| 200 | 0.33 | 1.27 | 1.07 | 99.28ms |
+
+**混合损失消融**
+
+| 运动损失 | 光度损失 | CAHomo | GHOF | GHOF-Cam |
+|---------|---------|--------|------|----------|
+| ✓ | | 0.41 | 2.21 | 2.13 |
+| | ✓ | 0.36 | 1.58 | 1.42 |
+| ✓ | ✓ | **0.33** | **1.23** | **1.10** |
+
+### 关键发现
+
+- 零样本泛化是最突出的优势：GHOF 上相比最佳监督方法 RealSH 降低 PME 28.5%，相比最佳无监督方法 HomoGAN 降低 36.9%
+- 24 个混合基是最优平衡点：继续增加到 200 基仅有边际提升，但推理时间增加 24.7%
+- 物理基从 8 扩展到 12（加入二阶项）在所有数据集上都有提升，验证了二阶 Taylor 项的必要性
+- 置信度 mask 有效识别了动态物体区域（如行人、车辆），提升了相机运动估计的鲁棒性
+- 感知质量指标上（PSNR/SSIM/LPIPS），CamFlow 接近 GT 单应性水平
+
+## 亮点与洞察
+
+1. **非线性叠加的关键观察**：严格证明了多个单应性流场叠加后不再是单应性——这打破了 BasesHomo 的 8 维线性基假设，为更高维运动基提供了理论基础
+2. **物理+随机基的巧妙组合**：物理基捕捉已知的几何变换，随机基通过 SVD 正交化覆盖未知的高阶模式，两者互补
+3. **GHOF-Cam 基准**：通过 SAM 自动 mask 动态物体，首次提供了纯相机运动的评测数据，对社区有长期价值
+4. **概率损失的简洁性**：用 Laplace 分布统一处理了运动监督和光度一致性，避免了复杂的多损失调权
+
+## 局限与展望
+
+1. **训练数据依赖 CAHomo**：尽管泛化性强，但训练集的多样性可能仍是瓶颈
+2. **24 基的表达能力上限**：对极端视差或极端旋转场景可能不足
+3. **伪标签质量**：运动监督损失依赖其他方法生成的伪标签，可能引入噪声
+4. **未验证视频稳定的端到端效果**：虽然动机来自视频稳定，但仅评估了运动估计精度
+5. **大位移场景**：Taylor 展开在远离原点处的近似精度下降
+
+## 相关工作与启发
+
+- BasesHomo 开创了运动基学习的方向（8 维线性基），CamFlow 将其扩展到非线性高维空间
+- MeshFlow 和 MeshHomoGAN 是多平面运动的代表方法，但受限于网格分辨率
+- HomoGAN 使用 GAN 损失和 Transformer 进行粗到细精化，CamFlow 用更简洁的概率框架达到更好效果
+
+## 评分
+
+- **新颖性**: ⭐⭐⭐⭐ — 非线性叠加观察+混合运动基的组合是有创意的贡献
+- **实验充分度**: ⭐⭐⭐⭐⭐ — 3 个基准、多种方法对比、密集/稀疏运动双评估、感知质量评估、全面消融
+- **写作质量**: ⭐⭐⭐⭐ — 动机清晰，理论推导简洁
+- **价值**: ⭐⭐⭐⭐ — 对视频稳定、单应性估计社区有直接价值，GHOF-Cam 基准有长期意义
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICCV 2025\] Image as an IMU: Estimating Camera Motion from a Single Motion-Blurred Image](image_as_an_imu_estimating_camera_motion_from_a_single_motion-blurred_image.md)
+- [\[ICCV 2025\] Easi3R: Estimating Disentangled Motion from DUSt3R Without Training](easi3r_estimating_disentangled_motion_from_dust3r_without_training.md)
+- [\[ICCV 2025\] CoMoGaussian: Continuous Motion-Aware Gaussian Splatting from Motion-Blurred Images](comogaussian_continuous_motionaware_gaussian_splatting_from.md)
+- [\[ICCV 2025\] Global Motion Corresponder for 3D Point-Based Scene Interpolation under Large Motion](global_motion_corresponder_for_3d_point-based_scene_interpolation_under_large_mo.md)
+- [\[CVPR 2025\] Estimating Body and Hand Motion in an Ego-sensed World](../../CVPR2025/3d_vision/estimating_body_and_hand_motion_in_an_ego-sensed_world.md)
+
+</div>
+
+<!-- RELATED:END -->

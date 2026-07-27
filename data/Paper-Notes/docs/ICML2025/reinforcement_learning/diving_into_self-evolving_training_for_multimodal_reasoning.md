@@ -1,0 +1,211 @@
+---
+title: >-
+  [论文解读] Diving into Self-Evolving Training for Multimodal Reasoning
+description: >-
+  [ICML 2025][强化学习][自演化训练] 通过强化学习视角重新审视多模态推理中的自演化训练（Self-Evolving Training），系统性地分析训练方法、奖励模型和提示变体三大关键因素，并提出基于 Reward-Pass@K 的自适应温度调节机制来缓解训练饱和问题，最终形成 M-STaR 框架，在多个基准上取得一致提升。
+tags:
+  - "ICML 2025"
+  - "强化学习"
+  - "自演化训练"
+  - "多模态推理"
+  - "过程奖励模型"
+  - "探索-利用平衡"
+  - "温度自适应"
+---
+
+# Diving into Self-Evolving Training for Multimodal Reasoning
+
+**会议**: ICML 2025  
+**arXiv**: [2412.17451](https://arxiv.org/abs/2412.17451)  
+**代码**: [https://mstar-lmm.github.io](https://mstar-lmm.github.io)  
+**领域**: 强化学习  
+**关键词**: 自演化训练, 多模态推理, 过程奖励模型, 探索-利用平衡, 温度自适应
+
+## 一句话总结
+
+通过强化学习视角重新审视多模态推理中的自演化训练（Self-Evolving Training），系统性地分析训练方法、奖励模型和提示变体三大关键因素，并提出基于 Reward-Pass@K 的自适应温度调节机制来缓解训练饱和问题，最终形成 M-STaR 框架，在多个基准上取得一致提升。
+
+## 研究背景与动机
+
+多模态推理是智能体、机器人、自动驾驶等领域的基础能力。然而，多模态场景下人类标注的高质量思维链（CoT）数据极为稀缺，严重制约了大型多模态模型（LMM）的推理能力提升。
+
+**自演化训练**（Self-Evolving Training）——模型迭代地从自身输出中学习——成为解决这一问题的关键范式。但现有工作存在几个核心痛点：
+
+**研究空白**：自演化训练的探索主要集中在纯文本领域（如 STaR、ReST、ReSTEM），其在多模态推理的系统性研究几乎空白
+
+**缺乏统一框架**：多模态场景中的少量尝试缺乏系统化的设计原则
+
+**性能饱和**：训练过程中不可避免地出现探索能力下降，导致性能增长停滞
+
+本文的核心动机是：**能否通过 RL 的视角系统性地理解和改进多模态自演化训练？**
+
+## 方法详解
+
+### 整体框架
+
+作者将自演化训练建模为一个通用的 RL 框架。给定奖励函数 $\mathcal{R}$，策略模型 $\pi_\theta$ 的目标是最大化奖励期望：
+
+$$\pi_\theta^{t+1} = \arg\max_{\pi_\theta^t} \sum_i^L \mathbb{E}_{x,o,a^* \sim \mathcal{D}, \hat{y}_i \sim \pi_\theta^t[\cdot|x,o]}[\mathcal{R}(a^*, \hat{y}_i)]$$
+
+框架包含两个交替执行的阶段：
+- **Generate**：当前策略模型采样生成多个候选响应
+- **Improve**：利用奖励信号筛选高质量响应，用 SFT loss 训练策略模型
+
+在此框架下，作者识别出三个关键设计维度：**训练方法（$\mathcal{T}$）、奖励模型（$\mathcal{R}$）、提示变体（$\mathcal{P}$）**，并通过大规模控制实验逐一研究。
+
+### 关键设计
+
+#### 设计维度一：训练方法（Continuous Self-Evolving）
+
+现有迭代训练方法的主要区别在于模型初始化策略：
+- **Iterative RFT**：每次迭代从上一个 checkpoint 初始化，优化器重置
+- **ReSTEM**：每次迭代从初始 checkpoint 初始化，防止过拟合
+
+作者观察到一个关键 gap：当迭代间隔足够小、且优化器状态在迭代间继承时，迭代训练就趋近于在线 RL。基于此洞察，提出 **Continuous Self-Evolving**：
+
+- 从上一个 checkpoint 初始化模型（$\pi_\theta^t$）
+- **继承优化器状态和学习率调度器**（关键创新点），使优化过程在全局范围内连续
+- 引入可调的迭代间隔（iteration interval），控制每次迭代处理数据量的比例
+
+迭代间隔的实验表明 **25% 是最优比例**：过大则趋近离线训练、模型无法及时适配自身分布变化；过小则切换太频繁导致训练不稳定。
+
+#### 设计维度二：过程奖励模型（Process Reward Model）
+
+传统自演化训练使用二元精确匹配奖励 $\mathcal{R}(\hat{y}_i) = \mathbb{1}(\hat{a}_i = a^*)$，仅看最终答案对错，忽略推理过程质量。作者训练了**首个多模态过程奖励模型（Multimodal PRM）**，并将其集成到训练流程中：
+
+$$\mathcal{R}(\hat{y}_i) = \mathcal{H}(\mathbb{1}(a^* = \hat{a}_i) \times \mathcal{R}_p(\hat{y}_i))$$
+
+其中过程奖励对每个推理步骤评分，取最小值作为整体分数：
+
+$$\mathcal{R}_p(\hat{y}_i) = \min(f(s_i^0), f(s_i^1), \ldots, f(s_i^m))$$
+
+PRM 的使用策略上，作者对比了两种方案：
+- **Top-K**：从正确响应中选取 PRM 分数最高的 K 个
+- **阈值过滤（$>\alpha$）**：过滤低于阈值的响应
+
+**关键发现**：PRM 作为**重排序器（Reranker）**远优于作为验证器（Verifier）。具体来说：
+- PRM 在 Best-of-N 和加权投票指标上甚至不如简单的多数投票
+- 但 Top-2 选出的响应具有更少的推理步骤、更高的问题相关性
+- 阈值过滤方式倾向于要么保留全部要么过滤全部，降低了多样性
+
+Top-2 是最佳选择，平衡了响应质量和多样性。
+
+#### 设计维度三：提示变体（Prompt Variation）
+
+作者研究了是否引入无标注数据可以提升训练效果：
+
+- **Skyline 实验**：使用 oracle 答案信号的无标注提示 → OOD 提升但 ID 下降，存在遗忘风险
+- **使用加权投票伪标签**的无标注提示 → 在 PRM 泛化性不足时反而伤害性能
+- **引入时机实验**：从训练 75% 后才引入无标注数据效果最好，但主要因为参与度低
+
+**核心结论**：在 PRM 泛化能力有限的情况下，无标注提示会使策略模型分布偏移，最终选择仅使用有标注数据。
+
+### 损失函数 / 训练策略
+
+#### 训练动态分析与自适应温度调节
+
+作者提出监控三个指标来理解训练动态：
+- **Greedy Accuracy**：贪心解码准确率，逐步提升
+- **Pass@K**：K 次采样中至少一次正确的比例，反映**探索能力**
+- **Reward-Pass@2**（新指标）：PRM 排序的 Top-2 响应中存在正确答案的比例，反映**利用效率**
+
+关键发现：Pass@K 随训练持续下降（探索能力衰退），而 Reward-Pass@2 快速饱和。更高的采样温度能延缓探索衰退。
+
+基于此，提出**自适应温度调节机制**：
+- 每两个迭代自动调整采样温度
+- 温度范围 0.3 到 1.6，间隔 0.1
+- 选择使验证集 Reward-Pass@2 最大的温度
+- 动态平衡探索与利用，缓解性能饱和
+
+#### M-STaR 最终方案
+
+将所有最佳实践整合为 M-STaR（Multimodal Self-evolving Training for Reasoning）：
+1. Continuous Self-Evolving 训练方法（25% 迭代间隔）
+2. PRM Top-2 重排序选择高质量训练数据
+3. 仅使用有标注数据
+4. Reward-Pass@2 引导的自适应温度调节
+
+## 实验关键数据
+
+### 主实验
+
+| 模型 | 基准 | Base | +warmup | M-STaR | 提升 |
+|------|------|------|---------|--------|------|
+| MiniCPM-V-2.5 (8B) | MathVista | 52.4 | 52.8 | **59.5** | +6.7 |
+| Phi-3.5-Vision (4B) | MathVista | 46.5 | 49.3 | **54.5** | +5.2 |
+| InternVL2 (2B) | MathVista | 46.4 | 47.6 | **50.3** | +2.7 |
+| MiniCPM-V-2.5 | 5 基准平均 | 55.0 | 57.7 | **61.6** | +3.9 |
+| Phi-3.5-Vision | 5 基准平均 | 46.5 | 55.3 | **59.2** | +3.9 |
+| InternVL2-2B | 5 基准平均 | 26.2 | 52.8 | **53.3** | +0.5 |
+
+### 消融实验
+
+| 配置 | MathV360K (ID) | MathVista (OOD) | 说明 |
+|------|----------------|-----------------|------|
+| SFT 直接训练 | 44.3 | 54.8 | 无迭代的基线 |
+| Iterative RFT | 42.3 | 55.7 | 从 last ckpt 初始化，无连续优化 |
+| ReSTEM | 42.3 | 55.1 | 从初始 ckpt 初始化 |
+| Cont. Self-Evolving (100%) | 42.2 | 56.7 | 连续优化，全量数据间隔 |
+| Cont. Self-Evolving (25%) | **43.1** | **57.2** | 最优间隔 |
+| + PRM Top-2 | **45.3** | **59.2** | PRM 重排序提升显著 |
+| + Reward-Pass@2 自适应 | — | **59.5** | 动态温度进一步提升 |
+
+### 关键发现
+
+1. **连续优化 >> 重置优化器**：继承优化器状态和学习率调度器使训练更平滑，显著提升 OOD 性能
+2. **PRM 是 Reranker 而非 Verifier**：PRM 在 Best-of-N 上甚至劣于多数投票，但其选出的响应推理步骤更少、更相关
+3. **无标注数据需谨慎**：缺乏精确奖励信号时引入无标注数据会偏移策略分布
+4. **探索能力持续衰退**：Pass@K 随训练单调下降，是性能饱和的根源
+5. **模型规模影响泛化**：8B 模型在全部 5 个基准上都改善，2B 模型在感知密集型任务上泛化困难
+
+## 亮点与洞察
+
+- **RL 视角统一框架**：将自演化训练的多种变体（STaR、ReST、RFT 等）统一到 RL 框架下，使设计空间分析系统化
+- **Continuous Self-Evolving 的简洁性**：通过继承优化器状态这一极简改动就弥补了迭代训练与在线 RL 的 gap
+- **PRM 角色的深刻洞察**：PRM 不擅长判对错（验证），但擅长从正确答案中挑最好的（重排序），这一发现对后续 PRM 应用研究有指导意义
+- **Reward-Pass@K 指标**：巧妙地将探索（模型能否产生好答案）和利用（奖励模型能否选出好答案）统一到一个指标中
+- **自适应温度机制**：用 Reward-Pass@2 作为信号自动调温，原理自然且实现简单
+
+## 局限与展望
+
+1. **PRM 质量瓶颈**：当前多模态 PRM 的验证能力有限（不如多数投票），如何获取更高质量的步骤级标注是核心挑战
+2. **小模型泛化差**：2B 模型在部分基准上甚至出现负增长，自演化训练对模型容量有隐式要求
+3. **温度调节粒度粗**：每两个迭代调一次、从离散候选中选，可以探索更细粒度的连续自适应
+4. **仅适用于有标注数据**：无标注数据的利用仍未解决，限制了框架的可扩展性
+5. **奖励模型未联合优化**：固定 PRM 作为控制变量，联合训练 PRM 与策略模型可能带来更大提升
+
+## 相关工作与启发
+
+- **STaR / ReSTEM**：本文的核心基线方法，M-STaR 在此基础上引入连续优化 + PRM + 动态温度
+- **DeepSeek-R1**：通过纯 RL 激励推理能力，与本文的 RL 框架思路一致，但 R1 面向文本域
+- **Process Reward Model**（Lightman et al. 2023; Wang et al. 2024）：本文首次将 PRM 拓展到多模态推理领域
+- **启发**：探索-利用平衡是 RL 永恒主题，本文提出的 Reward-Pass@K 为监控自演化训练动态提供了实用工具；PRM 作为 Reranker 的发现提示我们重新审视奖励模型在训练中的真正作用
+
+## 评分
+
+- 新颖性: ⭐⭐⭐⭐ — RL 视角统一框架和 Reward-Pass@K 指标有新意，但各组件并非全新
+- 实验充分度: ⭐⭐⭐⭐⭐ — 三因素逐一控制实验、三个模型尺寸、五个基准、详尽的动态分析
+- 写作质量: ⭐⭐⭐⭐⭐ — 结构清晰、逻辑紧密、从分析到方案的推导自然流畅
+- 价值: ⭐⭐⭐⭐ — 为多模态自演化训练提供了系统性指南，但部分结论可能随 PRM 进步而改变
+
+## 评分
+- 新颖性: 待评
+- 实验充分度: 待评
+- 写作质量: 待评
+- 价值: 待评
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[ICML 2025\] A Theoretical Study of (Hyper) Self-Attention through the Lens of Interactions: Representation, Training, Generalization](a_theoretical_study_of_hyper_self-attention_through_the_lens_of_interactions_rep.md)
+- [\[ICLR 2026\] SPELL: Self-Play Reinforcement Learning for Evolving Long-Context Language Models](../../ICLR2026/reinforcement_learning/spell_self-play_reinforcement_learning_for_evolving_long-context_language_models.md)
+- [\[ACL 2026\] Visually-Guided Policy Optimization for Multimodal Reasoning](../../ACL2026/reinforcement_learning/visually-guided_policy_optimization_for_multimodal_reasoning.md)
+- [\[ICML 2026\] Metis: Learning to Jailbreak LLMs via Self-Evolving Metacognitive Policy Optimization](../../ICML2026/reinforcement_learning/metis_learning_to_jailbreak_llms_via_self-evolving_metacognitive_policy_optimiza.md)
+- [\[ICCV 2025\] R1-Onevision: Advancing Generalized Multimodal Reasoning through Cross-Modal Formalization](../../ICCV2025/reinforcement_learning/r1-onevision_advancing_generalized_multimodal_reasoning_through_cross-modal_form.md)
+
+</div>
+
+<!-- RELATED:END -->

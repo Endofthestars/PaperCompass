@@ -1,0 +1,134 @@
+---
+title: >-
+  [论文解读] Uncertainty Under the Curve: A Sequence-Level Entropy Area Metric for Reasoning LLMs
+description: >-
+  [AAAI 2026][LLM 其他][熵面积分数] 提出 Entropy Area Score (EAS)——通过单次前向传播积分 token 级预测熵来量化推理 LLM 的不确定性。EAS 无需外部模型或重复采样，与答案熵强相关（Pearson r=0.82），用于训练数据选择时比 Pass Rate 过滤多提升 1.2-2.3% Pass@1，是高效可解释的 LLM 不确定性工具。
+tags:
+  - "AAAI 2026"
+  - "LLM 其他"
+  - "熵面积分数"
+  - "不确定性估计"
+  - "token级熵"
+  - "训练数据选择"
+  - "推理LLM"
+---
+
+# Uncertainty Under the Curve: A Sequence-Level Entropy Area Metric for Reasoning LLMs
+
+**会议**: AAAI 2026  
+**arXiv**: [2508.20384](https://arxiv.org/abs/2508.20384)  
+**代码**: 有  
+**领域**: LLM/NLP  
+**关键词**: 熵面积分数, 不确定性估计, token级熵, 训练数据选择, 推理LLM
+
+## 一句话总结
+提出 Entropy Area Score (EAS)——通过单次前向传播积分 token 级预测熵来量化推理 LLM 的不确定性。EAS 无需外部模型或重复采样，与答案熵强相关（Pearson r=0.82），用于训练数据选择时比 Pass Rate 过滤多提升 1.2-2.3% Pass@1，是高效可解释的 LLM 不确定性工具。
+
+## 研究背景与动机
+
+**领域现状**：推理 LLM（如 DeepSeek-R1、Qwen-QWQ）在数学/科学推理上取得进展，但输出对评估条件（种子、温度、prompt）敏感，分数波动大。不确定性量化是可靠部署的关键。
+
+**现有痛点**：
+   - 外部方法（训练独立不确定性模型）需额外数据和计算
+   - 基于采样方法（Self-Consistency）需多次推理，成本为 K 倍
+   - Token 级概率（perplexity）是最终答案的代理，不直接测量推理过程的不确定性
+
+**核心矛盾**：需要单次前向传播、无外部依赖、可解释的不确定性度量——现有方法要么昂贵（多次采样）要么不够细粒度。
+
+**本文目标** 设计一个从模型自身 token 级熵提取序列级不确定性的高效度量。
+
+**切入角度**：推理 LLM 的 token 级熵轨迹反映模型的内部"犹豫程度"——低熵=确信、高熵=不确定。积分整条轨迹得到序列级不确定性。
+
+**核心 idea**：EAS = token 级预测熵的曲线下面积 = 单前向传播的序列级不确定性度量。
+
+## 方法详解
+
+### 整体框架
+给定推理 LLM 生成的序列 $S = (t_1, ..., t_T)$，对每个位置 $t$ 计算 top-K token 的预测熵 $\mathcal{H}_t = -\sum P_t(v)\log_2 P_t(v)$（K=20 覆盖 99.87% 概率质量），然后 $\text{EAS}(S) = \sum_{t=1}^{T-1} \mathcal{H}_t$。
+
+### 关键设计
+
+1. **Token 级熵计算**:
+
+    - 功能：捕捉每个生成步骤的不确定性
+    - 核心思路：用 top-20 token 近似全词表熵，误差 <4.70%（因为概率质量高度集中在少数 token 上）
+    - 设计动机：全词表（128K）熵计算成本高，top-K 近似保持精度同时大幅降低计算
+
+2. **曲线下面积积分**:
+
+    - 功能：将 token 级信号聚合为序列级度量
+    - 核心思路：直接求和 T 个时间步的熵值——面积积分保留了"持续高熵"和"短暂高熵"的区别
+    - 设计动机：持续高熵表示整体不确定，短暂高熵可能只是局部困难——积分自然区分两者
+
+3. **训练数据选择应用**:
+
+    - 功能：用 EAS 识别高潜力训练样本
+    - 核心思路："高潜力"= 中等 EAS 值——模型有内部挣扎但不完全迷失。过滤极低和极高 EAS 的样本
+    - 设计动机：比 Pass Rate（需多次采样判断正确性）更高效——单次前向传播即可
+
+### 损失函数 / 训练策略
+- 无需训练——推理时度量
+- 用于数据选择时，在相同样本预算下比 Pass Rate 更优
+
+## 实验关键数据
+
+### 主实验
+
+| 模型/数据集 | EAS Pearson r | 最佳基线 r |
+|-----------|-------------|----------|
+| Qwen-14B / AIME | **0.8237** | 0.65 |
+| DS-R1-Qwen-14B / GPQA | **0.5968** | 0.42 |
+
+### 消融：训练数据选择
+
+| 方法 | Qwen-14B Pass@1 提升 | LLaMA-8B Pass@1 提升 |
+|------|---------------------|---------------------|
+| Pass Rate 过滤 | 基线 | 基线 |
+| **EAS 过滤** | **+1.2-2.3%** | **+2.1-2.3%** |
+
+### 关键发现
+- **EAS 与答案熵强相关**（r=0.82）但计算成本仅为 1/4（单次 vs 4 次推理）
+- **中等 EAS 的样本对训练最有价值**——模型正在「有意义地挣扎」
+- **top-20 近似足够精确**：误差 <4.70%，覆盖 99.87% 概率
+- **对自由文本任务不适用**：EAS 假设答案可二值判断正确性
+
+## 亮点与洞察
+- **「熵轨迹是模型内心活动的窗口」**——低熵序列=模型确定，高熵序列=模型犹豫。直觉优雅
+- **单前向传播 > 4 次重复采样**的效率优势使 EAS 可用于大规模数据管线
+- 「高潜力」样本概念对课程学习和主动学习有启发
+
+## 局限与展望
+- 仅适用于有明确正确答案的任务（数学/科学 QA）
+- 局部熵信号不能捕捉全局结构不确定性
+- 未与 conformal prediction 等理论校准方法对比
+
+## 相关工作与启发
+- **vs Self-Consistency**：多次采样投票。EAS 单次前传更高效
+- **vs P(True)**：需额外提示。EAS 从生成过程直接提取
+- EAS 可作为 RL 的 reward signal（高 EAS 区域需要更多训练）
+
+## 评分
+- 新颖性: ⭐⭐⭐⭐ 熵面积积分简洁，训练数据选择应用巧妙
+- 实验充分度: ⭐⭐⭐⭐ 多模型多任务+数据选择+近似误差分析
+- 写作质量: ⭐⭐⭐⭐ 直觉清晰
+- 价值: ⭐⭐⭐⭐ 对推理 LLM 不确定性量化和数据选择有实用价值
+
+## 补充说明
+- 序列级熔面积指标比单点熵更能捕捉推理过程中的不确定性动态，可作为 RL 训练中的辅助信号
+- 与过程奖励模型（PRM）结合可实现更精细的步骤级不确定性估计
+
+<!-- RELATED:START -->
+
+<div class="related-papers" markdown="1">
+
+## 相关论文
+
+- [\[AAAI 2026\] TransMamba: A Sequence-Level Hybrid Transformer-Mamba Language Model](transmamba_a_sequence-level_hybrid_transformer-mamba_language_model.md)
+- [\[AAAI 2026\] Quantifying Conversational Reliability of Large Language Models under Multi-Turn Interaction](quantifying_conversational_reliability_of_large_language_models_under_multi-turn.md)
+- [\[NeurIPS 2025\] Decoupled Entropy Minimization](../../NeurIPS2025/llm_nlp/decoupled_entropy_minimization.md)
+- [\[ACL 2026\] FastDiSS: Few-step Match Many-step Diffusion Language Model on Sequence-to-Sequence Generation](../../ACL2026/llm_nlp/fastdiss_few-step_match_many-step_diffusion_language_model_on_sequence-to-sequen.md)
+- [\[AAAI 2026\] Collaborative LLM Numerical Reasoning with Local Data Protection](collaborative_llm_numerical_reasoning_with_local_data_protection.md)
+
+</div>
+
+<!-- RELATED:END -->
