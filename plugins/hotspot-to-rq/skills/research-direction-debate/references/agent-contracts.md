@@ -89,6 +89,12 @@ Set the delegation tool to a clean context. When the tool exposes
 the semantic equivalent on other tools. Never pass the full user conversation,
 unpublished Judge reasoning, or unrelated candidate packets.
 
+On Codex, generic delegated tasks inherit the runtime's available tool surface;
+the clean-context and role restrictions are model-level rather than a technical
+tool whitelist. Follow `codex-port.md`: every non-CONTROL role receives only
+the canonical absolute evidence-capsule path in `allowed_artifacts`. Source
+paths recorded inside that capsule are provenance labels, not read authority.
+
 ## Orchestrator
 
 The main agent is the only orchestrator.

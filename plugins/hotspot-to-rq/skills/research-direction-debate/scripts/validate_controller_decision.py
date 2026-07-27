@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import sys
@@ -327,9 +328,15 @@ DISPATCH_KEYS = {
     "round",
     "depends_on_packet_ids",
 }
+CLAUDE_TRANSPORT_BINDING_KEYS = {
+    "transport_path",
+    "transport_sha256",
+}
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CODE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_CAPSULE_IO: Any | None = None
+_SESSION_VALIDATOR: Any | None = None
 
 
 class StrictJSONError(ValueError):
@@ -342,6 +349,11 @@ def is_int(value: Any) -> bool:
 
 def nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def list_or_empty(value: Any) -> list[Any]:
+    """Return malformed collection fields as empty after validation reports them."""
+    return value if isinstance(value, list) else []
 
 
 def key_component(value: Any) -> Any:
@@ -386,6 +398,40 @@ def read_file(path: Path, label: str, errors: list[str]) -> bytes | None:
     except OSError as exc:
         errors.append(f"{label}: cannot read {path}: {exc}")
         return None
+
+
+def capsule_io_module() -> Any:
+    """Load the shared immutable session-artifact reader."""
+    global _CAPSULE_IO
+    if _CAPSULE_IO is None:
+        path = Path(__file__).resolve().with_name("build_context_capsule.py")
+        spec = importlib.util.spec_from_file_location(
+            "hotspot_context_capsule_for_controller_validation",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load immutable artifact helper from {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CAPSULE_IO = module
+    return _CAPSULE_IO
+
+
+def session_validator_module() -> Any:
+    """Load the shared Claude dispatch-content validator."""
+    global _SESSION_VALIDATOR
+    if _SESSION_VALIDATOR is None:
+        path = Path(__file__).resolve().with_name("validate_session.py")
+        spec = importlib.util.spec_from_file_location(
+            "hotspot_session_for_controller_validation",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load session validator from {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _SESSION_VALIDATOR = module
+    return _SESSION_VALIDATOR
 
 
 def require_exact_keys(
@@ -1141,7 +1187,7 @@ def validate_dispatch_prerequisites(
                 candidate = next(
                     (
                         value
-                        for value in state.get("candidates", [])
+                        for value in list_or_empty(state.get("candidates"))
                         if isinstance(value, dict)
                         and value.get("candidate_id") == candidate_id
                     ),
@@ -1181,7 +1227,9 @@ def validate_dispatch_prerequisites(
                     else next(
                         (
                             candidate.get("rounds")
-                            for candidate in state.get("candidates", [])
+                            for candidate in list_or_empty(
+                                state.get("candidates")
+                            )
                             if isinstance(candidate, dict)
                             and candidate.get("candidate_id") == candidate_id
                         ),
@@ -1294,7 +1342,7 @@ def validate_dispatch_prerequisites(
         candidate = next(
             (
                 value
-                for value in state.get("candidates", [])
+                for value in list_or_empty(state.get("candidates"))
                 if isinstance(value, dict)
                 and value.get("candidate_id") == candidate_id
             ),
@@ -1359,7 +1407,7 @@ def validate_dispatch_prerequisites(
     if phase == "FINAL_SELECTION":
         ready_candidate_ids = [
             candidate.get("candidate_id")
-            for candidate in state.get("candidates", [])
+            for candidate in list_or_empty(state.get("candidates"))
             if isinstance(candidate, dict)
             and candidate.get("gate_ready") is True
             and nonempty_string(candidate.get("candidate_id"))
@@ -1515,6 +1563,7 @@ def validate_dispatches(
     directive_reason_codes: Any,
     accepted: dict[str, dict[str, Any]],
     rejected: dict[str, dict[str, Any]],
+    session_dir: Path,
     errors: list[str],
 ) -> list[dict[str, Any]]:
     location = "controller-output.json.control_directive.dispatches"
@@ -1563,10 +1612,24 @@ def validate_dispatches(
         and transition.get("required_actions") == ["APPLY_RQ_CONFIRMATION"]
         for transition in prior_transitions
     )
+    claude_transport = (
+        state.get("schema_version") == "1.4"
+        and state.get("transport_profile") == "CLAUDE"
+    )
+    expected_dispatch_keys = (
+        DISPATCH_KEYS | CLAUDE_TRANSPORT_BINDING_KEYS
+        if claude_transport
+        else DISPATCH_KEYS
+    )
 
     for index, dispatch in enumerate(value):
         item_location = f"{location}[{index}]"
-        if not require_exact_keys(dispatch, DISPATCH_KEYS, item_location, errors):
+        if not require_exact_keys(
+            dispatch,
+            expected_dispatch_keys,
+            item_location,
+            errors,
+        ):
             if not isinstance(dispatch, dict):
                 continue
         assert isinstance(dispatch, dict)
@@ -1584,6 +1647,60 @@ def validate_dispatches(
                     f"{item_location}.packet_id is not fresh: {packet_id!r}"
                 )
             dispatch_ids.add(packet_id)
+
+        if claude_transport:
+            expected_transport_path = (
+                f"control-inputs/dispatches/{packet_id}.json"
+                if nonempty_string(packet_id) and SAFE_ID.fullmatch(packet_id)
+                else None
+            )
+            transport_path = dispatch.get("transport_path")
+            transport_digest = dispatch.get("transport_sha256")
+            if transport_path != expected_transport_path:
+                errors.append(
+                    f"{item_location}.transport_path must equal "
+                    f"{expected_transport_path!r}"
+                )
+            if (
+                not isinstance(transport_digest, str)
+                or not SHA256.fullmatch(transport_digest)
+            ):
+                errors.append(
+                    f"{item_location}.transport_sha256 must be lowercase SHA-256"
+                )
+            if (
+                transport_path == expected_transport_path
+                and expected_transport_path is not None
+                and isinstance(transport_digest, str)
+                and SHA256.fullmatch(transport_digest)
+            ):
+                capsule_io = capsule_io_module()
+                try:
+                    transport_raw, _transport_path = (
+                        capsule_io.read_immutable_session_artifact(
+                            session_dir,
+                            expected_transport_path,
+                        )
+                    )
+                except (OSError, capsule_io.CapsuleError) as exc:
+                    errors.append(
+                        f"{item_location}.transport_path cannot be read as an "
+                        f"immutable artifact: {exc}"
+                    )
+                else:
+                    if hashlib.sha256(transport_raw).hexdigest() != transport_digest:
+                        errors.append(
+                            f"{item_location}.transport_sha256 does not match "
+                            "the persisted Claude dispatch input"
+                        )
+                    else:
+                        session_validator_module().validate_claude_dispatch_input(
+                            transport_raw,
+                            dispatch,
+                            state,
+                            f"{item_location}.transport_path",
+                            errors,
+                        )
 
         phase = dispatch.get("phase")
         role = dispatch.get("role")
@@ -2168,7 +2285,7 @@ def expected_active_lanes(
         initial = state.get("initial_debate_candidate_ids")
         initial_ids = set(initial) if isinstance(initial, list) else set()
         max_rounds = state.get("max_rounds")
-        for candidate in state.get("candidates", []):
+        for candidate in list_or_empty(state.get("candidates")):
             if not isinstance(candidate, dict):
                 continue
             candidate_id = candidate.get("candidate_id")
@@ -2235,7 +2352,7 @@ def expected_active_lanes(
     dispatched = prior_dispatches_by_id(state)
     rejected = {
         product.get("packet_id")
-        for product in state.get("rejected_work_products", [])
+        for product in list_or_empty(state.get("rejected_work_products"))
         if isinstance(product, dict)
         and nonempty_string(product.get("packet_id"))
     }
@@ -2545,10 +2662,10 @@ def expected_failed_packets(
 def expected_accepted_verdicts(state: dict[str, Any]) -> list[dict[str, Any]]:
     """Project the accepted_verdicts a control input must carry."""
     expected_verdicts: list[dict[str, Any]] = []
-    for candidate in state.get("candidates", []):
+    for candidate in list_or_empty(state.get("candidates")):
         if not isinstance(candidate, dict):
             continue
-        for round_record in candidate.get("rounds", []):
+        for round_record in list_or_empty(candidate.get("rounds")):
             if isinstance(round_record, dict):
                 expected_verdicts.append(
                     {
@@ -2557,7 +2674,7 @@ def expected_accepted_verdicts(state: dict[str, Any]) -> list[dict[str, Any]]:
                         "verdict": round_record.get("verdict"),
                     }
                 )
-    for round_record in state.get("evaluation_rounds", []):
+    for round_record in list_or_empty(state.get("evaluation_rounds")):
         if isinstance(round_record, dict):
             expected_verdicts.append(
                 {
@@ -2590,7 +2707,10 @@ def validate_control_input(
     errors: list[str],
 ) -> dict[str, Any]:
     location = "control-input.json"
-    if not require_exact_keys(value, CONTROL_INPUT_KEYS, location, errors):
+    expected_keys = set(CONTROL_INPUT_KEYS)
+    if state.get("schema_version") == "1.4":
+        expected_keys.add("transport_profile")
+    if not require_exact_keys(value, expected_keys, location, errors):
         if not isinstance(value, dict):
             return {}
     assert isinstance(value, dict)
@@ -2602,6 +2722,8 @@ def validate_control_input(
         "mode": state.get("mode"),
         "interaction_mode": state.get("interaction_mode"),
     }
+    if state.get("schema_version") == "1.4":
+        expected_scalars["transport_profile"] = state.get("transport_profile")
     for field, expected in expected_scalars.items():
         if value.get(field) != expected:
             errors.append(f"{location}.{field} must equal {expected!r}")
@@ -2954,6 +3076,7 @@ def validate_directive(
     accepted: dict[str, dict[str, Any]],
     rejected: dict[str, dict[str, Any]],
     control_input: dict[str, Any],
+    session_dir: Path,
     errors: list[str],
 ) -> None:
     location = "controller-output.json.control_directive"
@@ -3006,7 +3129,9 @@ def validate_directive(
     if revision != 0 and checkpoint == "SESSION_INIT":
         errors.append("SESSION_INIT is valid only at control revision 0")
     if checkpoint == "RESUME" and revision == 0:
-        errors.append("RESUME requires an existing schema-1.3 control history")
+        errors.append(
+            "RESUME requires an existing schema-1.3 or schema-1.4 control history"
+        )
 
     action = directive.get("action")
     if not isinstance(action, str) or action not in CONTROL_ACTIONS:
@@ -3090,6 +3215,7 @@ def validate_directive(
         directive.get("reason_codes"),
         accepted,
         rejected,
+        session_dir,
         errors,
     )
     validate_lane_dispatches(
@@ -3801,8 +3927,19 @@ def validate(
         return errors, state_raw
     state = state_value
 
-    if state.get("schema_version") != "1.3":
-        errors.append("session-state.json.schema_version must be exactly '1.3'")
+    if state.get("schema_version") not in {"1.3", "1.4"}:
+        errors.append(
+            "session-state.json.schema_version must be exactly '1.3' or '1.4'"
+        )
+    if state.get("schema_version") == "1.4":
+        transport_profile = state.get("transport_profile")
+        if (
+            not isinstance(transport_profile, str)
+            or transport_profile not in {"CLAUDE", "CODEX"}
+        ):
+            errors.append(
+                "session-state.json.transport_profile must be CLAUDE or CODEX"
+            )
     for field in ("session_id", "project_root", "project_snapshot"):
         if not nonempty_string(state.get(field)):
             errors.append(f"session-state.json.{field} must be a non-empty string")
@@ -3866,6 +4003,7 @@ def validate(
         accepted,
         rejected,
         control_input,
+        state_path.parent,
         errors,
     )
 
@@ -3907,7 +4045,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "session_state",
         type=Path,
-        help="path to the current schema-1.3 session-state.json",
+        help="path to the current schema-1.3 or schema-1.4 session-state.json",
     )
     parser.add_argument(
         "controller_output",

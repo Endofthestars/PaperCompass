@@ -35,6 +35,9 @@ else
 fi
 "${python_bin}" -B "${skill_root}/scripts/validate_controller_decision.py" --help >/dev/null
 "${python_bin}" -B "${skill_root}/scripts/validate_session.py" --help >/dev/null
+"${python_bin}" -B "${skill_root}/scripts/build_context_capsule.py" --help >/dev/null
+"${python_bin}" -B "${skill_root}/scripts/build_codex_dispatch.py" --help >/dev/null
+"${python_bin}" -B "${skill_root}/scripts/validate_codex_dispatch_batch.py" --help >/dev/null
 "${python_bin}" -m json.tool "${plugin_root}/.codex-plugin/plugin.json" >/dev/null
 "${python_bin}" -m json.tool "${plugin_root}/.claude-plugin/plugin.json" >/dev/null
 "${python_bin}" -m json.tool "${repo_root}/.agents/plugins/marketplace.json" >/dev/null

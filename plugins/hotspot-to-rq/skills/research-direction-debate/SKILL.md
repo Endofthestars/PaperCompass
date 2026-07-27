@@ -26,6 +26,8 @@ Read these files completely before running the workflow:
   stale-state protection, and deterministic fallback.
 - `references/debate-protocol.md` for state transitions, round sequencing, budgets,
   identification gates, and artifacts.
+- `references/codex-port.md` when running in Codex, for the generic-task,
+  parallel-batch, and long-context execution protocol.
 
 Read the phase-specific bundled ARS workflow and role prompt selected by
 `references/ars-bridge.md` before dispatching a mapped role. The plugin carries
@@ -59,13 +61,57 @@ artifact paths, and search budgets as the workflow arguments, and set
 `agent_types` to the runtime's exact identifiers for the bundled agents. The
 workflow returns one work product per dispatch with a convenience envelope
 echo pre-check; you must still verify every echoed envelope, apply the
-rejection rules, persist state, and run the validators exactly as for direct
-role calls. Never send dependent roles from one lane to a single batch, and
-never route a CONTROL call through it. Before invoking the workflow or any
-direct delegation, persist each committed dispatch's envelope and payload to
-`control-inputs/dispatches/<packet id>.json` in the session directory so an
-interrupted batch can be re-invoked — in this session or a resumed one — from
-durable files instead of a runtime-scoped workflow run id.
+    rejection rules, persist state, and run the validators exactly as for direct
+    role calls. Never send dependent roles from one lane to a single batch, and
+    never route a CONTROL call through it. Before invoking the workflow or any
+    direct delegation, persist each committed Claude dispatch as an immutable,
+    owner-read-only JSON object at
+    `control-inputs/dispatches/<packet id>.json`. Set
+    `schema_version` to `claude-dispatch-input-1` and include the exact
+    `envelope`, `role_instructions`, `inline_payload`,
+    `allowed_artifact_paths`, and `search_budget` sent to the agent. An
+    interrupted batch is re-invoked — in this session or a resumed one — from
+    those bytes instead of a runtime-scoped workflow run id. Before validating
+    the controller directive, deterministically add `transport_path` and
+    `transport_sha256` to each Claude logical dispatch; the path is exactly
+    `control-inputs/dispatches/<packet id>.json`, and the committed transition
+    preserves both fields unchanged. The controller and session validators
+    verify the digest against the immutable bytes. A Search extension is valid
+    only when that committed dispatch input has the complete session-bound
+    envelope, fixed 2/4/8 base grant, and exact Judge-approved extension
+    recorded in session state.
+
+### Codex-native orchestration
+
+When running in Codex, the plugin manifest intentionally exposes no bundled
+agent or workflow types. Read `references/codex-port.md` and use the runtime's
+generic multi-agent delegation facility instead: one clean controller task for
+CONTROL, then one clean task per independent role dispatch. Use a
+work-conserving scheduler: fill all currently available child slots and launch
+the next independent ready packet whenever one completes; dependent roles
+remain in a later controller batch. Never fork the parent conversation into a role task. Generic
+Codex tasks inherit the runtime's available tools, so these role boundaries are
+model-level instructions backed by deterministic validation, not Claude-style
+per-agent tool whitelists.
+
+Use the long parent context to build and retain the project evidence pack, but
+do not fan that context out blindly. For every non-CONTROL Codex role, use
+`build_codex_dispatch.py` to create the bounded evidence capsule and final
+immutable transport packet before committing the controller transition, then
+run `validate_codex_dispatch_batch.py` across the whole logical batch. The
+capsule's absolute path must be the only allowed artifact; never pass its source
+files to the child. The 160,000-character excerpt cap is combined with a
+    conservative 192,000-byte limit over the complete persisted role input,
+    including instructions, inline payload, capsule JSON, and framing reserve; it
+    is not a character-to-token conversion. The 160,000-character component
+    limit is a hard ceiling and `--max-chars` may only lower it. If the runtime
+    exposes a smaller context, lower the capsule budget.
+Initial dispatch and transport retries must read the persisted packet bytes,
+never rebuild them from current artifacts or conversation history. Before
+either use, run `validate_codex_dispatch_batch.py --verify-manifest
+<controller-packet-id> --packet-id <role-packet-id> --emit-packet` so the
+current valid session proves the CONTROL transition is committed and the
+validator emits the exact packet bytes bound by the immutable batch manifest.
 
 Keep the main agent as orchestrator. It owns project inspection, state,
 external retrieval dispatch, user communication, and final synthesis. Delegated roles must
@@ -281,9 +327,13 @@ policy is in `references/mainline-controller.md` (Transport failures).
    - Always build both validator paths as absolute paths from the skill's base
      directory; never rely on the shell's working directory persisting between
      tool calls.
-   - `RESUME` requires existing schema-1.3 control history. Treat 1.1/1.2
-     sessions as read-only legacy: start a new session and reference the old
-     artifacts from its evidence pack instead of upgrading state in place.
+   - Create new sessions as schema 1.4 and fix `transport_profile` to
+     `CLAUDE` or `CODEX` before the first control snapshot. `RESUME` requires
+     existing schema-1.3 or schema-1.4 control history. Treat 1.1/1.2 sessions
+     as read-only legacy. Existing 1.3 sessions remain on 1.3; do not add or
+     remove optional fields to reinterpret their approval semantics. To adopt
+     1.4, start a new session and reference the legacy artifacts from its
+     evidence pack instead of upgrading state in place.
    - When the runtime attaches this plugin's post-write validation hook, treat
      its automatic `validate_session.py` runs as a backstop only. On runtimes
      without hook support, run that validator yourself immediately after every
@@ -337,6 +387,8 @@ or when the workflow is being run as a project task:
 
 - `session-state.json`
 - `control-inputs/<CONTROL packet ID>.json`
+- `control-inputs/dispatches/<ROLE packet ID>.json` for final Codex transports
+- `context-capsules/<ROLE packet ID>.json` for Codex role dispatches
 - `project-evidence-pack.md`
 - `direction-map.md`
 - `candidate-directions.md`

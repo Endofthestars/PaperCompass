@@ -57,15 +57,20 @@ the user confirms the final RQ in non-evaluation modes. Create
 
 ## Machine-readable state
 
-Use UTF-8 JSON, schema version `1.3`, and keep it valid after every committed
-transition. The validator continues to accept legacy `1.1` and `1.2` sessions;
-do not create a new legacy session. Regardless of schema version,
+Use UTF-8 JSON, schema version `1.4`, and keep it valid after every committed
+transition. Set `transport_profile` once to `CLAUDE` or `CODEX` before the
+first control snapshot; every archived control input binds that value, so it
+cannot change within the session. The validator continues to read existing
+`1.1`, `1.2`, and `1.3` sessions, but new sessions must not use a legacy
+version. Existing 1.3 sessions retain their historical approval semantics and
+must not be upgraded in place. Regardless of schema version,
 `session-state.json` must be strict UTF-8 JSON: no byte-order mark, duplicate
 object keys, or non-finite numbers.
 Required top-level fields:
 
 ```text
 schema_version
+transport_profile
 session_id
 mode
 interaction_mode
@@ -108,6 +113,7 @@ next_experiment
 Use:
 
 - `mode`: `discover|refine|rq-only|evaluate`
+- `transport_profile`: `CLAUDE|CODEX` for schema 1.4
 - `interaction_mode`: `GUIDED|AUTONOMOUS`
 - `execution_mode`: `MULTI_AGENT|DEGRADED_INLINE`
 - non-evaluation `status`: `SCANNING|DIRECTION_GATE|CANDIDATE_GENERATION|DEBATING|USER_GATE|RQ_REFINEMENT|COMPLETE|BLOCKED`
@@ -310,7 +316,8 @@ Initialize the top-level search budget as:
 ```json
 {
   "profile": "standard",
-  "large_downloads": []
+  "large_downloads": [],
+  "approved_extensions": []
 }
 ```
 
@@ -419,11 +426,11 @@ the CONTROL envelope and committed transition. The snapshot contains exact
 accepted/failed packet projections, active-lane next roles and dependencies,
 persisted verdicts, readiness, receipts, blockers, and legal target statuses.
 
-Do not upgrade a legacy `1.1` or `1.2` session in place. Start a new `1.3`
-session, reference the legacy artifact paths in the evidence pack, and route
-through `SESSION_INIT`; this avoids inventing controller dispatches for old work
-products. Use `RESUME` only when a session already has non-empty, valid `1.3`
-control history.
+Do not upgrade a legacy `1.1`, `1.2`, or `1.3` session in place. Start a new
+`1.4` session with one fixed `transport_profile`, reference the legacy artifact
+paths in the evidence pack, and route through `SESSION_INIT`; this avoids
+inventing controller dispatches for old work products. Use `RESUME` only when a
+session already has non-empty, valid `1.3` or `1.4` control history.
 
 ## Macro direction mapping and gate
 
@@ -649,15 +656,53 @@ Use the default budget separately for each candidate and round:
 - at most 8 newly inspected primary or authoritative sources
 - at most one Judge-approved extension of 1 query batch and 4 sources
 
-Record an extension under `search_usage.budget_extension`:
+Before issuing a schema-1.4 Search replacement that uses an extension, record
+the accepted Judge authorization under
+`search_budget.approved_extensions`:
 
 ```json
 {
+  "approval_packet_id": "C01-R2-JUDGE",
   "judge_reason": "Why the unresolved decision warrants more retrieval",
   "extra_query_batches": 1,
   "extra_sources": 4
 }
 ```
+
+The packet must bind that exact record and the referenced accepted Panel Judge
+work product. Record the exercised extension under
+`search_usage.budget_extension`, and set `search_usage.search_packet_id` to the
+accepted Search packet that actually received the grant:
+
+```json
+{
+  "search_packet_id": "C01-R2-SEARCH",
+  "budget_extension": {
+    "approval_packet_id": "C01-R2-JUDGE",
+    "judge_reason": "Why the unresolved decision warrants more retrieval",
+    "extra_query_batches": 1,
+    "extra_sources": 4
+  }
+}
+```
+
+The exercised record must exactly match the authoritative approval and its
+accepted Panel Judge at the same candidate and round; a role cannot authorize
+extra usage by reporting a free-text reason after the fact. For `CODEX`, the
+validator resolves `search_packet_id` through its committed immutable batch
+manifest and checks that packet's actual `search_budget.extension`. For
+`CLAUDE`, it reads the owner-read-only
+`control-inputs/dispatches/<search_packet_id>.json`, requires
+`schema_version: claude-dispatch-input-1`, verifies the file path and SHA-256
+recorded in the committed logical dispatch, and checks the exact keys, complete
+session-bound envelope, context fingerprint, fixed 2/4/8 base grant, and exact
+extension sent to the role.
+
+Schema 1.3 sessions created before `approved_extensions` existed remain
+readable: a historical three-field `budget_extension` is accepted only when
+the top-level approval registry is absent and exactly one accepted Panel Judge
+at the same candidate and round can be inferred. New sessions include the
+schema-1.4 registry and must use the profile-specific packet-bound form above.
 
 Reuse source-ledger rows without recounting them as newly inspected. Do not
 repeat the same retrieval unless a new decision question requires it. Stop

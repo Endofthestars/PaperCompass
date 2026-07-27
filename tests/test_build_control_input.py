@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import stat
 import subprocess
 import sys
 import tempfile
@@ -154,6 +155,74 @@ def writer_side_errors(snapshot: dict, state: dict, digest: str) -> list[str]:
 
 
 class BuildControlInputTests(unittest.TestCase):
+    def test_cli_rejects_unhashable_transport_profile_without_crashing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            state = control_state(transitions=[], products=[])
+            state.update(
+                {
+                    "schema_version": "1.4",
+                    "transport_profile": {},
+                }
+            )
+            write_state(directory, state)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                exit_code = builder.main(
+                    [
+                        str(directory),
+                        "--checkpoint",
+                        "SESSION_INIT",
+                    ]
+                )
+            self.assertEqual(1, exit_code)
+            self.assertIn("transport_profile CLAUDE or CODEX", stderr.getvalue())
+
+    def test_packet_archive_is_immutable_and_cannot_be_rewritten(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            state = control_state(transitions=[], products=[])
+            state.update(
+                {
+                    "schema_version": "1.4",
+                    "transport_profile": "CODEX",
+                }
+            )
+            state_path, _digest = write_state(directory, state)
+            command = [
+                str(directory),
+                "--checkpoint",
+                "SESSION_INIT",
+                "--packet-id",
+                "CTRL-0001",
+            ]
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertEqual(0, builder.main(command))
+            archive = directory / "control-inputs" / "CTRL-0001.json"
+            original = archive.read_bytes()
+            self.assertEqual(0o400, stat.S_IMODE(archive.stat().st_mode))
+
+            state["updated_at"] = "2026-07-27T12:34:56+08:00"
+            state_path.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            second_stderr = io.StringIO()
+            with contextlib.redirect_stderr(second_stderr):
+                exit_code = builder.main(command)
+            self.assertEqual(1, exit_code)
+            self.assertIn(
+                "refusing to overwrite immutable",
+                second_stderr.getvalue(),
+            )
+            self.assertEqual(original, archive.read_bytes())
+            self.assertEqual(0o400, stat.S_IMODE(archive.stat().st_mode))
+
     def test_session_init_snapshot_passes_full_controller_validation(
         self,
     ) -> None:
@@ -394,6 +463,16 @@ class BuildControlInputTests(unittest.TestCase):
             live_bytes = (directory / "control-input.json").read_bytes()
             self.assertEqual(first.stdout, archived_bytes)
             self.assertEqual(first.stdout, live_bytes)
+            self.assertEqual(
+                0o400,
+                stat.S_IMODE(
+                    (
+                        directory
+                        / "control-inputs"
+                        / "CTRL-0003.json"
+                    ).stat().st_mode
+                ),
+            )
 
     def test_checkpoint_revision_guard_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

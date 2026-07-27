@@ -113,12 +113,22 @@ PostToolUse hook 会自动运行 `validate_session.py`，校验失败会立刻�
 批次（批内角色互相独立）交给确定性脚本并行执行：每个 dispatch 得到干净
 上下文、按角色契约强制的结构化输出和 envelope 回显预检。它刻意不做整轮
 编排——轮内依赖角色必须逐层经过 controller 的 ROLE_BOUNDARY 检查点，这是
-schema 1.3 控制契约的要求。envelope 校验、状态落盘与校验器执行仍由编排
+schema 1.4 控制契约的要求。envelope 校验、状态落盘与校验器执行仍由编排
 者完成。
 
 Codex 侧的机制强制现状：上游 Codex plugin ingestion 契约不接受 `hooks`、
-agents、workflows 等 manifest 字段（validator 直接拒绝未知字段），所以
-捆绑 agent 与 dispatch-batch workflow 仍是 Claude Code 独有；但 Codex
+agents、workflows 等 manifest 字段（validator 直接拒绝未知字段），因此不把
+Claude 专属字段写入 Codex manifest。Codex 改由技能协议通过通用子任务复现相同的
+controller/角色顺序与独立批处理，但通用子任务继承运行时工具，这些角色边界属于模型级
+约束，不等同于 Claude 的 per-agent 工具白名单。Codex 长上下文由主任务保留完整项目
+证据；每个非 CONTROL 角色只接收一个不可变 evidence capsule 的绝对路径，原始文件
+不会进入子任务 allowlist。确定性 builder 在 controller transition 提交前固化最终
+envelope、SHA-256、预算和 transport packet，并对指令、inline payload、胶囊与传输
+预留实施完整 UTF-8 字节上限，而不是把字符数误当 token 数；初次调度及重试都读取相同
+的持久化字节，并先通过不可变 batch manifest 复核 packet 与 capsule 摘要。
+调度时还会核对对应 CONTROL transition 已存在于当前合法 session，并直接使用
+校验器输出的原始 packet 字节，避免“校验后重新读取”的竞态窗口。
+两侧继续执行同一套 envelope、状态和 validator 规则。Codex
 运行时的 hooks 特性已稳定，会自动发现插件根目录的 `hooks/hooks.json`
 （无需 manifest 字段），并为插件 hook 注入 `CLAUDE_PLUGIN_ROOT` 兼容
 变量——用户在信任审查（trust review）通过后即获得与 Claude 侧相同的
@@ -138,7 +148,7 @@ manifest 侧的对等优化：与 Claude manifest 一致的 `keywords`、
 
 ```text
 主代理识别 DISCOVER / REFINE / RQ-only / EVALUATE
-  → 创建 schema 1.3 session
+  → 创建 schema 1.4 session，并将 transport_profile 固定为 CLAUDE 或 CODEX
   → Mainline Workflow Controller 检查状态并批量调度独立角色
   → 主代理执行调用、写入产物
   → Panel Judge 给出科学判断
@@ -180,7 +190,8 @@ Mainline Workflow Controller 是只读控制面，不是第二个主代理：它
 3. 确认首次输出会报告路由、session、controller 状态和当前阶段，而不是直接
    给出最终研究方向。
 4. 检查 `reports/research-direction/<session-id>/session-state.json`：
-   `schema_version` 为 `1.3`，`mainline_control.revision` 连续递增，
+   `schema_version` 为 `1.4`、`transport_profile` 为 `CODEX`，
+   `mainline_control.revision` 连续递增，
    CONTROL packet 与 transition 一一对应；每个 transition 的
    `control_input_path` 都存在且 digest 匹配。
 5. 在方向 gate 回复选择后，确认存在对应 `gate_receipts`，且不会重复 dispatch

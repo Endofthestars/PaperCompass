@@ -5,11 +5,59 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Any
+
+
+_CAPSULE_IO: Any | None = None
+_CODEX_BATCH_VALIDATOR: Any | None = None
+
+CLAUDE_DISPATCH_INPUT_KEYS = {
+    "schema_version",
+    "envelope",
+    "role_instructions",
+    "inline_payload",
+    "allowed_artifact_paths",
+    "search_budget",
+}
+RESEARCH_ENVELOPE_KEYS = {
+    "schema_version",
+    "session_id",
+    "project_root",
+    "project_snapshot",
+    "phase",
+    "role",
+    "candidate_id",
+    "round",
+    "packet_id",
+    "context_fingerprint",
+    "allowed_artifacts",
+}
+SEARCH_TRANSPORT_BUDGET_KEYS = {
+    "profile",
+    "max_query_batches",
+    "max_queries_per_batch",
+    "max_new_sources",
+    "extension",
+    "large_downloads",
+}
+SEARCH_TRANSPORT_EXTENSION_KEYS = {
+    "approved",
+    "approval_packet_id",
+    "judge_reason",
+    "extra_query_batches",
+    "extra_sources",
+}
+SEARCH_TRANSPORT_DOWNLOAD_KEYS = {
+    "url",
+    "size_bytes",
+    "necessity",
+    "user_approved",
+}
 
 
 BASE_ARTIFACTS = (
@@ -142,6 +190,7 @@ IDENTIFICATION_VERDICTS = {"PASS", "PASS_WITH_LIMITS", "REVISE", "BLOCK"}
 GATE_STATUSES = {"READY_FOR_GATE", "DOWNGRADED", "SELECTED"}
 EXECUTION_MODES = {"MULTI_AGENT", "DEGRADED_INLINE"}
 INTERACTION_MODES = {"GUIDED", "AUTONOMOUS"}
+TRANSPORT_PROFILES = {"CLAUDE", "CODEX"}
 MACRO_DIRECTION_STATUSES = {"PROPOSED", "SELECTED", "NOT_SELECTED"}
 DIRECTION_SELECTION_SOURCES = {
     "USER",
@@ -415,6 +464,10 @@ def nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def list_or_empty(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def key_component(value: Any) -> Any:
     if value is None or isinstance(value, str) or is_int(value):
         return value
@@ -540,6 +593,11 @@ def validate_search_usage(
     usage: Any,
     location: str,
     errors: list[str],
+    *,
+    state: dict[str, Any],
+    session_dir: Path | None,
+    candidate_id: str | None,
+    round_number: int | None,
 ) -> None:
     required = (
         "query_batches",
@@ -568,13 +626,26 @@ def validate_search_usage(
     max_sources = 8
     extension = usage.get("budget_extension")
     if extension is not None:
+        authoritative_budget_value = state.get("search_budget")
+        authoritative_budget = (
+            authoritative_budget_value
+            if isinstance(authoritative_budget_value, dict)
+            else {}
+        )
+        modern_protocol = state.get("schema_version") == "1.4"
         if not require_keys(
             extension,
-            ("judge_reason", "extra_query_batches", "extra_sources"),
+            (
+                "judge_reason",
+                "extra_query_batches",
+                "extra_sources",
+            ),
             f"{location}.budget_extension",
             errors,
         ):
             return
+        approval_packet_id = extension.get("approval_packet_id")
+        search_packet_id = usage.get("search_packet_id")
         reason = extension.get("judge_reason")
         extra_batches = extension.get("extra_query_batches")
         extra_sources = extension.get("extra_sources")
@@ -594,6 +665,104 @@ def validate_search_usage(
             )
         else:
             max_sources += extra_sources
+        accepted_products_value = state.get("accepted_work_products")
+        accepted_products = (
+            accepted_products_value
+            if isinstance(accepted_products_value, list)
+            else []
+        )
+        if modern_protocol:
+            if (
+                not nonempty_string(approval_packet_id)
+                or not SAFE_ID.fullmatch(approval_packet_id)
+            ):
+                errors.append(
+                    f"{location}.budget_extension.approval_packet_id is invalid"
+                )
+            if (
+                not nonempty_string(search_packet_id)
+                or not SAFE_ID.fullmatch(search_packet_id)
+            ):
+                errors.append(f"{location}.search_packet_id is invalid")
+            authorization = {
+                "approval_packet_id": approval_packet_id,
+                "judge_reason": reason,
+                "extra_query_batches": extra_batches,
+                "extra_sources": extra_sources,
+            }
+            approved_extensions = authoritative_budget.get(
+                "approved_extensions",
+            )
+            if (
+                not isinstance(approved_extensions, list)
+                or authorization not in approved_extensions
+            ):
+                errors.append(
+                    f"{location}.budget_extension has no matching authoritative "
+                    "search_budget approval"
+                )
+            approval_product = next(
+                (
+                    product
+                    for product in accepted_products
+                    if isinstance(product, dict)
+                    and product.get("packet_id") == approval_packet_id
+                    and product.get("role") == "Panel Judge"
+                    and product.get("candidate_id") == candidate_id
+                    and product.get("round") == round_number
+                ),
+                None,
+            )
+            if approval_product is None:
+                errors.append(
+                    f"{location}.budget_extension approval must reference an "
+                    "accepted Panel Judge at the same candidate and round"
+                )
+            if nonempty_string(search_packet_id) and SAFE_ID.fullmatch(
+                search_packet_id
+            ):
+                transport_profile = state.get("transport_profile")
+                if transport_profile == "CODEX":
+                    validate_codex_search_budget_binding(
+                        session_dir,
+                        state,
+                        search_packet_id,
+                        candidate_id,
+                        round_number,
+                        authorization,
+                        location,
+                        errors,
+                    )
+                elif transport_profile == "CLAUDE":
+                    validate_claude_search_budget_binding(
+                        session_dir,
+                        state,
+                        search_packet_id,
+                        candidate_id,
+                        round_number,
+                        authorization,
+                        location,
+                        errors,
+                    )
+                else:
+                    errors.append(
+                        f"{location}.search_packet_id cannot be checked with "
+                        "an invalid transport_profile"
+                    )
+        else:
+            legacy_judges = [
+                product
+                for product in accepted_products
+                if isinstance(product, dict)
+                and product.get("role") == "Panel Judge"
+                and product.get("candidate_id") == candidate_id
+                and product.get("round") == round_number
+            ]
+            if len(legacy_judges) != 1:
+                errors.append(
+                    f"{location}.budget_extension legacy approval cannot be "
+                    "uniquely inferred from the accepted Panel Judge"
+                )
 
     if query_batches > max_batches:
         errors.append(
@@ -891,6 +1060,7 @@ def validate_macro_directions(
 def validate_candidates(
     state: dict[str, Any],
     errors: list[str],
+    session_dir: Path | None = None,
 ) -> None:
     mode = state.get("mode")
     interaction_mode = state.get("interaction_mode")
@@ -1118,6 +1288,10 @@ def validate_candidates(
                 round_record.get("search_usage"),
                 f"{round_location}.search_usage",
                 errors,
+                state=state,
+                session_dir=session_dir,
+                candidate_id=candidate_id,
+                round_number=round_record.get("round"),
             )
 
         audit = candidate.get("identification_audit")
@@ -1286,7 +1460,11 @@ def validate_candidates(
         )
 
 
-def validate_evaluation_state(state: dict[str, Any], errors: list[str]) -> None:
+def validate_evaluation_state(
+    state: dict[str, Any],
+    errors: list[str],
+    session_dir: Path | None = None,
+) -> None:
     if state.get("mode") != "evaluate":
         return
 
@@ -1418,7 +1596,15 @@ def validate_evaluation_state(state: dict[str, Any], errors: list[str]) -> None:
             errors.append(
                 f"{location}.verdict must be one of {sorted(JUDGE_VERDICTS)}"
             )
-        validate_search_usage(round_record.get("search_usage"), f"{location}.search_usage", errors)
+        validate_search_usage(
+            round_record.get("search_usage"),
+            f"{location}.search_usage",
+            errors,
+            state=state,
+            session_dir=session_dir,
+            candidate_id=None,
+            round_number=round_record.get("round"),
+        )
     if is_int(max_rounds) and len(rounds) > max_rounds:
         errors.append("session-state.json: evaluation_rounds exceeds max_rounds")
 
@@ -1597,10 +1783,18 @@ def validate_search_budget(state: dict[str, Any], errors: list[str]) -> None:
         return
     if budget.get("profile") != "standard":
         errors.append("search_budget.profile must be standard")
+    if (
+        state.get("schema_version") == "1.4"
+        and "approved_extensions" not in budget
+    ):
+        errors.append(
+            "search_budget.approved_extensions is required by schema_version 1.4"
+        )
     downloads = budget.get("large_downloads")
     if not isinstance(downloads, list):
         errors.append("search_budget.large_downloads must be an array")
         return
+    download_urls: set[str] = set()
     for index, download in enumerate(downloads):
         location = f"search_budget.large_downloads[{index}]"
         if not require_keys(
@@ -1612,6 +1806,10 @@ def validate_search_budget(state: dict[str, Any], errors: list[str]) -> None:
             continue
         if not nonempty_string(download.get("url")):
             errors.append(f"{location}.url must be non-empty")
+        elif download.get("url") in download_urls:
+            errors.append(f"{location}.url must be unique")
+        else:
+            download_urls.add(download["url"])
         size = download.get("size_bytes")
         if not is_int(size) or size <= 0:
             errors.append(f"{location}.size_bytes must be a positive integer")
@@ -1625,6 +1823,64 @@ def validate_search_budget(state: dict[str, Any], errors: list[str]) -> None:
                 errors.append(
                     f"{location}.user_approved must be true for downloads over 10 MiB"
                 )
+
+    extensions = budget.get("approved_extensions", [])
+    if not isinstance(extensions, list):
+        errors.append("search_budget.approved_extensions must be an array")
+        return
+    accepted_products_value = state.get("accepted_work_products")
+    accepted_products = (
+        accepted_products_value
+        if isinstance(accepted_products_value, list)
+        else []
+    )
+    accepted_by_id = {
+        product.get("packet_id"): product
+        for product in accepted_products
+        if isinstance(product, dict) and nonempty_string(product.get("packet_id"))
+    }
+    approval_ids: set[str] = set()
+    for index, extension in enumerate(extensions):
+        location = f"search_budget.approved_extensions[{index}]"
+        if not require_keys(
+            extension,
+            (
+                "approval_packet_id",
+                "judge_reason",
+                "extra_query_batches",
+                "extra_sources",
+            ),
+            location,
+            errors,
+        ):
+            continue
+        approval_packet_id = extension.get("approval_packet_id")
+        if (
+            not nonempty_string(approval_packet_id)
+            or not SAFE_ID.fullmatch(approval_packet_id)
+        ):
+            errors.append(f"{location}.approval_packet_id is invalid")
+        elif approval_packet_id in approval_ids:
+            errors.append(f"{location}.approval_packet_id must be unique")
+        else:
+            approval_ids.add(approval_packet_id)
+        if not nonempty_string(extension.get("judge_reason")):
+            errors.append(f"{location}.judge_reason must be non-empty")
+        extra_batches = extension.get("extra_query_batches")
+        if not is_int(extra_batches) or not 0 <= extra_batches <= 1:
+            errors.append(
+                f"{location}.extra_query_batches must be integer 0 or 1"
+            )
+        extra_sources = extension.get("extra_sources")
+        if not is_int(extra_sources) or not 0 <= extra_sources <= 4:
+            errors.append(
+                f"{location}.extra_sources must be an integer from 0 through 4"
+            )
+        product = accepted_by_id.get(approval_packet_id)
+        if not isinstance(product, dict) or product.get("role") != "Panel Judge":
+            errors.append(
+                f"{location}.approval_packet_id must reference an accepted Panel Judge"
+            )
 
 
 def validate_rejections(state: dict[str, Any], errors: list[str]) -> None:
@@ -1749,8 +2005,10 @@ def validate_accepted_work_products(
             errors.append(f"{location}.role must be non-empty")
 
         if phase == "CONTROL":
-            if state.get("schema_version") != "1.3":
-                errors.append(f"{location}: CONTROL requires schema_version 1.3")
+            if state.get("schema_version") not in {"1.3", "1.4"}:
+                errors.append(
+                    f"{location}: CONTROL requires schema_version 1.3 or 1.4"
+                )
             if "control_revision" not in product:
                 errors.append(f"{location}.control_revision is required for CONTROL")
             elif (
@@ -2241,18 +2499,35 @@ def validate_control_dispatch(
     location: str,
     candidate_ids: set[str],
     accepted_packet_ids: set[str],
+    state: dict[str, Any],
+    session_dir: Path | None,
     errors: list[str],
 ) -> str | None:
-    fields = (
+    schema_version = state.get("schema_version")
+    transport_profile = state.get("transport_profile")
+    fields = {
         "packet_id",
         "phase",
         "role",
         "candidate_id",
         "round",
         "depends_on_packet_ids",
-    )
+    }
     if not require_keys(dispatch, fields, location, errors):
         return None
+    assert isinstance(dispatch, dict)
+    if schema_version == "1.4":
+        expected_fields = (
+            fields | {"transport_path", "transport_sha256"}
+            if transport_profile == "CLAUDE"
+            else fields
+        )
+        missing = sorted(expected_fields - set(dispatch))
+        extra = sorted(set(dispatch) - expected_fields)
+        if missing or extra:
+            errors.append(
+                f"{location} has invalid keys; missing={missing}, extra={extra}"
+            )
 
     packet_id = dispatch.get("packet_id")
     phase = dispatch.get("phase")
@@ -2263,6 +2538,56 @@ def validate_control_dispatch(
     if not nonempty_string(packet_id) or not SAFE_ID.fullmatch(packet_id):
         errors.append(f"{location}.packet_id is invalid")
         packet_id = None
+    if schema_version == "1.4" and transport_profile == "CLAUDE":
+        expected_transport_path = (
+            f"control-inputs/dispatches/{packet_id}.json"
+            if packet_id is not None
+            else None
+        )
+        transport_path = dispatch.get("transport_path")
+        transport_digest = dispatch.get("transport_sha256")
+        if transport_path != expected_transport_path:
+            errors.append(
+                f"{location}.transport_path must equal "
+                f"{expected_transport_path!r}"
+            )
+        if not is_sha256(transport_digest):
+            errors.append(
+                f"{location}.transport_sha256 must be lowercase SHA-256"
+            )
+        if (
+            session_dir is not None
+            and transport_path == expected_transport_path
+            and expected_transport_path is not None
+            and is_sha256(transport_digest)
+        ):
+            capsule_io = capsule_io_module()
+            try:
+                transport_raw, _transport_path = (
+                    capsule_io.read_immutable_session_artifact(
+                        session_dir,
+                        expected_transport_path,
+                    )
+                )
+            except (OSError, capsule_io.CapsuleError) as exc:
+                errors.append(
+                    f"{location}.transport_path cannot be read as an immutable "
+                    f"artifact: {exc}"
+                )
+            else:
+                if hashlib.sha256(transport_raw).hexdigest() != transport_digest:
+                    errors.append(
+                        f"{location}.transport_sha256 does not match the "
+                        "persisted Claude dispatch input"
+                    )
+                else:
+                    validate_claude_dispatch_input(
+                        transport_raw,
+                        dispatch,
+                        state,
+                        f"{location}.transport_path",
+                        errors,
+                    )
     if (
         not isinstance(phase, str)
         or phase == "CONTROL"
@@ -2452,7 +2777,7 @@ def validate_committed_dispatch_prerequisites(
                 candidate = next(
                     (
                         value
-                        for value in state.get("candidates", [])
+                        for value in list_or_empty(state.get("candidates"))
                         if isinstance(value, dict)
                         and value.get("candidate_id") == candidate_id
                     ),
@@ -2494,7 +2819,9 @@ def validate_committed_dispatch_prerequisites(
                         else next(
                             (
                                 candidate.get("rounds")
-                                for candidate in state.get("candidates", [])
+                                for candidate in list_or_empty(
+                                    state.get("candidates")
+                                )
                                 if isinstance(candidate, dict)
                                 and candidate.get("candidate_id") == candidate_id
                             ),
@@ -2602,7 +2929,7 @@ def validate_committed_dispatch_prerequisites(
         candidate = next(
             (
                 value
-                for value in state.get("candidates", [])
+                for value in list_or_empty(state.get("candidates"))
                 if isinstance(value, dict)
                 and value.get("candidate_id") == candidate_id
             ),
@@ -2674,7 +3001,7 @@ def validate_committed_dispatch_prerequisites(
     if phase == "FINAL_SELECTION":
         ready_candidate_ids = [
             candidate.get("candidate_id")
-            for candidate in state.get("candidates", [])
+            for candidate in list_or_empty(state.get("candidates"))
             if isinstance(candidate, dict)
             and candidate.get("gate_ready") is True
             and nonempty_string(candidate.get("candidate_id"))
@@ -2788,6 +3115,578 @@ def parse_strict_json_bytes(
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         errors.append(f"{location} is not strict UTF-8 JSON: {exc}")
         return None
+
+
+def capsule_io_module() -> Any:
+    global _CAPSULE_IO
+    if _CAPSULE_IO is None:
+        path = Path(__file__).resolve().with_name("build_context_capsule.py")
+        spec = importlib.util.spec_from_file_location(
+            "hotspot_context_capsule_for_session_validation",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load immutable artifact helper from {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CAPSULE_IO = module
+    return _CAPSULE_IO
+
+
+def codex_batch_validator_module() -> Any:
+    global _CODEX_BATCH_VALIDATOR
+    if _CODEX_BATCH_VALIDATOR is None:
+        path = Path(__file__).resolve().with_name(
+            "validate_codex_dispatch_batch.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "hotspot_codex_batch_for_session_validation",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load Codex batch validator from {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CODEX_BATCH_VALIDATOR = module
+    return _CODEX_BATCH_VALIDATOR
+
+
+def exact_keys(
+    value: Any,
+    expected: set[str],
+    location: str,
+    errors: list[str],
+) -> bool:
+    if not isinstance(value, dict):
+        errors.append(f"{location} must be an object")
+        return False
+    missing = sorted(expected - set(value))
+    extra = sorted(set(value) - expected)
+    if missing or extra:
+        errors.append(
+            f"{location} has invalid keys; missing={missing}, extra={extra}"
+        )
+        return False
+    return True
+
+
+def validate_claude_large_downloads(
+    budget: dict[str, Any],
+    state: dict[str, Any],
+    location: str,
+    errors: list[str],
+) -> None:
+    """Apply the same large-download grant semantics as the Codex transport."""
+    downloads = budget.get("large_downloads")
+    if not isinstance(downloads, list):
+        errors.append(f"{location}.large_downloads must be an array")
+        return
+
+    max_new_sources = budget.get("max_new_sources")
+    source_cap = (
+        max_new_sources
+        if is_int(max_new_sources) and max_new_sources >= 0
+        else 0
+    )
+    extension = budget.get("extension")
+    if isinstance(extension, dict) and extension.get("approved") is True:
+        extra_sources = extension.get("extra_sources")
+        if is_int(extra_sources) and extra_sources >= 0:
+            source_cap += extra_sources
+    if len(downloads) > source_cap:
+        errors.append(
+            f"{location}.large_downloads cannot exceed the granted source "
+            f"quota of {source_cap}"
+        )
+
+    authoritative_budget = state.get("search_budget")
+    authoritative_downloads = (
+        authoritative_budget.get("large_downloads")
+        if isinstance(authoritative_budget, dict)
+        and isinstance(authoritative_budget.get("large_downloads"), list)
+        else []
+    )
+    seen_urls: set[str] = set()
+    for index, value in enumerate(downloads):
+        item_location = f"{location}.large_downloads[{index}]"
+        if not exact_keys(
+            value,
+            SEARCH_TRANSPORT_DOWNLOAD_KEYS,
+            item_location,
+            errors,
+        ):
+            continue
+        assert isinstance(value, dict)
+        url = value.get("url")
+        if not nonempty_string(url):
+            errors.append(f"{item_location}.url must be non-empty")
+        elif url in seen_urls:
+            errors.append(f"{item_location}.url is duplicated")
+        else:
+            seen_urls.add(url)
+
+        size = value.get("size_bytes")
+        if not is_int(size) or size <= 0:
+            errors.append(
+                f"{item_location}.size_bytes must be a positive integer"
+            )
+        elif size <= TEN_MIB:
+            errors.append(
+                f"{item_location} belongs in large_downloads only above 10 MiB"
+            )
+        if not nonempty_string(value.get("necessity")):
+            errors.append(
+                f"{item_location}.necessity must explain why the large "
+                "download is required"
+            )
+        if value.get("user_approved") is not True:
+            errors.append(f"{item_location}.user_approved must be true")
+        if value not in authoritative_downloads:
+            errors.append(
+                f"{item_location} has no matching authoritative user approval"
+            )
+
+
+def validate_claude_dispatch_input(
+    raw: bytes,
+    dispatch: dict[str, Any],
+    state: dict[str, Any],
+    location: str,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    packet = parse_strict_json_bytes(raw, location, errors)
+    if not exact_keys(packet, CLAUDE_DISPATCH_INPUT_KEYS, location, errors):
+        return None
+    assert isinstance(packet, dict)
+    if packet.get("schema_version") != "claude-dispatch-input-1":
+        errors.append(
+            f"{location}.schema_version must equal 'claude-dispatch-input-1'"
+        )
+    envelope = packet.get("envelope")
+    if not exact_keys(
+        envelope,
+        RESEARCH_ENVELOPE_KEYS,
+        f"{location}.envelope",
+        errors,
+    ):
+        return None
+    assert isinstance(envelope, dict)
+    expected_values = {
+        "schema_version": "1.0",
+        "session_id": state.get("session_id"),
+        "project_root": state.get("project_root"),
+        "project_snapshot": state.get("project_snapshot"),
+        "phase": dispatch.get("phase"),
+        "role": dispatch.get("role"),
+        "candidate_id": dispatch.get("candidate_id"),
+        "round": dispatch.get("round"),
+        "packet_id": dispatch.get("packet_id"),
+    }
+    for field, expected in expected_values.items():
+        if envelope.get(field) != expected:
+            errors.append(f"{location}.envelope.{field} must equal {expected!r}")
+    if (
+        not is_sha256(envelope.get("context_fingerprint"))
+        or envelope.get("context_fingerprint")
+        != expected_context_fingerprint(envelope)
+    ):
+        errors.append(f"{location}.envelope.context_fingerprint is invalid")
+    allowed_artifacts = envelope.get("allowed_artifacts")
+    if (
+        not isinstance(allowed_artifacts, list)
+        or not all(nonempty_string(path) for path in allowed_artifacts)
+        or packet.get("allowed_artifact_paths") != allowed_artifacts
+    ):
+        errors.append(
+            f"{location} artifact allowlists must match and contain only "
+            "non-empty paths"
+        )
+    if not nonempty_string(packet.get("role_instructions")):
+        errors.append(f"{location}.role_instructions must be non-empty")
+
+    budget = packet.get("search_budget")
+    if dispatch.get("role") != "Search and Verification Specialist":
+        if budget is not None:
+            errors.append(f"{location}.search_budget must be null for this role")
+        return packet
+    if not exact_keys(
+        budget,
+        SEARCH_TRANSPORT_BUDGET_KEYS,
+        f"{location}.search_budget",
+        errors,
+    ):
+        return packet
+    assert isinstance(budget, dict)
+    fixed_grants = {
+        "profile": "standard",
+        "max_query_batches": 2,
+        "max_queries_per_batch": 4,
+        "max_new_sources": 8,
+    }
+    for field, expected in fixed_grants.items():
+        if budget.get(field) != expected:
+            errors.append(
+                f"{location}.search_budget.{field} must equal {expected!r}"
+            )
+    authoritative_budget = state.get("search_budget")
+    extension = budget.get("extension")
+    if exact_keys(
+        extension,
+        SEARCH_TRANSPORT_EXTENSION_KEYS,
+        f"{location}.search_budget.extension",
+        errors,
+    ):
+        assert isinstance(extension, dict)
+        if not isinstance(extension.get("approved"), bool):
+            errors.append(
+                f"{location}.search_budget.extension.approved must be boolean"
+            )
+        for field, maximum in (
+            ("extra_query_batches", 1),
+            ("extra_sources", 4),
+        ):
+            value = extension.get(field)
+            if not is_int(value) or not 0 <= value <= maximum:
+                errors.append(
+                    f"{location}.search_budget.extension.{field} must be "
+                    f"between 0 and {maximum}"
+                )
+        if extension.get("approved") is True:
+            authorization = {
+                "approval_packet_id": extension.get("approval_packet_id"),
+                "judge_reason": extension.get("judge_reason"),
+                "extra_query_batches": extension.get("extra_query_batches"),
+                "extra_sources": extension.get("extra_sources"),
+            }
+            approved_extensions = (
+                authoritative_budget.get("approved_extensions")
+                if isinstance(authoritative_budget, dict)
+                and isinstance(
+                    authoritative_budget.get("approved_extensions"),
+                    list,
+                )
+                else []
+            )
+            if authorization not in approved_extensions:
+                errors.append(
+                    f"{location}.search_budget.extension has no matching "
+                    "authoritative approval"
+                )
+            accepted_judges = [
+                product
+                for product in list_or_empty(
+                    state.get("accepted_work_products")
+                )
+                if isinstance(product, dict)
+                and product.get("packet_id")
+                == authorization["approval_packet_id"]
+                and product.get("role") == "Panel Judge"
+                and product.get("candidate_id") == dispatch.get("candidate_id")
+                and product.get("round") == dispatch.get("round")
+            ]
+            if len(accepted_judges) != 1:
+                errors.append(
+                    f"{location}.search_budget.extension must bind exactly one "
+                    "accepted Panel Judge at the same candidate and round"
+                )
+        elif extension.get("approved") is False and (
+            extension.get("approval_packet_id") is not None
+            or extension.get("judge_reason") is not None
+            or extension.get("extra_query_batches") != 0
+            or extension.get("extra_sources") != 0
+        ):
+            errors.append(
+                f"{location}.search_budget.extension unapproved grant must "
+                "use null approval fields and zero increments"
+            )
+    validate_claude_large_downloads(
+        budget,
+        state,
+        f"{location}.search_budget",
+        errors,
+    )
+    return packet
+
+
+def resolve_search_transport_binding(
+    state: dict[str, Any],
+    search_packet_id: str,
+    candidate_id: str | None,
+    round_number: int | None,
+    location: str,
+    errors: list[str],
+) -> tuple[str, dict[str, Any], dict[str, Any]] | None:
+    accepted_products = list_or_empty(state.get("accepted_work_products"))
+    search_products = [
+        product
+        for product in accepted_products
+        if isinstance(product, dict)
+        and product.get("packet_id") == search_packet_id
+        and product.get("role") == "Search and Verification Specialist"
+        and product.get("candidate_id") == candidate_id
+        and product.get("round") == round_number
+    ]
+    if len(search_products) != 1:
+        errors.append(
+            f"{location}.search_packet_id must reference exactly one accepted "
+            "Search and Verification Specialist at the same candidate and round"
+        )
+        return None
+
+    control = state.get("mainline_control")
+    transitions = (
+        control.get("transition_log")
+        if isinstance(control, dict)
+        and isinstance(control.get("transition_log"), list)
+        else []
+    )
+    dispatching_bindings: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for transition in transitions:
+        if not isinstance(transition, dict):
+            continue
+        dispatches = transition.get("dispatches")
+        if not isinstance(dispatches, list):
+            continue
+        matches = [
+            dispatch
+            for dispatch in dispatches
+            if isinstance(dispatch, dict)
+            and dispatch.get("packet_id") == search_packet_id
+            and dispatch.get("role") == "Search and Verification Specialist"
+            and dispatch.get("candidate_id") == candidate_id
+            and dispatch.get("round") == round_number
+        ]
+        if len(matches) == 1:
+            dispatching_bindings.append((transition, matches[0]))
+    if len(dispatching_bindings) != 1:
+        errors.append(
+            f"{location}.search_packet_id must belong to exactly one committed "
+            "controller transition at the same candidate and round"
+        )
+        return None
+    transition, dispatch = dispatching_bindings[0]
+    controller_packet_id = transition.get("packet_id")
+    if (
+        not nonempty_string(controller_packet_id)
+        or not SAFE_ID.fullmatch(controller_packet_id)
+    ):
+        errors.append(
+            f"{location}.search_packet_id has an invalid controller packet binding"
+        )
+        return None
+    return controller_packet_id, search_products[0], dispatch
+
+
+def validate_codex_search_budget_binding(
+    session_dir: Path | None,
+    state: dict[str, Any],
+    search_packet_id: str,
+    candidate_id: str | None,
+    round_number: int | None,
+    authorization: dict[str, Any],
+    location: str,
+    errors: list[str],
+) -> None:
+    """Bind modern Search usage to the committed immutable Codex transport."""
+    if session_dir is None:
+        errors.append(
+            f"{location}.search_packet_id cannot be verified without a session directory"
+        )
+        return
+    binding = resolve_search_transport_binding(
+        state,
+        search_packet_id,
+        candidate_id,
+        round_number,
+        location,
+        errors,
+    )
+    if binding is None:
+        return
+    controller_packet_id, search_product, _dispatch = binding
+
+    batch_validator = codex_batch_validator_module()
+    try:
+        packet_raw = batch_validator.load_recorded_packet_bytes(
+            session_dir,
+            controller_packet_id,
+            search_packet_id,
+            state,
+        )
+    except (
+        OSError,
+        batch_validator.BatchError,
+        batch_validator.dispatch_builder.DispatchError,
+        batch_validator.capsules.CapsuleError,
+    ) as exc:
+        errors.append(
+            f"{location}.search_packet_id committed Codex transport is invalid: "
+            f"{exc}"
+        )
+        return
+
+    packet = parse_strict_json_bytes(
+        packet_raw,
+        f"committed Codex packet {search_packet_id}",
+        errors,
+    )
+    if not isinstance(packet, dict):
+        errors.append(f"{location}.search_packet_id Codex packet must be an object")
+        return
+    envelope = packet.get("envelope")
+    if (
+        packet.get("schema_version") != "codex-dispatch-packet-1"
+        or not isinstance(envelope, dict)
+        or envelope.get("packet_id") != search_packet_id
+        or envelope.get("session_id") != state.get("session_id")
+        or envelope.get("project_root") != state.get("project_root")
+        or envelope.get("project_snapshot") != state.get("project_snapshot")
+        or envelope.get("phase") != search_product.get("phase")
+        or envelope.get("role") != "Search and Verification Specialist"
+        or envelope.get("candidate_id") != candidate_id
+        or envelope.get("round") != round_number
+        or envelope.get("context_fingerprint")
+        != expected_context_fingerprint(envelope)
+    ):
+        errors.append(
+            f"{location}.search_packet_id packet envelope does not match the usage"
+        )
+        return
+    budget = packet.get("search_budget")
+    if not isinstance(budget, dict):
+        errors.append(
+            f"{location}.search_packet_id packet has no Search budget"
+        )
+        return
+    fixed_grants = {
+        "profile": "standard",
+        "max_query_batches": 2,
+        "max_queries_per_batch": 4,
+        "max_new_sources": 8,
+    }
+    for field, expected in fixed_grants.items():
+        if budget.get(field) != expected:
+            errors.append(
+                f"{location}.search_packet_id packet {field} does not equal "
+                f"the supported grant {expected!r}"
+            )
+    packet_extension = budget.get("extension")
+    expected_extension = {
+        "approved": True,
+        **authorization,
+    }
+    if packet_extension != expected_extension:
+        errors.append(
+            f"{location}.budget_extension was not granted by the immutable "
+            "Search packet"
+        )
+
+
+def validate_claude_search_budget_binding(
+    session_dir: Path | None,
+    state: dict[str, Any],
+    search_packet_id: str,
+    candidate_id: str | None,
+    round_number: int | None,
+    authorization: dict[str, Any],
+    location: str,
+    errors: list[str],
+) -> None:
+    """Bind modern Search usage to the persisted Claude dispatch input."""
+    if session_dir is None:
+        errors.append(
+            f"{location}.search_packet_id cannot be verified without a session directory"
+        )
+        return
+    binding = resolve_search_transport_binding(
+        state,
+        search_packet_id,
+        candidate_id,
+        round_number,
+        location,
+        errors,
+    )
+    if binding is None:
+        return
+    _controller_packet_id, search_product, dispatch = binding
+    packet_relative = f"control-inputs/dispatches/{search_packet_id}.json"
+    if dispatch.get("transport_path") != packet_relative:
+        errors.append(
+            f"{location}.search_packet_id committed transport_path is invalid"
+        )
+        return
+    transport_digest = dispatch.get("transport_sha256")
+    if not is_sha256(transport_digest):
+        errors.append(
+            f"{location}.search_packet_id committed transport_sha256 is invalid"
+        )
+        return
+    capsule_io = capsule_io_module()
+    try:
+        packet_raw, _packet_path = (
+            capsule_io.read_immutable_session_artifact(
+                session_dir,
+                packet_relative,
+            )
+        )
+    except (OSError, capsule_io.CapsuleError) as exc:
+        errors.append(
+            f"{location}.search_packet_id Claude transport cannot be read: {exc}"
+        )
+        return
+    if hashlib.sha256(packet_raw).hexdigest() != transport_digest:
+        errors.append(
+            f"{location}.search_packet_id Claude transport bytes do not match "
+            "the committed digest"
+        )
+        return
+    packet = validate_claude_dispatch_input(
+        packet_raw,
+        dispatch,
+        state,
+        f"{location}.search_packet_id Claude transport",
+        errors,
+    )
+    if packet is None:
+        return
+    envelope = packet.get("envelope")
+    if (
+        packet.get("schema_version") != "claude-dispatch-input-1"
+        or not isinstance(envelope, dict)
+        or envelope.get("packet_id") != search_packet_id
+        or envelope.get("phase") != search_product.get("phase")
+        or envelope.get("role") != "Search and Verification Specialist"
+        or envelope.get("candidate_id") != candidate_id
+        or envelope.get("round") != round_number
+    ):
+        errors.append(
+            f"{location}.search_packet_id Claude envelope does not match the usage"
+        )
+        return
+    budget = packet.get("search_budget")
+    if not isinstance(budget, dict):
+        return
+    fixed_grants = {
+        "profile": "standard",
+        "max_query_batches": 2,
+        "max_queries_per_batch": 4,
+        "max_new_sources": 8,
+    }
+    for field, expected in fixed_grants.items():
+        if budget.get(field) != expected:
+            errors.append(
+                f"{location}.search_packet_id Claude transport {field} does "
+                f"not equal the supported grant {expected!r}"
+            )
+    expected_extension = {
+        "approved": True,
+        **authorization,
+    }
+    if budget.get("extension") != expected_extension:
+        errors.append(
+            f"{location}.budget_extension was not granted by the immutable "
+            "Claude dispatch input"
+        )
 
 
 def historical_rq_resolution(
@@ -3129,8 +4028,11 @@ def validate_control_input_snapshot(
     location: str,
     errors: list[str],
 ) -> None:
-    missing = sorted(CONTROL_INPUT_SNAPSHOT_KEYS - set(snapshot))
-    extra = sorted(set(snapshot) - CONTROL_INPUT_SNAPSHOT_KEYS)
+    expected_keys = set(CONTROL_INPUT_SNAPSHOT_KEYS)
+    if state.get("schema_version") == "1.4":
+        expected_keys.add("transport_profile")
+    missing = sorted(expected_keys - set(snapshot))
+    extra = sorted(set(snapshot) - expected_keys)
     if missing or extra:
         errors.append(
             f"{location} has invalid keys; missing={missing}, extra={extra}"
@@ -3144,6 +4046,8 @@ def validate_control_input_snapshot(
         "interaction_mode": state.get("interaction_mode"),
         "checkpoint": transition.get("checkpoint"),
     }
+    if state.get("schema_version") == "1.4":
+        expected_scalars["transport_profile"] = state.get("transport_profile")
     for field, expected in expected_scalars.items():
         if snapshot.get(field) != expected:
             errors.append(f"{location}.{field} must equal {expected!r}")
@@ -3490,14 +4394,14 @@ def validate_control_input_snapshot(
     }
     accepted_ids = {
         product.get("packet_id")
-        for product in state.get("accepted_work_products", [])
+        for product in list_or_empty(state.get("accepted_work_products"))
         if isinstance(product, dict)
         and product.get("phase") != "CONTROL"
         and nonempty_string(product.get("packet_id"))
     }
     rejected_ids = {
         product.get("packet_id")
-        for product in state.get("rejected_work_products", [])
+        for product in list_or_empty(state.get("rejected_work_products"))
         if isinstance(product, dict)
         and product.get("role")
         not in {
@@ -3508,7 +4412,7 @@ def validate_control_input_snapshot(
     }
     rejected_by_id = {
         product.get("packet_id"): product
-        for product in state.get("rejected_work_products", [])
+        for product in list_or_empty(state.get("rejected_work_products"))
         if isinstance(product, dict)
         and product.get("role")
         not in {
@@ -3780,7 +4684,7 @@ def validate_control_input_snapshot(
                 )
     candidate_records = {
         candidate.get("candidate_id"): candidate
-        for candidate in state.get("candidates", [])
+        for candidate in list_or_empty(state.get("candidates"))
         if isinstance(candidate, dict)
         and nonempty_string(candidate.get("candidate_id"))
     }
@@ -4044,7 +4948,7 @@ def validate_mainline_control(
     errors: list[str],
     session_dir: Path | None = None,
 ) -> None:
-    if state.get("schema_version") != "1.3":
+    if state.get("schema_version") not in {"1.3", "1.4"}:
         return
 
     control = state.get("mainline_control")
@@ -4281,25 +5185,44 @@ def validate_mainline_control(
                 f"{expected_control_input_path!r}"
             )
         elif session_dir is not None and valid_packet_path_id:
-            snapshot_dir = session_dir / "control-inputs"
-            snapshot_path = snapshot_dir / f"{packet_id}.json"
+            snapshot_raw: bytes | None = None
+            capsule_io = capsule_io_module()
             try:
-                if snapshot_dir.is_symlink():
-                    raise OSError("control-inputs directory must not be a symlink")
-                resolved_dir = snapshot_dir.resolve()
-                if snapshot_path.is_symlink():
-                    raise OSError("control input snapshot must not be a symlink")
-                resolved_snapshot = snapshot_path.resolve()
-                if resolved_snapshot.parent != resolved_dir:
-                    raise OSError("control input snapshot escapes control-inputs")
-                if not snapshot_path.is_file():
-                    raise OSError("control input snapshot is not a regular file")
-                snapshot_raw = snapshot_path.read_bytes()
-            except OSError as exc:
+                if state.get("schema_version") == "1.4":
+                    snapshot_raw, _snapshot_relative = (
+                        capsule_io.read_immutable_session_artifact(
+                            session_dir,
+                            expected_control_input_path,
+                        )
+                    )
+                else:
+                    snapshot_dir = session_dir / "control-inputs"
+                    snapshot_path = snapshot_dir / f"{packet_id}.json"
+                    if snapshot_dir.is_symlink():
+                        raise OSError(
+                            "control-inputs directory must not be a symlink"
+                        )
+                    resolved_dir = snapshot_dir.resolve()
+                    if snapshot_path.is_symlink():
+                        raise OSError(
+                            "control input snapshot must not be a symlink"
+                        )
+                    resolved_snapshot = snapshot_path.resolve()
+                    if resolved_snapshot.parent != resolved_dir:
+                        raise OSError(
+                            "control input snapshot escapes control-inputs"
+                        )
+                    if not snapshot_path.is_file():
+                        raise OSError(
+                            "control input snapshot is not a regular file"
+                        )
+                    snapshot_raw = snapshot_path.read_bytes()
+            except (OSError, capsule_io.CapsuleError) as exc:
                 errors.append(
                     f"{location}.control_input_path cannot be read: {exc}"
                 )
             else:
+                assert snapshot_raw is not None
                 snapshot_digest = hashlib.sha256(snapshot_raw).hexdigest()
                 if snapshot_digest != control_input_digest:
                     errors.append(
@@ -4363,7 +5286,7 @@ def validate_mainline_control(
             if checkpoint != "SESSION_INIT":
                 errors.append(
                     f"{location}.checkpoint must be SESSION_INIT for the first "
-                    "schema-1.3 transition"
+                    "schema-1.3 or schema-1.4 transition"
                 )
             if from_status != expected_initial:
                 errors.append(
@@ -4376,7 +5299,8 @@ def validate_mainline_control(
             )
         if checkpoint == "RESUME" and index == 1:
             errors.append(
-                f"{location}.checkpoint RESUME requires existing schema-1.3 "
+                f"{location}.checkpoint RESUME requires existing schema-1.3 or "
+                "schema-1.4 "
                 "control history"
             )
         if (
@@ -4504,6 +5428,8 @@ def validate_mainline_control(
                 f"{location}.dispatches[{dispatch_index}]",
                 candidate_ids,
                 historical_completed_ids,
+                state,
+                session_dir,
                 errors,
             )
             if dispatch_id is not None:
@@ -4724,6 +5650,23 @@ def validate_mainline_control(
             errors.append(
                 f"{location}.dispatches contain duplicate packet IDs "
                 f"{duplicate_dispatches}"
+            )
+        if (
+            dispatches
+            and state.get("schema_version") == "1.4"
+            and state.get("transport_profile") == "CODEX"
+            and session_dir is not None
+            and valid_packet_path_id
+        ):
+            batch_validator = codex_batch_validator_module()
+            batch_errors = batch_validator.validate_recorded_batch(
+                session_dir,
+                packet_id,
+                state,
+            )
+            errors.extend(
+                f"{location} committed Codex batch is invalid: {error}"
+                for error in batch_errors
             )
 
         required_actions = validate_string_array(
@@ -5510,7 +6453,7 @@ def validate_mainline_control(
 
 
 def validate_gate_receipts(state: dict[str, Any], errors: list[str]) -> None:
-    if state.get("schema_version") != "1.3":
+    if state.get("schema_version") not in {"1.3", "1.4"}:
         return
 
     receipts = state.get("gate_receipts")
@@ -5620,7 +6563,9 @@ def validate_gate_receipts(state: dict[str, Any], errors: list[str]) -> None:
             selected_candidate_id = state.get("selected_candidate_id")
             accepted_packet_ids = {
                 product.get("packet_id")
-                for product in state.get("accepted_work_products", [])
+                for product in list_or_empty(
+                    state.get("accepted_work_products")
+                )
                 if isinstance(product, dict)
                 and product.get("phase") != "CONTROL"
                 and nonempty_string(product.get("packet_id"))
@@ -5895,7 +6840,7 @@ def validate_gate_receipts(state: dict[str, Any], errors: list[str]) -> None:
             and product.get("phase") == "RQ_REFINEMENT"
             and product.get("role") == "Research Question Architect"
             and product.get("candidate_id") == selected_candidate
-            for product in state.get("accepted_work_products", [])
+            for product in list_or_empty(state.get("accepted_work_products"))
         )
         if (
             not isinstance(rq_receipt, dict)
@@ -5978,9 +6923,9 @@ def validate_state(session_dir: Path, state: Any, errors: list[str]) -> None:
         return
 
     schema_version = state.get("schema_version")
-    if schema_version not in {"1.1", "1.2", "1.3"}:
+    if schema_version not in {"1.1", "1.2", "1.3", "1.4"}:
         errors.append(
-            "session-state.json: schema_version must be 1.1, 1.2, or 1.3"
+            "session-state.json: schema_version must be 1.1, 1.2, 1.3, or 1.4"
         )
     session_id = state.get("session_id")
     if not nonempty_string(session_id) or not SAFE_ID.fullmatch(session_id):
@@ -5997,17 +6942,33 @@ def validate_state(session_dir: Path, state: Any, errors: list[str]) -> None:
         errors.append(
             "session-state.json: mode must be discover, refine, rq-only, or evaluate"
         )
-    if mode == "evaluate" and schema_version not in {"1.2", "1.3"}:
+    if mode == "evaluate" and schema_version not in {"1.2", "1.3", "1.4"}:
         errors.append(
-            "session-state.json: evaluate mode requires schema_version 1.2 or 1.3"
+            "session-state.json: evaluate mode requires schema_version "
+            "1.2, 1.3, or 1.4"
         )
-    if schema_version == "1.3":
+    if schema_version in {"1.3", "1.4"}:
         require_keys(
             state,
             ("mainline_control", "gate_receipts"),
             "session-state.json",
             errors,
         )
+    if schema_version == "1.4":
+        require_keys(
+            state,
+            ("transport_profile",),
+            "session-state.json",
+            errors,
+        )
+        transport_profile = state.get("transport_profile")
+        if (
+            not isinstance(transport_profile, str)
+            or transport_profile not in TRANSPORT_PROFILES
+        ):
+            errors.append(
+                "session-state.json.transport_profile must be CLAUDE or CODEX"
+            )
     if mode == "evaluate":
         require_keys(
             state,
@@ -6081,8 +7042,8 @@ def validate_state(session_dir: Path, state: Any, errors: list[str]) -> None:
         errors.append("session-state.json: updated_at is required")
 
     validate_macro_directions(state, errors)
-    validate_candidates(state, errors)
-    validate_evaluation_state(state, errors)
+    validate_candidates(state, errors, session_dir)
+    validate_evaluation_state(state, errors, session_dir)
     validate_source_ledger(state, errors)
     validate_search_budget(state, errors)
     validate_accepted_work_products(state, errors)

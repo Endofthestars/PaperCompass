@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1761,6 +1762,154 @@ class StrictIntegerRegressionTests(unittest.TestCase):
 
 
 class StrictnessRegressionTests(unittest.TestCase):
+    def test_malformed_accepted_products_never_crash_search_validation(
+        self,
+    ) -> None:
+        authorization = {
+            "approval_packet_id": "C01-R1-JUDGE",
+            "judge_reason": "One unresolved direct-prior conflict.",
+            "extra_query_batches": 1,
+            "extra_sources": 4,
+        }
+        state = {
+            "schema_version": "1.4",
+            "transport_profile": "CODEX",
+            "search_budget": {
+                "profile": "standard",
+                "large_downloads": [],
+                "approved_extensions": [authorization],
+            },
+            "accepted_work_products": None,
+        }
+        budget_errors: list[str] = []
+        validator.validate_search_budget(state, budget_errors)
+        self.assertTrue(
+            any("accepted Panel Judge" in error for error in budget_errors),
+            budget_errors,
+        )
+        usage_errors: list[str] = []
+        validator.validate_search_usage(
+            {
+                "query_batches": 3,
+                "queries": 12,
+                "sources_inspected": 12,
+                "search_packet_id": "C01-R1-SEARCH",
+                "budget_extension": authorization,
+            },
+            "candidates[0].rounds[0].search_usage",
+            usage_errors,
+            state=state,
+            session_dir=None,
+            candidate_id="C01",
+            round_number=1,
+        )
+        self.assertTrue(usage_errors)
+
+    def test_search_usage_extension_requires_authoritative_judge_approval(
+        self,
+    ) -> None:
+        usage = {
+            "query_batches": 3,
+            "queries": 12,
+            "sources_inspected": 12,
+            "search_packet_id": "C01-R1-SEARCH",
+            "budget_extension": {
+                "approval_packet_id": "C01-R1-JUDGE",
+                "judge_reason": "One unresolved direct-prior conflict.",
+                "extra_query_batches": 1,
+                "extra_sources": 4,
+            },
+        }
+        state = {
+            "schema_version": "1.4",
+            "transport_profile": "CODEX",
+            "search_budget": {
+                "profile": "standard",
+                "large_downloads": [],
+                "approved_extensions": [],
+            },
+            "accepted_work_products": [],
+        }
+        errors: list[str] = []
+        validator.validate_search_usage(
+            usage,
+            "candidates[0].rounds[0].search_usage",
+            errors,
+            state=state,
+            session_dir=None,
+            candidate_id="C01",
+            round_number=1,
+        )
+        self.assertTrue(
+            any("no matching authoritative" in error for error in errors),
+            errors,
+        )
+        self.assertTrue(
+            any("accepted Panel Judge" in error for error in errors),
+            errors,
+        )
+
+        legacy_usage = {
+            **usage,
+            "budget_extension": {
+                key: value
+                for key, value in usage["budget_extension"].items()
+                if key != "approval_packet_id"
+            },
+        }
+        legacy_usage.pop("search_packet_id")
+        legacy_state = {
+            "search_budget": {
+                "profile": "standard",
+                "large_downloads": [],
+            },
+            "accepted_work_products": [
+            research_product(
+                "C01-R1-JUDGE",
+                "DEBATE",
+                "Panel Judge",
+                candidate_id="C01",
+                round_number=1,
+            )
+            ],
+        }
+        legacy_errors: list[str] = []
+        validator.validate_search_usage(
+            legacy_usage,
+            "candidates[0].rounds[0].search_usage",
+            legacy_errors,
+            state=legacy_state,
+            session_dir=None,
+            candidate_id="C01",
+            round_number=1,
+        )
+        self.assertEqual([], legacy_errors)
+
+        downgraded_state = {
+            **legacy_state,
+            "schema_version": "1.4",
+            "transport_profile": "CODEX",
+        }
+        downgrade_errors: list[str] = []
+        validator.validate_search_budget(downgraded_state, downgrade_errors)
+        validator.validate_search_usage(
+            legacy_usage,
+            "candidates[0].rounds[0].search_usage",
+            downgrade_errors,
+            state=downgraded_state,
+            session_dir=None,
+            candidate_id="C01",
+            round_number=1,
+        )
+        self.assertTrue(
+            any("required by schema_version 1.4" in error for error in downgrade_errors),
+            downgrade_errors,
+        )
+        self.assertTrue(
+            any("approval_packet_id is invalid" in error for error in downgrade_errors),
+            downgrade_errors,
+        )
+
     def test_require_keys_reports_missing_keys_via_return_value(self) -> None:
         errors: list[str] = []
         self.assertFalse(
@@ -2061,6 +2210,7 @@ class ControllerDecisionTests(unittest.TestCase):
                     [],
                     {},
                     {},
+                    Path("/tmp"),
                     live_errors,
                 )
                 self.assertTrue(live_errors)
@@ -2071,6 +2221,8 @@ class ControllerDecisionTests(unittest.TestCase):
                     "dispatch",
                     {"C01"},
                     set(),
+                    {"schema_version": "1.3"},
+                    None,
                     full_errors,
                 )
                 self.assertTrue(full_errors)
@@ -2449,6 +2601,213 @@ class ControllerDecisionTests(unittest.TestCase):
                 state_path, output_path
             )
             self.assertTrue(any("unknown keys" in error for error in errors))
+
+    def test_malformed_state_collections_report_without_crashing(self) -> None:
+        for field in ("candidates", "evaluation_rounds"):
+            for malformed in (None, 7, "invalid", {}):
+                with self.subTest(field=field, malformed=malformed):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        state_path, output_path, _output = self.make_files(
+                            Path(temporary)
+                        )
+                        state = json.loads(
+                            state_path.read_text(encoding="utf-8")
+                        )
+                        state[field] = malformed
+                        state_path.write_text(
+                            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        errors, _state_raw = controller_validator.validate(
+                            state_path,
+                            output_path,
+                        )
+                        self.assertTrue(errors)
+
+    def test_unhashable_transport_profile_reports_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path, output_path, _output = self.make_files(Path(temporary))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["schema_version"] = "1.4"
+            state["transport_profile"] = {}
+            state_path.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            errors, _state_raw = controller_validator.validate(
+                state_path,
+                output_path,
+            )
+            self.assertTrue(
+                any("transport_profile must be" in error for error in errors),
+                errors,
+            )
+
+    def test_claude_controller_gate_requires_immutable_transport_artifacts(
+        self,
+    ) -> None:
+        raw = b"{}\n"
+        digest = hashlib.sha256(raw).hexdigest()
+        state = {
+            "schema_version": "1.4",
+            "transport_profile": "CLAUDE",
+            "mode": "discover",
+            "status": "SCANNING",
+            "max_rounds": 6,
+            "candidates": [],
+            "mainline_control": {"transition_log": []},
+        }
+        dispatch = {
+            "packet_id": "MAP-CLAUDE",
+            "phase": "DIRECTION_MAPPING",
+            "role": "Macro Direction Mapper",
+            "candidate_id": None,
+            "round": None,
+            "depends_on_packet_ids": [],
+            "transport_path": (
+                "control-inputs/dispatches/MAP-CLAUDE.json"
+            ),
+            "transport_sha256": digest,
+        }
+        for variant in ("writable", "symlink", "fifo"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
+                session_dir = Path(tmp)
+                dispatch_dir = session_dir / "control-inputs" / "dispatches"
+                dispatch_dir.mkdir(parents=True)
+                transport_path = dispatch_dir / "MAP-CLAUDE.json"
+                if variant == "writable":
+                    transport_path.write_bytes(raw)
+                    transport_path.chmod(0o600)
+                elif variant == "symlink":
+                    target = session_dir / "symlink-target.json"
+                    target.write_bytes(raw)
+                    target.chmod(0o400)
+                    transport_path.symlink_to(target)
+                else:
+                    os.mkfifo(transport_path)
+
+                errors: list[str] = []
+                controller_validator.validate_dispatches(
+                    [dispatch],
+                    state,
+                    None,
+                    "ADVANCE",
+                    None,
+                    "SCANNING",
+                    "PHASE_BOUNDARY",
+                    [],
+                    {},
+                    {},
+                    session_dir,
+                    errors,
+                )
+                self.assertTrue(
+                    any(
+                        "cannot be read as an immutable artifact" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_claude_controller_gate_validates_transport_content(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            session_dir = Path(temporary)
+            dispatch_dir = session_dir / "control-inputs" / "dispatches"
+            dispatch_dir.mkdir(parents=True)
+            transport_path = dispatch_dir / "MAP-CLAUDE.json"
+            transport_raw = b"{}\n"
+            transport_path.write_bytes(transport_raw)
+            transport_path.chmod(0o400)
+            dispatch = {
+                "packet_id": "MAP-CLAUDE",
+                "phase": "DIRECTION_MAPPING",
+                "role": "Macro Direction Mapper",
+                "candidate_id": None,
+                "round": None,
+                "depends_on_packet_ids": [],
+                "transport_path": (
+                    "control-inputs/dispatches/MAP-CLAUDE.json"
+                ),
+                "transport_sha256": hashlib.sha256(
+                    transport_raw
+                ).hexdigest(),
+            }
+            state = {
+                "schema_version": "1.4",
+                "transport_profile": "CLAUDE",
+                "session_id": "session-1",
+                "project_root": "/tmp/project",
+                "project_snapshot": "snapshot-1",
+                "mode": "discover",
+                "status": "SCANNING",
+                "max_rounds": 6,
+                "candidates": [],
+                "search_budget": {
+                    "profile": "standard",
+                    "large_downloads": [],
+                    "approved_extensions": [],
+                },
+                "accepted_work_products": [],
+                "mainline_control": {"transition_log": []},
+            }
+            errors: list[str] = []
+            controller_validator.validate_dispatches(
+                [dispatch],
+                state,
+                None,
+                "ADVANCE",
+                None,
+                "SCANNING",
+                "PHASE_BOUNDARY",
+                [],
+                {},
+                {},
+                session_dir,
+                errors,
+            )
+            self.assertTrue(
+                any(
+                    ".transport_path has invalid keys" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_full_validator_rejects_unhashable_transport_profile(self) -> None:
+        state = control_state(transitions=[], products=[])
+        state.update(
+            {
+                "schema_version": "1.4",
+                "transport_profile": {},
+                "execution_mode": "MULTI_AGENT",
+                "min_rounds": 3,
+                "default_rounds": 4,
+                "max_rounds": 6,
+                "macro_directions": [],
+                "selected_macro_direction_ids": [],
+                "direction_selection": None,
+                "generated_candidate_ids": [],
+                "initial_debate_candidate_ids": [],
+                "user_gate_candidate_ids": [],
+                "selected_candidate_id": None,
+                "source_ledger": [],
+                "search_budget": {
+                    "profile": "standard",
+                    "large_downloads": [],
+                    "approved_extensions": [],
+                },
+                "user_required": [],
+                "updated_at": "2026-07-27T00:00:00+08:00",
+            }
+        )
+        errors: list[str] = []
+        validator.validate_state(Path("/tmp/session-1"), state, errors)
+        self.assertTrue(
+            any("transport_profile must be" in error for error in errors),
+            errors,
+        )
 
     def test_resume_rejects_duplicate_pending_logical_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

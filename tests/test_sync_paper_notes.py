@@ -88,9 +88,20 @@ class PaperNotesSyncTests(unittest.TestCase):
 
     def test_unchanged_revision_does_not_rewrite_metadata(self) -> None:
         self.assertEqual(0, self.sync().returncode)
-        before = (self.target / "UPSTREAM.md").read_bytes()
+        metadata_path = self.target / "UPSTREAM.md"
+        metadata = metadata_path.read_text(encoding="utf-8")
+        timestamp_line = next(
+            line for line in metadata.splitlines()
+            if line.startswith("- synced_at_utc: ")
+        )
+        sentinel_line = "- synced_at_utc: 2000-01-01T00:00:00Z"
+        metadata_path.write_text(
+            metadata.replace(timestamp_line, sentinel_line),
+            encoding="utf-8",
+        )
+        before = metadata_path.read_bytes()
         self.assertEqual(0, self.sync().returncode)
-        self.assertEqual(before, (self.target / "UPSTREAM.md").read_bytes())
+        self.assertEqual(before, metadata_path.read_bytes())
 
     def test_oversized_file_fails_without_modifying_target(self) -> None:
         self.assertEqual(0, self.sync().returncode)

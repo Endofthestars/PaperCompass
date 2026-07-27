@@ -46,6 +46,10 @@ controller = _load_module(
     "hotspot_validate_controller_decision",
     "validate_controller_decision.py",
 )
+capsules = _load_module(
+    "hotspot_context_capsule_for_control_input",
+    "build_context_capsule.py",
+)
 
 READINESS_VALUES = {"READY", "NOT_READY", "STALE", "UNRESOLVED"}
 VALIDATION_RESULTS = {"PASS", "FAIL", "NOT_RUN"}
@@ -176,7 +180,7 @@ def build_snapshot(
     if revision != 0 and checkpoint == "SESSION_INIT":
         raise BuildError("SESSION_INIT is valid only at control revision 0")
 
-    return {
+    snapshot = {
         "control_revision": revision,
         "state_digest": state_digest,
         "observed_status": state.get("status"),
@@ -199,6 +203,17 @@ def build_snapshot(
         "user_event": derive_user_event(state, checkpoint, receipt_id),
         "allowed_target_statuses": controller.legal_target_statuses(state),
     }
+    if state.get("schema_version") == "1.4":
+        transport_profile = state.get("transport_profile")
+        if (
+            not isinstance(transport_profile, str)
+            or transport_profile not in {"CLAUDE", "CODEX"}
+        ):
+            raise BuildError(
+                "schema_version 1.4 requires transport_profile CLAUDE or CODEX"
+            )
+        snapshot["transport_profile"] = transport_profile
+    return snapshot
 
 
 def serialize_snapshot(snapshot: dict[str, Any]) -> bytes:
@@ -367,18 +382,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     written: list[Path] = []
-    if args.out is not None:
-        args.out.write_bytes(raw)
-        written.append(args.out)
-    if args.packet_id is not None:
-        archive_dir = args.session_dir / "control-inputs"
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = archive_dir / f"{args.packet_id}.json"
-        archive_path.write_bytes(raw)
-        written.append(archive_path)
-        live_path = args.session_dir / "control-input.json"
-        live_path.write_bytes(raw)
-        written.append(live_path)
+    try:
+        if args.out is not None:
+            args.out.write_bytes(raw)
+            written.append(args.out)
+        if args.packet_id is not None:
+            archive_path = capsules.write_session_file(
+                args.session_dir,
+                f"control-inputs/{args.packet_id}.json",
+                raw,
+                immutable=True,
+            )
+            written.append(archive_path)
+            live_path = capsules.write_session_file(
+                args.session_dir,
+                "control-input.json",
+                raw,
+                immutable=False,
+            )
+            written.append(live_path)
+    except (OSError, capsules.CapsuleError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     if not written:
         sys.stdout.buffer.write(raw)
         sys.stdout.buffer.flush()
