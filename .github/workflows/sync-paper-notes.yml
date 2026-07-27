@@ -36,9 +36,11 @@ jobs:
           fi
 
           git add -A data/Paper-Notes
-          git diff --cached --check
+          # Preserve upstream Markdown byte-for-byte. Its existing whitespace is
+          # not ours to normalize, so only lint the provenance file we generate.
+          git diff --cached --check -- data/Paper-Notes/UPSTREAM.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           upstream_commit="$(sed -n 's/^upstream_commit: //p' data/Paper-Notes/UPSTREAM.md | head -n 1)"
-          git commit -m "chore(data): sync Paper-Notes (${upstream_commit:0:12})"
+          git commit --quiet -m "chore(data): sync Paper-Notes (${upstream_commit:0:12})"
           git push origin HEAD:main

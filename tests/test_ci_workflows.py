@@ -51,6 +51,11 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("PAPER_NOTES_CACHE_DIR: ${{ runner.temp }}/paper-notes-upstream", workflow)
         self.assertIn("bash scripts/sync_paper_notes.sh", workflow)
         self.assertIn("git status --porcelain -- data/Paper-Notes", workflow)
+        self.assertIn(
+            "git diff --cached --check -- data/Paper-Notes/UPSTREAM.md", workflow
+        )
+        self.assertNotIn("git diff --cached --check\n", workflow)
+        self.assertIn("git commit --quiet", workflow)
         self.assertIn("git push origin HEAD:main", workflow)
 
 
