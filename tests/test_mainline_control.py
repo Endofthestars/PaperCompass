@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fixture_builders import write_claude_dispatch
+
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = (
@@ -1695,6 +1697,94 @@ class StrictIntegerRegressionTests(unittest.TestCase):
             any("PRIMARY_CLAIM" in error for error in errors)
         )
 
+    def test_complete_evaluation_requires_decision_receipt_and_next_plan(
+        self,
+    ) -> None:
+        state = {
+            "mode": "evaluate",
+            "status": "COMPLETE",
+            "evaluation_target": {
+                "direction": "Reliable tool-using agents",
+                "primary_claim": "The repair improves task completion.",
+                "study_type": "controlled experiment",
+                "constraints": ["single GPU"],
+            },
+            "experiment_inventory": [
+                {
+                    "experiment_id": "EXP-1",
+                    "hypothesis": "The repair improves completion.",
+                    "artifact_paths": ["results/exp-1.json"],
+                    "outcome_summary": "Improved on the held-out split.",
+                    "status": "OBSERVED",
+                }
+            ],
+            "claim_evidence_matrix": [
+                {
+                    "claim_id": "CLAIM-1",
+                    "claim": "Completion improves.",
+                    "evidence_ids": ["EXP-1"],
+                    "support_status": "SUPPORTED",
+                    "limitations": ["One benchmark"],
+                }
+            ],
+            "evaluation_rounds": [
+                {
+                    "round": 1,
+                    "verdict": "CONVERGED",
+                    "confidence": "medium",
+                    "search_usage": {
+                        "query_batches": 0,
+                        "queries": 0,
+                        "sources_inspected": 0,
+                        "budget_extension": None,
+                    },
+                }
+            ],
+            "evaluation_decision": {
+                "verdict": "CONTINUE",
+                "confidence": "medium",
+                "rationale": "The controlled result supports one more test.",
+                "decisive_evidence": ["EXP-1"],
+                "strongest_objection": "External validity remains unknown.",
+                "unresolved": ["Second benchmark"],
+                "next_action": "Run the minimal cross-benchmark check.",
+            },
+            "next_experiment": {
+                "action": "RUN",
+                "question": "Does the gain transfer?",
+                "design": "Repeat on one independent benchmark.",
+                "expected_outcomes": ["transfer", "no transfer"],
+                "decision_rule": "Continue only if the gain is positive.",
+                "resource_requirements": ["single GPU"],
+                "stop_condition": "Stop after the registered comparison.",
+            },
+            "min_rounds": 1,
+            "max_rounds": 6,
+            "user_required": [],
+            "gate_receipts": [
+                {
+                    "receipt_id": "GATE-EVAL-1",
+                    "gate": "EVALUATION_DECISION",
+                    "action": "CONFIRM",
+                    "values": ["CONTINUE"],
+                    "based_on_revision": 4,
+                    "received_at": "2026-07-28T12:00:00+08:00",
+                }
+            ],
+        }
+        errors: list[str] = []
+        validator.validate_evaluation_state(state, errors)
+        controller_validator.validate_completion(state, [], errors)
+        self.assertEqual([], errors)
+
+        state["gate_receipts"] = []
+        errors = []
+        controller_validator.validate_completion(state, [], errors)
+        self.assertTrue(
+            any("EVALUATION_DECISION receipt" in error for error in errors),
+            errors,
+        )
+
     def test_round_configuration_rejects_json_float(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             session_dir = Path(temporary) / "session-1"
@@ -2770,6 +2860,78 @@ class ControllerDecisionTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     ".transport_path has invalid keys" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_claude_persisted_transport_passes_then_detects_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            session_dir = Path(temporary)
+            (session_dir / "project-evidence-pack.md").write_text(
+                "bounded evidence\n",
+                encoding="utf-8",
+            )
+            state = {
+                "schema_version": "1.4",
+                "transport_profile": "CLAUDE",
+                "session_id": "session-1",
+                "project_root": str(session_dir.parent.resolve()),
+                "project_snapshot": "snapshot-1",
+                "mode": "discover",
+                "status": "SCANNING",
+                "max_rounds": 6,
+                "candidates": [],
+                "search_budget": {
+                    "profile": "standard",
+                    "large_downloads": [],
+                    "approved_extensions": [],
+                },
+                "accepted_work_products": [],
+                "mainline_control": {"transition_log": []},
+            }
+            dispatch = write_claude_dispatch(session_dir, state)
+            errors: list[str] = []
+            controller_validator.validate_dispatches(
+                [dispatch],
+                state,
+                None,
+                "ADVANCE",
+                None,
+                "SCANNING",
+                "PHASE_BOUNDARY",
+                [],
+                {},
+                {},
+                session_dir,
+                errors,
+            )
+            self.assertEqual([], errors)
+
+            transport_path = session_dir / dispatch["transport_path"]
+            transport_path.chmod(0o600)
+            transport_path.write_text("{}\n", encoding="utf-8")
+            transport_path.chmod(0o400)
+            errors = []
+            controller_validator.validate_dispatches(
+                [dispatch],
+                state,
+                None,
+                "ADVANCE",
+                None,
+                "SCANNING",
+                "PHASE_BOUNDARY",
+                [],
+                {},
+                {},
+                session_dir,
+                errors,
+            )
+            self.assertTrue(
+                any(
+                    "transport_sha256 does not match" in error
                     for error in errors
                 ),
                 errors,

@@ -43,13 +43,34 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install validator dependencies
-        run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+        run: >-
+          python -m pip install --disable-pip-version-check
+          PyYAML==6.0.2 coverage==7.15.2
 
       - name: Run plugin checks
         env:
           CODEX_PLUGIN_VALIDATOR: ${{ github.workspace }}/.ci/openai-codex/codex-rs/skills/src/assets/samples/plugin-creator/scripts/validate_plugin.py
           CODEX_SKILL_VALIDATOR: ${{ github.workspace }}/.ci/openai-codex/codex-rs/skills/src/assets/samples/skill-creator/scripts/quick_validate.py
+          PYTHON_COVERAGE: "1"
         run: bash scripts/test_plugin.sh
+
+      - name: Build coverage reports
+        if: always()
+        run: |
+          python -m coverage report --show-missing
+          python -m coverage xml
+          python -m coverage html
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-${{ matrix.python-version }}-coverage
+          path: |
+            coverage.xml
+            htmlcov/
+          if-no-files-found: error
+          retention-days: 14
 
   claude:
     name: Validate Claude Code plugin

@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from fixture_builders import build_schema14_session, write_dispatch_draft
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = (
@@ -70,66 +72,23 @@ class CodexDispatchTests(unittest.TestCase):
         inline_payload: object | None = None,
         search_budget: dict | None = None,
     ) -> None:
-        draft = {
-            "envelope": {
-                "schema_version": "1.0",
-                "session_id": "session-1",
-                "project_root": str(session.parent.resolve()),
-                "project_snapshot": "snapshot-1",
-                "phase": phase,
-                "role": role,
-                "candidate_id": candidate_id,
-                "round": round_number,
-                "packet_id": packet_id,
-            },
-            "role_instructions": role_instructions,
-            "inline_payload": (
-                {"candidate": candidate_id}
-                if inline_payload is None
-                else inline_payload
-            ),
-            "search_budget": search_budget,
-        }
-        (session / "control-inputs" / "dispatch-drafts" / f"{packet_id}.json").write_text(
-            json.dumps(draft, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        write_dispatch_draft(
+            session,
+            packet_id=packet_id,
+            candidate_id=candidate_id,
+            phase=phase,
+            role=role,
+            round_number=round_number,
+            role_instructions=role_instructions,
+            inline_payload=inline_payload,
+            search_budget=search_budget,
         )
 
     def make_session(self, root: Path, packet_id: str = "C01-R1-MENTOR") -> Path:
-        session = root / "session-1"
-        (session / "control-inputs" / "dispatch-drafts").mkdir(parents=True)
-        (session / "project-evidence-pack.md").write_text(
-            "Observed signal A\n",
-            encoding="utf-8",
-        )
-        (session / "session-state.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "1.4",
-                    "transport_profile": "CODEX",
-                    "session_id": "session-1",
-                    "project_root": str(root.resolve()),
-                    "project_snapshot": "snapshot-1",
-                    "search_budget": {
-                        "profile": "standard",
-                        "large_downloads": [],
-                        "approved_extensions": [],
-                    },
-                    "accepted_work_products": [],
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        (session / "control-input.json").write_text("{}\n", encoding="utf-8")
-        self.write_draft(
-            session,
+        return build_schema14_session(
+            root,
             packet_id=packet_id,
-            candidate_id="C01",
         )
-        return session
 
     def build(
         self,
@@ -923,6 +882,79 @@ class CodexDispatchTests(unittest.TestCase):
                         "CTRL-0002",
                         "MAP-001",
                     )
+
+    def test_codex_guided_role_result_completes_a_committed_dispatch(
+        self,
+    ) -> None:
+        """Exercise the real builder/validator path through role acceptance."""
+        with tempfile.TemporaryDirectory() as temporary:
+            session = self.make_session(Path(temporary))
+            self.write_valid_nonempty_controller_batch(session)
+            self.assertEqual(
+                [],
+                batch_validator.validate_batch(
+                    session,
+                    "controller-output.json",
+                ),
+            )
+            self.commit_current_controller_transition(session)
+            persisted_path = (
+                session
+                / "control-inputs"
+                / "dispatches"
+                / "MAP-001.json"
+            )
+            persisted = persisted_path.read_bytes()
+            self.assertEqual(
+                persisted,
+                batch_validator.load_committed_packet_bytes(
+                    session,
+                    "CTRL-0002",
+                    "MAP-001",
+                ),
+            )
+
+            packet = json.loads(
+                persisted_path.read_text(encoding="utf-8")
+            )
+            envelope = packet["envelope"]
+            product = {
+                field: envelope[field]
+                for field in (
+                    "packet_id",
+                    "phase",
+                    "role",
+                    "session_id",
+                    "project_root",
+                    "project_snapshot",
+                    "candidate_id",
+                    "round",
+                )
+            }
+            product["context_fingerprint"] = (
+                dispatch_builder.session_validator.expected_context_fingerprint(
+                    product
+                )
+            )
+            state_path = session / "session-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["accepted_work_products"].append(product)
+            state_path.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual([], self.session_validation_errors(session))
+            with self.assertRaisesRegex(
+                batch_validator.BatchError,
+                "already accepted or rejected",
+            ):
+                batch_validator.load_committed_packet_bytes(
+                    session,
+                    "CTRL-0002",
+                    "MAP-001",
+                )
+            self.assertEqual(persisted, persisted_path.read_bytes())
 
     def test_full_session_requires_a_committed_codex_batch_for_dispatches(
         self,

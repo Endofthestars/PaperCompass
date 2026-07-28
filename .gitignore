@@ -9,4 +9,7 @@ reports/
 # Python and operating-system artifacts
 __pycache__/
 *.py[cod]
+.coverage
+coverage.xml
+htmlcov/
 .DS_Store

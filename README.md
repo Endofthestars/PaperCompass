@@ -174,6 +174,21 @@ Mainline Workflow Controller 是只读控制面，不是第二个主代理：它
 还会对 Claude 侧 manifest 与 marketplace 运行 `claude plugin validate
 --strict`（Codex manifest 由 Codex 校验器与 JSON 语法检查覆盖）。
 
+CI 还会使用固定版本的 `coverage.py` 生成行覆盖率和分支覆盖率报告。需要在
+本地复现该模式时，先安装 `coverage==7.15.2`，再运行：
+
+```bash
+PYTHON_COVERAGE=1 ./scripts/test_plugin.sh
+python3 -m coverage report --show-missing
+python3 -m coverage html
+```
+
+覆盖率报告用于发现缺失路径，当前不设置百分比门槛；任何测试、Codex
+validator 或 Claude strict validator 失败仍会令 CI 失败。`main` 分支的
+仓库 ruleset 应将 `Validate plugin (Python 3.11)`、`Validate plugin
+(Python 3.13)` 和 `Validate Claude Code plugin` 配置为 required status
+checks，确保失败的 PR 不能合并。
+
 端到端 smoke test：
 
 1. 按“本地开发安装”安装或刷新 plugin；用 `codex plugin list --json` 确认
@@ -231,4 +246,7 @@ python3 scripts/build_trend_report.py
 
 GitHub Actions 的 **Sync Paper-Notes Corpus** 工作流会在每周一 `07:17 UTC`
 自动运行。也可以在仓库的 **Actions** 页面选择该工作流、点击 **Run workflow**
-手动同步；只有上游 `docs/` 或许可证版本改变时，机器人才会提交到 `main`。
+手动同步；只有上游 `docs/` 或许可证版本改变时，机器人会更新
+`automation/paper-notes-sync` 分支并创建 PR。该 PR 会显式触发 **Plugin CI**，
+三项 required status checks 通过后自动 squash 合并，因此同步任务不需要绕过
+`main` 的 ruleset。
