@@ -6,7 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
+  pull-requests: write
 
 concurrency:
   group: sync-paper-notes-main
@@ -29,12 +31,17 @@ jobs:
         run: bash scripts/sync_paper_notes.sh
 
       - name: Commit updated corpus when changed
+        id: prepare
+        env:
+          SYNC_BRANCH: automation/paper-notes-sync
         run: |
           if [[ -z "$(git status --porcelain -- data/Paper-Notes)" ]]; then
             echo "Paper-Notes corpus is already current."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
+          git switch -C "$SYNC_BRANCH"
           git add -A data/Paper-Notes
           # Preserve upstream Markdown byte-for-byte. Its existing whitespace is
           # not ours to normalize, so only lint the provenance file we generate.
@@ -43,4 +50,56 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           upstream_commit="$(sed -n 's/^upstream_commit: //p' data/Paper-Notes/UPSTREAM.md | head -n 1)"
           git commit --quiet -m "chore(data): sync Paper-Notes (${upstream_commit:0:12})"
-          git push origin HEAD:main
+          git fetch origin "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" || true
+          git push --force-with-lease origin "HEAD:refs/heads/$SYNC_BRANCH"
+          echo "branch=$SYNC_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update synchronization pull request
+        if: steps.prepare.outputs.changed == 'true'
+        id: pull_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
+          UPSTREAM_COMMIT: ${{ steps.prepare.outputs.upstream_commit }}
+        run: |
+          pr_url="$(
+            gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$SYNC_BRANCH" \
+              --state open \
+              --json url \
+              --jq '.[0].url'
+          )"
+          if [[ -z "$pr_url" ]]; then
+            pr_url="$(
+              gh pr create \
+                --repo "$GITHUB_REPOSITORY" \
+                --base main \
+                --head "$SYNC_BRANCH" \
+                --title "chore(data): sync Paper-Notes (${UPSTREAM_COMMIT:0:12})" \
+                --body "Automated weekly Paper-Notes corpus synchronization. Upstream commit: $UPSTREAM_COMMIT"
+            )"
+          else
+            gh pr edit "$pr_url" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "chore(data): sync Paper-Notes (${UPSTREAM_COMMIT:0:12})" \
+              --body "Automated weekly Paper-Notes corpus synchronization. Upstream commit: $UPSTREAM_COMMIT"
+          fi
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch Plugin CI for synchronization branch
+        if: steps.prepare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
+        run: gh workflow run plugin-ci.yml --repo "$GITHUB_REPOSITORY" --ref "$SYNC_BRANCH"
+
+      - name: Enable auto-merge after required checks
+        if: steps.prepare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.pull_request.outputs.url }}
+        run: gh pr merge "$PR_URL" --repo "$GITHUB_REPOSITORY" --auto --squash --delete-branch

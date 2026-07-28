@@ -7,7 +7,13 @@ plugin_root="${repo_root}/plugins/hotspot-to-rq"
 skill_root="${plugin_root}/skills/research-direction-debate"
 python_bin="${PYTHON_BIN:-python3}"
 
-"${python_bin}" -B -m unittest discover -s "${repo_root}/tests" -v
+if [[ "${PYTHON_COVERAGE:-0}" = "1" ]]; then
+  "${python_bin}" -B -m coverage erase
+  "${python_bin}" -B -m coverage run --branch \
+    -m unittest discover -s "${repo_root}/tests" -v
+else
+  "${python_bin}" -B -m unittest discover -s "${repo_root}/tests" -v
+fi
 plugin_validator="${CODEX_PLUGIN_VALIDATOR:-${codex_base}/skills/.system/plugin-creator/scripts/validate_plugin.py}"
 skill_validator="${CODEX_SKILL_VALIDATOR:-${codex_base}/skills/.system/skill-creator/scripts/quick_validate.py}"
 if [[ -n "${CODEX_PLUGIN_VALIDATOR:-}" || -n "${CODEX_SKILL_VALIDATOR:-}" ]]; then
@@ -35,6 +41,7 @@ else
 fi
 "${python_bin}" -B "${skill_root}/scripts/validate_controller_decision.py" --help >/dev/null
 "${python_bin}" -B "${skill_root}/scripts/validate_session.py" --help >/dev/null
+"${python_bin}" -B "${skill_root}/scripts/build_control_input.py" --help >/dev/null
 "${python_bin}" -B "${skill_root}/scripts/build_context_capsule.py" --help >/dev/null
 "${python_bin}" -B "${skill_root}/scripts/build_codex_dispatch.py" --help >/dev/null
 "${python_bin}" -B "${skill_root}/scripts/validate_codex_dispatch_batch.py" --help >/dev/null
