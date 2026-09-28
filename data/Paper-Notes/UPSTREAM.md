@@ -2,8 +2,8 @@
 
 - upstream_repository: https://github.com/zhaoyang97/Paper-Notes.git
 - upstream_branch: main
-- upstream_commit: 2a378054bdca25df4b5418e9cd64b02fc6aa789e
-- synced_at_utc: 2026-07-27T10:44:21Z
+- upstream_commit: 306a06129d960c08e98b01fe20d60fea7be0a0a5
+- synced_at_utc: 2026-09-28T15:28:04Z
 - mirrored_scope: docs/ and LICENSE
 - license: CC BY-NC-SA 4.0
 
